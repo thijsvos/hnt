@@ -1,0 +1,18 @@
+services:
+  dev:
+    build:
+      context: .
+      target: builder
+    working_dir: /app
+    volumes:
+      - .:/app
+      - cargo-cache:/app/target
+      - registry-cache:/usr/local/cargo/registry
+    stdin_open: true
+    tty: true
+    entrypoint: []
+    command: ["cargo", "run"]
+
+volumes:
+  cargo-cache:
+  registry-cache:

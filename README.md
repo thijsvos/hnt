@@ -1,0 +1,70 @@
+# HNT - Hacker News Terminal
+
+A dark-themed terminal client for [Hacker News](https://news.ycombinator.com), built in Rust.
+
+Browse stories, read threaded comments, and open links — all from your terminal. No more squinting at the orange-and-white website.
+
+## Features
+
+- **Dark theme** — Catppuccin Mocha-inspired colors with HN orange accents
+- **Split-pane layout** — Stories on the left, comments on the right
+- **6 feeds** — Top, New, Best, Ask HN, Show HN, Jobs
+- **Threaded comments** — Depth-colored bars for visual tracking, collapse/expand
+- **Vim-style navigation** — `j`/`k`, `g`/`G`, `Ctrl+d`/`Ctrl+u`
+- **Open in browser** — Press `o` to open the story URL
+- **Progressive loading** — Root comments appear instantly, children load in the background
+- **Lazy pagination** — Stories load automatically as you scroll
+
+## Installation
+
+### Download a binary
+
+Grab the latest release for your platform from [Releases](https://github.com/thijsvos/hnt/releases).
+
+```bash
+# macOS (Apple Silicon)
+curl -L https://github.com/thijsvos/hnt/releases/latest/download/hnt-aarch64-apple-darwin -o hnt
+chmod +x hnt
+./hnt
+
+# macOS (Intel)
+curl -L https://github.com/thijsvos/hnt/releases/latest/download/hnt-x86_64-apple-darwin -o hnt
+chmod +x hnt
+./hnt
+
+# Linux (x86_64)
+curl -L https://github.com/thijsvos/hnt/releases/latest/download/hnt-x86_64-unknown-linux-gnu -o hnt
+chmod +x hnt
+./hnt
+```
+
+### Build from source
+
+Requires [Rust](https://rustup.rs/) 1.88+.
+
+```bash
+git clone https://github.com/thijsvos/hnt.git
+cd hnt
+cargo build --release
+./target/release/hnt
+```
+
+## Keybindings
+
+| Key | Action |
+|---|---|
+| `j` / `k` or arrows | Navigate up / down |
+| `Enter` | Select story / toggle collapse |
+| `o` | Open URL in browser |
+| `Tab` | Switch pane focus |
+| `1`-`6` | Switch feed (Top/New/Best/Ask/Show/Jobs) |
+| `r` | Refresh |
+| `g` / `G` | Jump to top / bottom |
+| `Ctrl+d` / `Ctrl+u` | Page down / up |
+| `q` | Quit |
+| `Esc` | Back / close |
+| `?` | Help overlay |
+
+## License
+
+[MIT](LICENSE)

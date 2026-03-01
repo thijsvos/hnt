@@ -1,0 +1,20 @@
+[package]
+name = "hnt"
+description = "A dark-themed terminal client for Hacker News"
+license = "MIT"
+repository = "https://github.com/thijsvos/hnt"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ratatui = "0.30"
+crossterm = { version = "0.29", features = ["event-stream"] }
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+open = "5"
+chrono = "0.4"
+futures = "0.3"
+html2text = "0.14"
