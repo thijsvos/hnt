@@ -1,8 +1,14 @@
 # HNT - Hacker News Terminal
 
+[![CI](https://github.com/thijsvos/hnt/actions/workflows/ci.yml/badge.svg)](https://github.com/thijsvos/hnt/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/thijsvos/hnt)](https://github.com/thijsvos/hnt/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A dark-themed terminal client for [Hacker News](https://news.ycombinator.com), built in Rust.
 
 Browse stories, read threaded comments, and open links — all from your terminal. No more squinting at the orange-and-white website.
+
+![hnt demo](assets/demo.gif)
 
 ## Features
 
