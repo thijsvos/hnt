@@ -198,9 +198,9 @@ impl<'a> Widget for CommentTree<'a> {
 
         // Scroll so selected comment is visible — prefer selected at top
         let current_scroll = self.state.scroll.get();
-        let scroll_row = if selected_row_start < current_scroll {
-            selected_row_start
-        } else if selected_row_end > current_scroll + available_height {
+        let scroll_row = if selected_row_start < current_scroll
+            || selected_row_end > current_scroll + available_height
+        {
             selected_row_start
         } else {
             current_scroll
@@ -286,7 +286,7 @@ fn measure_comments<'a>(
         let time_ago = comment
             .item
             .time
-            .map(|t| format_time_ago(t))
+            .map(format_time_ago)
             .unwrap_or_default();
         let is_collapsed = collapsed.contains(&comment.item.id);
         let collapse_indicator = if is_collapsed { " [+]" } else { "" };
