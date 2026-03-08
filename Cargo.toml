@@ -3,7 +3,7 @@ name = "hnt"
 description = "A dark-themed terminal client for Hacker News"
 license = "MIT"
 repository = "https://github.com/thijsvos/hnt"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]

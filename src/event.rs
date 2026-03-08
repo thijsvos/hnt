@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{Event as CrosstermEvent, EventStream, KeyEvent};
+use crossterm::event::{Event as CrosstermEvent, EventStream, KeyEvent, MouseEvent};
 use futures::StreamExt;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 #[derive(Debug)]
 pub enum Event {
     Key(KeyEvent),
+    Mouse(MouseEvent),
     Resize(#[allow(dead_code)] u16, u16),
     Tick,
 }
@@ -36,6 +37,11 @@ impl EventHandler {
                         match event {
                             Some(Ok(CrosstermEvent::Key(key))) => {
                                 if tx.send(Event::Key(key)).is_err() {
+                                    break;
+                                }
+                            }
+                            Some(Ok(CrosstermEvent::Mouse(mouse))) => {
+                                if tx.send(Event::Mouse(mouse)).is_err() {
                                     break;
                                 }
                             }

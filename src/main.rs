@@ -17,8 +17,8 @@ async fn main() -> Result<()> {
 
     let mut terminal = tui::init()?;
     let mut events = EventHandler::new(Duration::from_millis(250));
-    let terminal_height = terminal.size()?.height;
-    let mut app = App::new(terminal_height);
+    let size = terminal.size()?;
+    let mut app = App::new(size.width, size.height);
 
     // Kick off initial data load
     app.load_initial_feed();
@@ -39,8 +39,23 @@ async fn main() -> Result<()> {
                 let action = keys::map_key(key, app.show_help);
                 app.dispatch(action);
             }
-            Event::Resize(_, h) => {
-                app.set_terminal_height(h);
+            Event::Mouse(mouse) => {
+                use crossterm::event::{MouseButton, MouseEventKind};
+                match mouse.kind {
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        app.handle_click(mouse.column, mouse.row);
+                    }
+                    MouseEventKind::ScrollDown => {
+                        app.handle_scroll(mouse.column, mouse.row, true);
+                    }
+                    MouseEventKind::ScrollUp => {
+                        app.handle_scroll(mouse.column, mouse.row, false);
+                    }
+                    _ => {}
+                }
+            }
+            Event::Resize(w, h) => {
+                app.set_terminal_size(w, h);
             }
             Event::Tick => {
                 // Tick — just triggers redraw above

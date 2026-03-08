@@ -171,7 +171,16 @@ impl<'a> Widget for CommentTree<'a> {
 
         let available_height = inner.height.saturating_sub(header_height) as usize;
         if available_height == 0 {
+            // Clear row_map when nothing to render
+            self.state.row_map.borrow_mut().clear();
             return;
+        }
+
+        // Initialize row_map for mouse click handling
+        {
+            let mut row_map = self.state.row_map.borrow_mut();
+            row_map.clear();
+            row_map.resize(inner.height as usize, None);
         }
 
         // Pass 1: measure all comments into rows
@@ -229,6 +238,14 @@ impl<'a> Widget for CommentTree<'a> {
                     for x in inner.left()..inner.right() {
                         buf[(x, inner.top() + screen_y)]
                             .set_style(ratatui::style::Style::default().bg(bg));
+                    }
+                }
+
+                // Record row → comment mapping for mouse clicks
+                {
+                    let mut row_map = self.state.row_map.borrow_mut();
+                    if (screen_y as usize) < row_map.len() {
+                        row_map[screen_y as usize] = Some(mc.visual_index);
                     }
                 }
 

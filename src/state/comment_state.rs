@@ -1,5 +1,5 @@
 use crate::api::types::Item;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 
 pub struct FlatComment {
@@ -15,6 +15,9 @@ pub struct CommentTreeState {
     pub collapsed: HashSet<u64>,
     pub loading: bool,
     pub story: Option<Item>,
+    /// Maps screen row (relative to inner area top) → visible comment index.
+    /// Populated during render for mouse click handling.
+    pub row_map: RefCell<Vec<Option<usize>>>,
 }
 
 impl CommentTreeState {
@@ -26,6 +29,7 @@ impl CommentTreeState {
             collapsed: HashSet::new(),
             loading: false,
             story: None,
+            row_map: RefCell::new(Vec::new()),
         }
     }
 
@@ -132,5 +136,6 @@ impl CommentTreeState {
         self.collapsed.clear();
         self.loading = false;
         self.story = None;
+        self.row_map.borrow_mut().clear();
     }
 }
