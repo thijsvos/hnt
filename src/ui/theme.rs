@@ -66,3 +66,19 @@ pub fn inactive_tab_style() -> Style {
 pub fn depth_color(depth: usize) -> Color {
     DEPTH_COLORS[depth % DEPTH_COLORS.len()]
 }
+
+pub fn badge_style(badge: crate::api::types::StoryBadge) -> Style {
+    use crate::api::types::StoryBadge;
+    let color = match badge {
+        StoryBadge::Ask => BLUE,
+        StoryBadge::Show => GREEN,
+        StoryBadge::Tell => MAUVE,
+        StoryBadge::Launch => PEACH,
+        StoryBadge::Job => YELLOW,
+        StoryBadge::Poll => TEAL,
+    };
+    Style::default()
+        .fg(color)
+        .bg(SURFACE)
+        .add_modifier(Modifier::BOLD)
+}
