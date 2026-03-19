@@ -120,7 +120,10 @@ fn render_error(frame: &mut Frame, area: Rect, reader: &ReaderState, error: &str
 fn render_content(frame: &mut Frame, area: Rect, reader: &ReaderState) {
     let title = build_title(reader);
     let pct = reader.scroll_percent();
-    let footer = format!(" j/k:scroll  Ctrl+d/u:page  g/G:top/bottom  o:browser  Esc:close  {}% ", pct);
+    let footer = format!(
+        " j/k:scroll  Ctrl+d/u:page  g/G:top/bottom  o:browser  Esc:close  {}% ",
+        pct
+    );
 
     let block = Block::default()
         .borders(Borders::ALL)

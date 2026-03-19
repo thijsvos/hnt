@@ -25,7 +25,10 @@ pub fn base_style() -> Style {
 }
 
 pub fn selected_style() -> Style {
-    Style::default().fg(TEXT).bg(SURFACE).add_modifier(Modifier::BOLD)
+    Style::default()
+        .fg(TEXT)
+        .bg(SURFACE)
+        .add_modifier(Modifier::BOLD)
 }
 
 pub fn title_style() -> Style {

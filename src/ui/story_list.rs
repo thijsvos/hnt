@@ -13,6 +13,7 @@ pub struct StoryList<'a> {
     pub offset: usize,
     pub focused: bool,
     pub loading: bool,
+    pub search_query: Option<&'a str>,
 }
 
 impl<'a> Widget for StoryList<'a> {
@@ -23,29 +24,39 @@ impl<'a> Widget for StoryList<'a> {
             theme::dim_style()
         };
 
+        let title = if let Some(q) = &self.search_query {
+            format!(" Search: {} ", q)
+        } else {
+            " Stories ".to_string()
+        };
+
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(border_style)
-            .title(Span::styled(" Stories ", theme::title_style()))
+            .title(Span::styled(title, theme::title_style()))
             .style(theme::base_style());
 
         let inner = block.inner(area);
         block.render(area, buf);
 
         if self.loading && self.stories.is_empty() {
-            let loading_line = Line::from(Span::styled(
-                "  Loading stories...",
-                theme::dim_style(),
-            ));
+            let msg = if self.search_query.is_some() {
+                "  Searching..."
+            } else {
+                "  Loading stories..."
+            };
+            let loading_line = Line::from(Span::styled(msg, theme::dim_style()));
             buf.set_line(inner.left(), inner.top(), &loading_line, inner.width);
             return;
         }
 
         if self.stories.is_empty() {
-            let empty_line = Line::from(Span::styled(
-                "  No stories loaded",
-                theme::dim_style(),
-            ));
+            let msg = if self.search_query.is_some() {
+                "  No results found"
+            } else {
+                "  No stories loaded"
+            };
+            let empty_line = Line::from(Span::styled(msg, theme::dim_style()));
             buf.set_line(inner.left(), inner.top(), &empty_line, inner.width);
             return;
         }
@@ -61,7 +72,13 @@ impl<'a> Widget for StoryList<'a> {
             self.offset
         };
 
-        for (i, story) in self.stories.iter().enumerate().skip(scroll).take(visible_height) {
+        for (i, story) in self
+            .stories
+            .iter()
+            .enumerate()
+            .skip(scroll)
+            .take(visible_height)
+        {
             let y = inner.top() + (i - scroll) as u16;
             let is_selected = i == self.selected;
 
@@ -75,9 +92,13 @@ impl<'a> Widget for StoryList<'a> {
             let num = format!("{:>3}. ", i + 1);
             let badge_text = badge.map(|b| format!("[{}] ", b.label()));
             let badge_width = badge_text.as_ref().map_or(0, |t| t.len());
-            let max_title_width = (inner.width as usize).saturating_sub(num.len() + badge_width + domain.len() + 2);
+            let max_title_width =
+                (inner.width as usize).saturating_sub(num.len() + badge_width + domain.len() + 2);
             let truncated_title: String = if title.chars().count() > max_title_width {
-                let truncated: String = title.chars().take(max_title_width.saturating_sub(3)).collect();
+                let truncated: String = title
+                    .chars()
+                    .take(max_title_width.saturating_sub(3))
+                    .collect();
                 format!("{}...", truncated)
             } else {
                 title.to_string()
@@ -94,21 +115,26 @@ impl<'a> Widget for StoryList<'a> {
                 buf[(x, y)].set_style(style);
             }
 
-            let mut spans = vec![
-                Span::styled(
-                    num,
-                    if is_selected {
-                        theme::accent_style().bg(theme::SURFACE)
-                    } else {
-                        theme::dim_style()
-                    },
-                ),
-            ];
+            let mut spans = vec![Span::styled(
+                num,
+                if is_selected {
+                    theme::accent_style().bg(theme::SURFACE)
+                } else {
+                    theme::dim_style()
+                },
+            )];
             if let Some((text, b)) = badge_text.zip(badge) {
                 spans.push(Span::styled(text, theme::badge_style(b)));
             }
             spans.push(Span::styled(truncated_title, style));
-            spans.push(Span::styled(domain, theme::dim_style().bg(if is_selected { theme::SURFACE } else { theme::BG })));
+            spans.push(Span::styled(
+                domain,
+                theme::dim_style().bg(if is_selected {
+                    theme::SURFACE
+                } else {
+                    theme::BG
+                }),
+            ));
 
             let line = Line::from(spans);
             buf.set_line(inner.left(), y, &line, inner.width);
