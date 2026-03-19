@@ -38,7 +38,7 @@ impl Widget for StatusBar {
             ));
         } else {
             spans.push(Span::styled(
-                "j/k:nav enter:open tab:switch 1-6:feed o:browser r:refresh ?:help q:quit ",
+                "j/k:nav \u{2190}\u{2192}/tab:switch enter:open 1-6:feed o:browser p:read r:refresh ?:help q:quit ",
                 theme::status_style(),
             ));
         }

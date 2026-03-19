@@ -1,3 +1,4 @@
+pub mod article_reader;
 pub mod comment_tree;
 pub mod header;
 pub mod layout;
@@ -97,11 +98,16 @@ pub fn render(app: &App, frame: &mut Frame) {
     if app.show_help {
         render_help_overlay(frame, area);
     }
+
+    // Article reader overlay
+    if let Some(ref reader_state) = app.reader_state {
+        article_reader::render_article_overlay(frame, area, reader_state);
+    }
 }
 
 fn render_help_overlay(frame: &mut Frame, area: Rect) {
     let width = 50u16.min(area.width.saturating_sub(4));
-    let height = 18u16.min(area.height.saturating_sub(4));
+    let height = 20u16.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let popup_area = Rect::new(x, y, width, height);
@@ -125,6 +131,10 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  o            ", theme::accent_style()),
             Span::styled("Open URL in browser", theme::base_style()),
+        ]),
+        Line::from(vec![
+            Span::styled("  p            ", theme::accent_style()),
+            Span::styled("Read article inline", theme::base_style()),
         ]),
         Line::from(vec![
             Span::styled("  Tab          ", theme::accent_style()),
