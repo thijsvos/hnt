@@ -41,6 +41,49 @@ impl Item {
     }
 }
 
+// --- Algolia Search types ---
+
+#[derive(Debug, Deserialize)]
+pub struct SearchHit {
+    #[serde(rename = "objectID")]
+    pub object_id: String,
+    pub title: Option<String>,
+    pub url: Option<String>,
+    pub author: Option<String>,
+    pub points: Option<i64>,
+    pub num_comments: Option<i64>,
+    pub created_at_i: Option<i64>,
+    pub story_text: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SearchResponse {
+    pub hits: Vec<SearchHit>,
+    #[serde(rename = "nbPages")]
+    pub nb_pages: usize,
+    #[serde(rename = "nbHits")]
+    pub nb_hits: usize,
+}
+
+impl From<SearchHit> for Item {
+    fn from(hit: SearchHit) -> Self {
+        Item {
+            id: hit.object_id.parse::<u64>().unwrap_or(0),
+            title: hit.title,
+            url: hit.url,
+            text: hit.story_text,
+            by: hit.author,
+            score: hit.points,
+            time: hit.created_at_i,
+            kids: None,
+            descendants: hit.num_comments,
+            item_type: Some("story".to_string()),
+            dead: None,
+            deleted: None,
+        }
+    }
+}
+
 fn url_domain(url: &str) -> Option<String> {
     // Simple domain extraction without pulling in the url crate
     let without_scheme = url

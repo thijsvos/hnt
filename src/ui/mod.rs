@@ -26,10 +26,14 @@ pub fn render(app: &App, frame: &mut Frame) {
 
     let layout = build_layout(area);
 
+    let search_active = app.search_state.is_some();
+    let search_query = app.search_state.as_ref().map(|ss| ss.query.as_str());
+
     // Header
     frame.render_widget(
         header::Header {
             current_feed: app.current_feed,
+            search_active,
         },
         layout.header,
     );
@@ -42,6 +46,7 @@ pub fn render(app: &App, frame: &mut Frame) {
             offset: 0,
             focused: app.focus == crate::app::Pane::Stories,
             loading: app.story_state.loading,
+            search_query: if search_active { search_query } else { None },
         },
         layout.stories,
     );
@@ -90,6 +95,13 @@ pub fn render(app: &App, frame: &mut Frame) {
                 crate::app::Pane::Stories => "Stories",
                 crate::app::Pane::Comments => "Comments",
             },
+            input_mode: app.input_mode,
+            search_input: app.search_state.as_ref().map(|ss| ss.input.clone()),
+            search_query: if search_active {
+                search_query.map(|s| s.to_string())
+            } else {
+                None
+            },
         },
         layout.status,
     );
@@ -107,7 +119,7 @@ pub fn render(app: &App, frame: &mut Frame) {
 
 fn render_help_overlay(frame: &mut Frame, area: Rect) {
     let width = 50u16.min(area.width.saturating_sub(4));
-    let height = 20u16.min(area.height.saturating_sub(4));
+    let height = 21u16.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let popup_area = Rect::new(x, y, width, height);
@@ -143,6 +155,10 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  1-6          ", theme::accent_style()),
             Span::styled("Switch feed (Top/New/Best/Ask/Show/Jobs)", theme::base_style()),
+        ]),
+        Line::from(vec![
+            Span::styled("  /            ", theme::accent_style()),
+            Span::styled("Search stories", theme::base_style()),
         ]),
         Line::from(vec![
             Span::styled("  r            ", theme::accent_style()),

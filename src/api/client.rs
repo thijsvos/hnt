@@ -1,10 +1,11 @@
-use super::types::{FeedKind, Item};
+use super::types::{FeedKind, Item, SearchResponse};
 use anyhow::Result;
 use futures::stream::{self, StreamExt};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 const BASE_URL: &str = "https://hacker-news.firebaseio.com/v0";
+const ALGOLIA_URL: &str = "https://hn.algolia.com/api/v1/search";
 const CONCURRENT_REQUESTS: usize = 20;
 
 #[derive(Clone)]
@@ -94,6 +95,30 @@ impl HnClient {
             .collect();
 
         Ok((items, all_ids))
+    }
+
+    /// Search stories via the HN Algolia API.
+    pub async fn search_stories(
+        &self,
+        query: &str,
+        page: usize,
+        hits_per_page: usize,
+    ) -> Result<(Vec<Item>, usize, usize)> {
+        let resp: SearchResponse = self
+            .client
+            .get(ALGOLIA_URL)
+            .query(&[
+                ("query", query),
+                ("tags", "story"),
+                ("hitsPerPage", &hits_per_page.to_string()),
+                ("page", &page.to_string()),
+            ])
+            .send()
+            .await?
+            .json()
+            .await?;
+        let stories = resp.hits.into_iter().map(Item::from).collect();
+        Ok((stories, resp.nb_pages, resp.nb_hits))
     }
 
     /// Recursively fetch children of a comment, depth-first.

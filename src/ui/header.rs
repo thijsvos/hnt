@@ -9,6 +9,7 @@ use ratatui::{
 
 pub struct Header {
     pub current_feed: FeedKind,
+    pub search_active: bool,
 }
 
 impl Widget for Header {
@@ -32,11 +33,16 @@ impl Widget for Header {
                 spans.push(Span::styled(" ", theme::header_style()));
             }
             let label = format!(" {} ", feed);
-            if *feed == self.current_feed {
+            if !self.search_active && *feed == self.current_feed {
                 spans.push(Span::styled(label, theme::active_tab_style()));
             } else {
                 spans.push(Span::styled(label, theme::inactive_tab_style()));
             }
+        }
+
+        if self.search_active {
+            spans.push(Span::styled(" ", theme::header_style()));
+            spans.push(Span::styled(" Search ", theme::active_tab_style()));
         }
 
         let line = Line::from(spans);

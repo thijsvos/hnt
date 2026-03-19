@@ -13,6 +13,7 @@ pub struct StoryList<'a> {
     pub offset: usize,
     pub focused: bool,
     pub loading: bool,
+    pub search_query: Option<&'a str>,
 }
 
 impl<'a> Widget for StoryList<'a> {
@@ -23,29 +24,39 @@ impl<'a> Widget for StoryList<'a> {
             theme::dim_style()
         };
 
+        let title = if let Some(q) = &self.search_query {
+            format!(" Search: {} ", q)
+        } else {
+            " Stories ".to_string()
+        };
+
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(border_style)
-            .title(Span::styled(" Stories ", theme::title_style()))
+            .title(Span::styled(title, theme::title_style()))
             .style(theme::base_style());
 
         let inner = block.inner(area);
         block.render(area, buf);
 
         if self.loading && self.stories.is_empty() {
-            let loading_line = Line::from(Span::styled(
-                "  Loading stories...",
-                theme::dim_style(),
-            ));
+            let msg = if self.search_query.is_some() {
+                "  Searching..."
+            } else {
+                "  Loading stories..."
+            };
+            let loading_line = Line::from(Span::styled(msg, theme::dim_style()));
             buf.set_line(inner.left(), inner.top(), &loading_line, inner.width);
             return;
         }
 
         if self.stories.is_empty() {
-            let empty_line = Line::from(Span::styled(
-                "  No stories loaded",
-                theme::dim_style(),
-            ));
+            let msg = if self.search_query.is_some() {
+                "  No results found"
+            } else {
+                "  No stories loaded"
+            };
+            let empty_line = Line::from(Span::styled(msg, theme::dim_style()));
             buf.set_line(inner.left(), inner.top(), &empty_line, inner.width);
             return;
         }

@@ -1,8 +1,9 @@
 use crate::api::client::HnClient;
 use crate::api::types::{FeedKind, Item};
-use crate::keys::Action;
+use crate::keys::{Action, InputMode};
 use crate::state::comment_state::CommentTreeState;
 use crate::state::reader_state::{ReaderState, StyledFragment};
+use crate::state::search_state::SearchState;
 use crate::state::story_state::StoryListState;
 use crate::ui::theme;
 use html2text::render::RichAnnotation;
@@ -40,6 +41,12 @@ pub enum AppMessage {
     ArticleLoaded {
         lines: Vec<Vec<StyledFragment>>,
     },
+    SearchResultsLoaded {
+        stories: Vec<Item>,
+        total_pages: usize,
+        total_hits: usize,
+        append: bool,
+    },
     ArticleError(String),
     Error(String),
 }
@@ -51,6 +58,8 @@ pub struct App {
     pub story_state: StoryListState,
     pub comment_state: CommentTreeState,
     pub reader_state: Option<ReaderState>,
+    pub search_state: Option<SearchState>,
+    pub input_mode: InputMode,
     pub show_help: bool,
     pub error: Option<String>,
     pub terminal_height: u16,
@@ -73,6 +82,8 @@ impl App {
             story_state: StoryListState::new(),
             comment_state: CommentTreeState::new(),
             reader_state: None,
+            search_state: None,
+            input_mode: InputMode::Normal,
             show_help: false,
             error: None,
             terminal_height,
@@ -120,6 +131,28 @@ impl App {
                     self.error = None;
                     // Auto-load comments for the first story on initial load
                     if !append && !self.story_state.stories.is_empty() && self.comment_state.story.is_none() {
+                        self.load_selected_comments();
+                        self.focus = Pane::Stories;
+                    }
+                }
+                AppMessage::SearchResultsLoaded {
+                    stories,
+                    total_pages,
+                    total_hits,
+                    append,
+                } => {
+                    if append {
+                        self.story_state.stories.extend(stories);
+                    } else {
+                        self.story_state.stories = stories;
+                    }
+                    self.story_state.loading = false;
+                    self.error = None;
+                    if let Some(ref mut ss) = self.search_state {
+                        ss.total_pages = total_pages;
+                        ss.total_hits = total_hits;
+                    }
+                    if !append && !self.story_state.stories.is_empty() {
                         self.load_selected_comments();
                         self.focus = Pane::Stories;
                     }
@@ -218,6 +251,8 @@ impl App {
                 if self.focus == Pane::Comments && self.comment_state.story.is_some() {
                     self.comment_state.reset();
                     self.focus = Pane::Stories;
+                } else if self.search_state.is_some() {
+                    self.cancel_search();
                 } else {
                     self.running = false;
                 }
@@ -248,7 +283,9 @@ impl App {
             Action::SwitchFeed(idx) => {
                 if idx < FeedKind::ALL.len() {
                     let feed = FeedKind::ALL[idx];
-                    if feed != self.current_feed {
+                    if feed != self.current_feed || self.search_state.is_some() {
+                        self.search_state = None;
+                        self.input_mode = InputMode::Normal;
                         self.current_feed = feed;
                         self.story_state.reset();
                         self.comment_state.reset();
@@ -259,10 +296,22 @@ impl App {
                 }
             }
             Action::Refresh => {
-                self.story_state.reset();
-                self.comment_state.reset();
-                self.client.clear_cache();
-                self.spawn_load_stories(false);
+                if let Some(ref ss) = self.search_state {
+                    let query = ss.query.clone();
+                    if !query.is_empty() {
+                        self.story_state.reset();
+                        self.comment_state.reset();
+                        self.spawn_search(&query, 0, false);
+                    }
+                } else {
+                    self.story_state.reset();
+                    self.comment_state.reset();
+                    self.client.clear_cache();
+                    self.spawn_load_stories(false);
+                }
+            }
+            Action::EnterSearch => {
+                self.enter_search_mode();
             }
             Action::JumpTop => match self.focus {
                 Pane::Stories => self.story_state.jump_top(),
@@ -289,6 +338,80 @@ impl App {
             Action::ToggleHelp => self.show_help = !self.show_help,
             Action::None => {}
         }
+    }
+
+    pub fn enter_search_mode(&mut self) {
+        self.input_mode = InputMode::SearchInput;
+        self.search_state = Some(SearchState::new());
+        self.focus = Pane::Stories;
+    }
+
+    pub fn submit_search(&mut self) {
+        let query = if let Some(ref ss) = self.search_state {
+            ss.input.trim().to_string()
+        } else {
+            return;
+        };
+
+        if query.is_empty() {
+            self.cancel_search();
+            return;
+        }
+
+        if let Some(ref mut ss) = self.search_state {
+            ss.query = query.clone();
+            ss.current_page = 0;
+        }
+
+        self.input_mode = InputMode::Normal;
+        self.story_state.reset();
+        self.comment_state.reset();
+        self.spawn_search(&query, 0, false);
+    }
+
+    pub fn cancel_search(&mut self) {
+        self.search_state = None;
+        self.input_mode = InputMode::Normal;
+        self.story_state.reset();
+        self.comment_state.reset();
+        self.client.clear_cache();
+        self.spawn_load_stories(false);
+    }
+
+    pub fn search_input_char(&mut self, c: char) {
+        if let Some(ref mut ss) = self.search_state {
+            ss.input.push(c);
+        }
+    }
+
+    pub fn search_input_backspace(&mut self) {
+        if let Some(ref mut ss) = self.search_state {
+            ss.input.pop();
+        }
+    }
+
+    fn spawn_search(&mut self, query: &str, page: usize, append: bool) {
+        self.story_state.loading = true;
+        let client = self.client.clone();
+        let tx = self.msg_tx.clone();
+        let query = query.to_string();
+        let page_size = self.page_size();
+
+        tokio::spawn(async move {
+            match client.search_stories(&query, page, page_size).await {
+                Ok((stories, total_pages, total_hits)) => {
+                    let _ = tx.send(AppMessage::SearchResultsLoaded {
+                        stories,
+                        total_pages,
+                        total_hits,
+                        append,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(AppMessage::Error(format!("Search failed: {}", e)));
+                }
+            }
+        });
     }
 
     fn spawn_load_stories(&self, append: bool) {
@@ -325,10 +448,21 @@ impl App {
 
             let client = self.client.clone();
             let tx = self.msg_tx.clone();
-            let kids = story.kids.clone().unwrap_or_default();
             let story_clone = story.clone();
+            let needs_full_fetch = story.kids.is_none();
+            let kids = story.kids.clone().unwrap_or_default();
 
             tokio::spawn(async move {
+                // For search results, kids is None — fetch the full item first
+                let kids = if needs_full_fetch && story_clone.id > 0 {
+                    match client.fetch_item(story_clone.id).await {
+                        Ok(Some(full_item)) => full_item.kids.unwrap_or_default(),
+                        _ => kids,
+                    }
+                } else {
+                    kids
+                };
+
                 // Step 1: Fetch root-level comments and show them immediately
                 let root_items = client.fetch_items(&kids).await;
                 let root_comments: Vec<(Item, usize)> = root_items
@@ -444,7 +578,22 @@ impl App {
     }
 
     fn check_lazy_load(&mut self) {
-        if self.story_state.needs_more() && !self.story_state.loading {
+        if self.story_state.loading {
+            return;
+        }
+
+        if let Some(ref mut ss) = self.search_state {
+            // Search mode: page-based pagination
+            let threshold = (self.story_state.stories.len() as f64 * 0.8) as usize;
+            if self.story_state.selected >= threshold
+                && ss.current_page + 1 < ss.total_pages
+            {
+                ss.current_page += 1;
+                let query = ss.query.clone();
+                let page = ss.current_page;
+                self.spawn_search(&query, page, true);
+            }
+        } else if self.story_state.needs_more() {
             self.story_state.loading = true;
             self.spawn_load_stories(true);
         }

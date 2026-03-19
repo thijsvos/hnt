@@ -1,5 +1,11 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputMode {
+    Normal,
+    SearchInput,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Quit,
@@ -16,11 +22,17 @@ pub enum Action {
     PageDown,
     PageUp,
     ToggleHelp,
+    EnterSearch,
     Back,
     None,
 }
 
-pub fn map_key(key: KeyEvent, help_visible: bool, reader_visible: bool) -> Action {
+pub fn map_key(key: KeyEvent, help_visible: bool, reader_visible: bool, input_mode: InputMode) -> Action {
+    // When in search input mode, main.rs handles raw keys — return None here
+    if input_mode == InputMode::SearchInput {
+        return Action::None;
+    }
+
     // If help overlay is open, any key closes it
     if help_visible {
         return Action::ToggleHelp;
@@ -61,6 +73,7 @@ pub fn map_key(key: KeyEvent, help_visible: bool, reader_visible: bool) -> Actio
         KeyCode::Char('G') => Action::JumpBottom,
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::PageDown,
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::PageUp,
+        KeyCode::Char('/') => Action::EnterSearch,
         KeyCode::Char('?') => Action::ToggleHelp,
         _ => Action::None,
     }
