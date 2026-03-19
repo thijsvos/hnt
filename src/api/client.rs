@@ -104,19 +104,12 @@ impl HnClient {
         page: usize,
         hits_per_page: usize,
     ) -> Result<(Vec<Item>, usize, usize)> {
-        let resp: SearchResponse = self
-            .client
-            .get(ALGOLIA_URL)
-            .query(&[
-                ("query", query),
-                ("tags", "story"),
-                ("hitsPerPage", &hits_per_page.to_string()),
-                ("page", &page.to_string()),
-            ])
-            .send()
-            .await?
-            .json()
-            .await?;
+        let encoded_query = url_encode(query);
+        let url = format!(
+            "{}?query={}&tags=story&hitsPerPage={}&page={}",
+            ALGOLIA_URL, encoded_query, hits_per_page, page
+        );
+        let resp: SearchResponse = self.client.get(&url).send().await?.json().await?;
         let stories = resp.hits.into_iter().map(Item::from).collect();
         Ok((stories, resp.nb_pages, resp.nb_hits))
     }
@@ -150,4 +143,23 @@ impl HnClient {
             }
         })
     }
+}
+
+/// Minimal percent-encoding for query parameters.
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            b' ' => out.push('+'),
+            _ => {
+                out.push('%');
+                out.push(char::from(b"0123456789ABCDEF"[(b >> 4) as usize]));
+                out.push(char::from(b"0123456789ABCDEF"[(b & 0x0F) as usize]));
+            }
+        }
+    }
+    out
 }

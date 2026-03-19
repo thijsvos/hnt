@@ -82,15 +82,18 @@ impl<'a> Widget for StoryList<'a> {
             let y = inner.top() + (i - scroll) as u16;
             let is_selected = i == self.selected;
 
-            let title = story.title.as_deref().unwrap_or("[no title]");
+            let title = story.display_title();
+            let badge = story.badge();
             let domain = story
                 .domain()
                 .map(|d| format!(" ({})", d))
                 .unwrap_or_default();
 
             let num = format!("{:>3}. ", i + 1);
+            let badge_text = badge.map(|b| format!("[{}] ", b.label()));
+            let badge_width = badge_text.as_ref().map_or(0, |t| t.len());
             let max_title_width =
-                (inner.width as usize).saturating_sub(num.len() + domain.len() + 2);
+                (inner.width as usize).saturating_sub(num.len() + badge_width + domain.len() + 2);
             let truncated_title: String = if title.chars().count() > max_title_width {
                 let truncated: String = title
                     .chars()
@@ -112,25 +115,28 @@ impl<'a> Widget for StoryList<'a> {
                 buf[(x, y)].set_style(style);
             }
 
-            let line = Line::from(vec![
-                Span::styled(
-                    num,
-                    if is_selected {
-                        theme::accent_style().bg(theme::SURFACE)
-                    } else {
-                        theme::dim_style()
-                    },
-                ),
-                Span::styled(truncated_title, style),
-                Span::styled(
-                    domain,
-                    theme::dim_style().bg(if is_selected {
-                        theme::SURFACE
-                    } else {
-                        theme::BG
-                    }),
-                ),
-            ]);
+            let mut spans = vec![Span::styled(
+                num,
+                if is_selected {
+                    theme::accent_style().bg(theme::SURFACE)
+                } else {
+                    theme::dim_style()
+                },
+            )];
+            if let Some((text, b)) = badge_text.zip(badge) {
+                spans.push(Span::styled(text, theme::badge_style(b)));
+            }
+            spans.push(Span::styled(truncated_title, style));
+            spans.push(Span::styled(
+                domain,
+                theme::dim_style().bg(if is_selected {
+                    theme::SURFACE
+                } else {
+                    theme::BG
+                }),
+            ));
+
+            let line = Line::from(spans);
             buf.set_line(inner.left(), y, &line, inner.width);
 
             // Meta line (if space allows: every other row)

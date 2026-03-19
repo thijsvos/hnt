@@ -21,7 +21,6 @@ pub struct Item {
     #[serde(default)]
     pub descendants: Option<i64>,
     #[serde(rename = "type", default)]
-    #[allow(dead_code)]
     pub item_type: Option<String>,
     #[serde(default)]
     pub dead: Option<bool>,
@@ -36,6 +35,70 @@ impl Item {
 
     pub fn domain(&self) -> Option<String> {
         self.url.as_ref().and_then(|u| url_domain(u))
+    }
+
+    pub fn badge(&self) -> Option<StoryBadge> {
+        if self.item_type.as_deref() == Some("job") {
+            return Some(StoryBadge::Job);
+        }
+        if self.item_type.as_deref() == Some("poll") {
+            return Some(StoryBadge::Poll);
+        }
+        let title = self.title.as_deref()?;
+        if title.starts_with("Ask HN:") {
+            return Some(StoryBadge::Ask);
+        }
+        if title.starts_with("Show HN:") {
+            return Some(StoryBadge::Show);
+        }
+        if title.starts_with("Tell HN:") {
+            return Some(StoryBadge::Tell);
+        }
+        if title.starts_with("Launch HN:") {
+            return Some(StoryBadge::Launch);
+        }
+        None
+    }
+
+    /// Title with badge prefix stripped (e.g. "Ask HN: Foo" → "Foo")
+    pub fn display_title(&self) -> &str {
+        let title = self.title.as_deref().unwrap_or("[no title]");
+        if let Some(rest) = title.strip_prefix("Ask HN:") {
+            return rest.trim_start();
+        }
+        if let Some(rest) = title.strip_prefix("Show HN:") {
+            return rest.trim_start();
+        }
+        if let Some(rest) = title.strip_prefix("Tell HN:") {
+            return rest.trim_start();
+        }
+        if let Some(rest) = title.strip_prefix("Launch HN:") {
+            return rest.trim_start();
+        }
+        title
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoryBadge {
+    Ask,
+    Show,
+    Tell,
+    Launch,
+    Job,
+    Poll,
+}
+
+impl StoryBadge {
+    pub fn label(self) -> &'static str {
+        match self {
+            StoryBadge::Ask => "Ask HN",
+            StoryBadge::Show => "Show HN",
+            StoryBadge::Tell => "Tell HN",
+            StoryBadge::Launch => "Launch HN",
+            StoryBadge::Job => "Job",
+            StoryBadge::Poll => "Poll",
+        }
     }
 }
 

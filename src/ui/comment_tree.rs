@@ -35,7 +35,11 @@ impl<'a> Widget for CommentTree<'a> {
         };
 
         let title = if let Some(story) = &self.state.story {
-            format!(" {} ", story.title.as_deref().unwrap_or("[no title]"))
+            if let Some(badge) = story.badge() {
+                format!(" [{}] {} ", badge.label(), story.display_title())
+            } else {
+                format!(" {} ", story.display_title())
+            }
         } else {
             " Comments ".to_string()
         };
