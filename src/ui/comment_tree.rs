@@ -35,10 +35,7 @@ impl<'a> Widget for CommentTree<'a> {
         };
 
         let title = if let Some(story) = &self.state.story {
-            format!(
-                " {} ",
-                story.title.as_deref().unwrap_or("[no title]")
-            )
+            format!(" {} ", story.title.as_deref().unwrap_or("[no title]"))
         } else {
             " Comments ".to_string()
         };
@@ -53,10 +50,7 @@ impl<'a> Widget for CommentTree<'a> {
         block.render(area, buf);
 
         if self.state.loading && self.state.story.is_none() {
-            let loading = Line::from(Span::styled(
-                "  Loading comments...",
-                theme::dim_style(),
-            ));
+            let loading = Line::from(Span::styled("  Loading comments...", theme::dim_style()));
             buf.set_line(inner.left(), inner.top(), &loading, inner.width);
             return;
         }
@@ -73,10 +67,7 @@ impl<'a> Widget for CommentTree<'a> {
         let visible = self.state.visible_comments();
 
         if visible.is_empty() && !self.state.loading {
-            let no_comments = Line::from(Span::styled(
-                "  No comments",
-                theme::dim_style(),
-            ));
+            let no_comments = Line::from(Span::styled("  No comments", theme::dim_style()));
             buf.set_line(inner.left(), inner.top(), &no_comments, inner.width);
             return;
         }
@@ -222,7 +213,11 @@ impl<'a> Widget for CommentTree<'a> {
 
         for mc in &measured {
             let is_selected = mc.visual_index == self.state.selected;
-            let bg = if is_selected { theme::SURFACE } else { theme::BG };
+            let bg = if is_selected {
+                theme::SURFACE
+            } else {
+                theme::BG
+            };
 
             for line in &mc.lines {
                 if row_idx < scroll_row {
@@ -277,7 +272,10 @@ impl<'a> Widget for CommentTree<'a> {
             buf.set_line(
                 inner.left(),
                 inner.top() + screen_y,
-                &Line::from(Span::styled("  Loading more comments...", theme::dim_style())),
+                &Line::from(Span::styled(
+                    "  Loading more comments...",
+                    theme::dim_style(),
+                )),
                 inner.width,
             );
         }
@@ -300,11 +298,7 @@ fn measure_comments<'a>(
         let bar = "│ ";
 
         let author = comment.item.by.as_deref().unwrap_or("[deleted]");
-        let time_ago = comment
-            .item
-            .time
-            .map(format_time_ago)
-            .unwrap_or_default();
+        let time_ago = comment.item.time.map(format_time_ago).unwrap_or_default();
         let is_collapsed = collapsed.contains(&comment.item.id);
         let collapse_indicator = if is_collapsed { " [+]" } else { "" };
 
@@ -339,10 +333,7 @@ fn measure_comments<'a>(
                 collapse_indicator.to_string(),
                 ratatui::style::Style::default().fg(theme::YELLOW),
             ),
-            (
-                child_count,
-                ratatui::style::Style::default().fg(theme::DIM),
-            ),
+            (child_count, ratatui::style::Style::default().fg(theme::DIM)),
         ];
         lines.push(CommentLine::Header(header_spans));
 

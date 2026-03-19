@@ -35,9 +35,7 @@ impl Item {
     }
 
     pub fn domain(&self) -> Option<String> {
-        self.url.as_ref().and_then(|u| {
-            url_domain(u)
-        })
+        self.url.as_ref().and_then(|u| url_domain(u))
     }
 }
 

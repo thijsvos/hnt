@@ -19,10 +19,7 @@ pub fn render(app: &App, frame: &mut Frame) {
     let area = frame.area();
 
     // Fill background
-    frame.render_widget(
-        Block::default().style(theme::base_style()),
-        area,
-    );
+    frame.render_widget(Block::default().style(theme::base_style()), area);
 
     let layout = build_layout(area);
 
@@ -127,10 +124,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
     frame.render_widget(Clear, popup_area);
 
     let help_text = vec![
-        Line::from(Span::styled(
-            "Keybindings",
-            theme::title_style(),
-        )),
+        Line::from(Span::styled("Keybindings", theme::title_style())),
         Line::from(""),
         Line::from(vec![
             Span::styled("  j/k, arrows  ", theme::accent_style()),
@@ -154,7 +148,10 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  1-6          ", theme::accent_style()),
-            Span::styled("Switch feed (Top/New/Best/Ask/Show/Jobs)", theme::base_style()),
+            Span::styled(
+                "Switch feed (Top/New/Best/Ask/Show/Jobs)",
+                theme::base_style(),
+            ),
         ]),
         Line::from(vec![
             Span::styled("  /            ", theme::accent_style()),
@@ -185,10 +182,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
             Span::styled("Toggle this help", theme::base_style()),
         ]),
         Line::from(""),
-        Line::from(Span::styled(
-            "  Press any key to close",
-            theme::dim_style(),
-        )),
+        Line::from(Span::styled("  Press any key to close", theme::dim_style())),
     ];
 
     let help = Paragraph::new(help_text)

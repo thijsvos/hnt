@@ -27,7 +27,12 @@ pub enum Action {
     None,
 }
 
-pub fn map_key(key: KeyEvent, help_visible: bool, reader_visible: bool, input_mode: InputMode) -> Action {
+pub fn map_key(
+    key: KeyEvent,
+    help_visible: bool,
+    reader_visible: bool,
+    input_mode: InputMode,
+) -> Action {
     // When in search input mode, main.rs handles raw keys — return None here
     if input_mode == InputMode::SearchInput {
         return Action::None;

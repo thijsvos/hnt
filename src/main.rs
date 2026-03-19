@@ -42,7 +42,11 @@ async fn main() -> Result<()> {
                     match key.code {
                         KeyCode::Enter => app.submit_search(),
                         KeyCode::Esc => {
-                            if app.search_state.as_ref().is_some_and(|ss| ss.query.is_empty()) {
+                            if app
+                                .search_state
+                                .as_ref()
+                                .is_some_and(|ss| ss.query.is_empty())
+                            {
                                 app.cancel_search();
                             } else {
                                 // Exit input mode but keep search results
@@ -57,7 +61,12 @@ async fn main() -> Result<()> {
                         _ => {}
                     }
                 } else {
-                    let action = keys::map_key(key, app.show_help, app.reader_state.is_some(), app.input_mode);
+                    let action = keys::map_key(
+                        key,
+                        app.show_help,
+                        app.reader_state.is_some(),
+                        app.input_mode,
+                    );
                     app.dispatch(action);
                 }
             }

@@ -130,7 +130,10 @@ impl App {
                     self.story_state.loading = false;
                     self.error = None;
                     // Auto-load comments for the first story on initial load
-                    if !append && !self.story_state.stories.is_empty() && self.comment_state.story.is_none() {
+                    if !append
+                        && !self.story_state.stories.is_empty()
+                        && self.comment_state.story.is_none()
+                    {
                         self.load_selected_comments();
                         self.focus = Pane::Stories;
                     }
@@ -163,7 +166,10 @@ impl App {
                     // Still loading children in background
                     self.error = None;
                 }
-                AppMessage::CommentsAppended { parent_id, children } => {
+                AppMessage::CommentsAppended {
+                    parent_id,
+                    children,
+                } => {
                     self.comment_state.insert_children(parent_id, children);
                 }
                 AppMessage::CommentsDone => {
@@ -528,11 +534,7 @@ impl App {
             return;
         }
 
-        self.reader_state = Some(ReaderState::new_loading(
-            title,
-            domain,
-            url.clone(),
-        ));
+        self.reader_state = Some(ReaderState::new_loading(title, domain, url.clone()));
 
         let tx = self.msg_tx.clone();
         let width = self.terminal_width.saturating_sub(6) as usize;
@@ -585,9 +587,7 @@ impl App {
         if let Some(ref mut ss) = self.search_state {
             // Search mode: page-based pagination
             let threshold = (self.story_state.stories.len() as f64 * 0.8) as usize;
-            if self.story_state.selected >= threshold
-                && ss.current_page + 1 < ss.total_pages
-            {
+            if self.story_state.selected >= threshold && ss.current_page + 1 < ss.total_pages {
                 ss.current_page += 1;
                 let query = ss.query.clone();
                 let page = ss.current_page;
@@ -613,7 +613,10 @@ impl App {
         let area = Rect::new(0, 0, self.terminal_width, self.terminal_height);
         let layout = build_layout(area);
 
-        if layout.stories.contains(ratatui::layout::Position::new(column, row)) {
+        if layout
+            .stories
+            .contains(ratatui::layout::Position::new(column, row))
+        {
             let inner = Block::default().borders(Borders::ALL).inner(layout.stories);
             if !inner.contains(ratatui::layout::Position::new(column, row)) {
                 return;
@@ -634,8 +637,13 @@ impl App {
                 // Auto-load comments for the clicked story
                 self.load_selected_comments();
             }
-        } else if layout.comments.contains(ratatui::layout::Position::new(column, row)) {
-            let inner = Block::default().borders(Borders::ALL).inner(layout.comments);
+        } else if layout
+            .comments
+            .contains(ratatui::layout::Position::new(column, row))
+        {
+            let inner = Block::default()
+                .borders(Borders::ALL)
+                .inner(layout.comments);
             if !inner.contains(ratatui::layout::Position::new(column, row)) {
                 return;
             }
@@ -688,9 +696,15 @@ impl App {
         let area = Rect::new(0, 0, self.terminal_width, self.terminal_height);
         let layout = build_layout(area);
 
-        let pane = if layout.stories.contains(ratatui::layout::Position::new(_column, _row)) {
+        let pane = if layout
+            .stories
+            .contains(ratatui::layout::Position::new(_column, _row))
+        {
             Some(Pane::Stories)
-        } else if layout.comments.contains(ratatui::layout::Position::new(_column, _row)) {
+        } else if layout
+            .comments
+            .contains(ratatui::layout::Position::new(_column, _row))
+        {
             Some(Pane::Comments)
         } else {
             None
@@ -718,10 +732,7 @@ impl App {
 
 /// For GitHub/GitLab repo pages, try to fetch the raw README instead of the
 /// JS-heavy HTML shell (the README content is loaded dynamically by JS).
-async fn try_fetch_readme(
-    client: &reqwest::Client,
-    url: &str,
-) -> Option<(String, bool)> {
+async fn try_fetch_readme(client: &reqwest::Client, url: &str) -> Option<(String, bool)> {
     let parsed = url::Url::parse(url).ok()?;
     let host = parsed.host_str()?;
     let path_segs: Vec<&str> = parsed.path().trim_matches('/').split('/').collect();
@@ -733,10 +744,22 @@ async fn try_fetch_readme(
         }
         let (owner, repo) = (path_segs[0], path_segs[1]);
         vec![
-            format!("https://raw.githubusercontent.com/{}/{}/HEAD/README.md", owner, repo),
-            format!("https://raw.githubusercontent.com/{}/{}/HEAD/readme.md", owner, repo),
-            format!("https://raw.githubusercontent.com/{}/{}/HEAD/README.rst", owner, repo),
-            format!("https://raw.githubusercontent.com/{}/{}/HEAD/README", owner, repo),
+            format!(
+                "https://raw.githubusercontent.com/{}/{}/HEAD/README.md",
+                owner, repo
+            ),
+            format!(
+                "https://raw.githubusercontent.com/{}/{}/HEAD/readme.md",
+                owner, repo
+            ),
+            format!(
+                "https://raw.githubusercontent.com/{}/{}/HEAD/README.rst",
+                owner, repo
+            ),
+            format!(
+                "https://raw.githubusercontent.com/{}/{}/HEAD/README",
+                owner, repo
+            ),
         ]
     } else if host == "gitlab.com" || host.ends_with(".gitlab.com") {
         if path_segs.len() < 2 || path_segs.iter().any(|s| s.is_empty()) {
@@ -937,11 +960,9 @@ async fn fetch_and_extract_article(
     // Run readability extraction in a blocking task (CPU-bound)
     let url_string = url.to_string();
     let width_copy = width;
-    tokio::task::spawn_blocking(move || {
-        extract_article_content(&bytes, &url_string, width_copy)
-    })
-    .await
-    .map_err(|e| format!("Processing error: {}", e))?
+    tokio::task::spawn_blocking(move || extract_article_content(&bytes, &url_string, width_copy))
+        .await
+        .map_err(|e| format!("Processing error: {}", e))?
 }
 
 /// Run readability extraction + html2text rich rendering (blocking/CPU-bound).
@@ -950,21 +971,22 @@ fn extract_article_content(
     url_str: &str,
     width: usize,
 ) -> Result<Vec<Vec<StyledFragment>>, String> {
-    let parsed_url =
-        url::Url::parse(url_str).map_err(|e| format!("Invalid URL: {}", e))?;
+    let parsed_url = url::Url::parse(url_str).map_err(|e| format!("Invalid URL: {}", e))?;
 
     // Try readability extraction first, fall back to full HTML if it produces no content
     let tagged_lines = {
         let mut cursor = std::io::Cursor::new(html_bytes);
         let readability_lines = match readability::extractor::extract(&mut cursor, &parsed_url) {
             Ok(product) if !product.text.trim().is_empty() => {
-                html2text::from_read_rich(product.content.as_bytes(), width)
-                    .unwrap_or_default()
+                html2text::from_read_rich(product.content.as_bytes(), width).unwrap_or_default()
             }
             _ => Vec::new(),
         };
 
-        if readability_lines.iter().any(|l| l.tagged_strings().any(|ts| !ts.s.trim().is_empty())) {
+        if readability_lines
+            .iter()
+            .any(|l| l.tagged_strings().any(|ts| !ts.s.trim().is_empty()))
+        {
             readability_lines
         } else {
             // Fallback: render the full HTML

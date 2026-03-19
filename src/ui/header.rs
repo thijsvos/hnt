@@ -16,8 +16,7 @@ impl Widget for Header {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // Fill background
         for x in area.left()..area.right() {
-            buf[(x, area.top())]
-                .set_style(theme::header_style());
+            buf[(x, area.top())].set_style(theme::header_style());
         }
 
         let mut spans = vec![

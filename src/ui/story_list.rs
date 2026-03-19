@@ -72,7 +72,13 @@ impl<'a> Widget for StoryList<'a> {
             self.offset
         };
 
-        for (i, story) in self.stories.iter().enumerate().skip(scroll).take(visible_height) {
+        for (i, story) in self
+            .stories
+            .iter()
+            .enumerate()
+            .skip(scroll)
+            .take(visible_height)
+        {
             let y = inner.top() + (i - scroll) as u16;
             let is_selected = i == self.selected;
 
@@ -83,9 +89,13 @@ impl<'a> Widget for StoryList<'a> {
                 .unwrap_or_default();
 
             let num = format!("{:>3}. ", i + 1);
-            let max_title_width = (inner.width as usize).saturating_sub(num.len() + domain.len() + 2);
+            let max_title_width =
+                (inner.width as usize).saturating_sub(num.len() + domain.len() + 2);
             let truncated_title: String = if title.chars().count() > max_title_width {
-                let truncated: String = title.chars().take(max_title_width.saturating_sub(3)).collect();
+                let truncated: String = title
+                    .chars()
+                    .take(max_title_width.saturating_sub(3))
+                    .collect();
                 format!("{}...", truncated)
             } else {
                 title.to_string()
@@ -112,7 +122,14 @@ impl<'a> Widget for StoryList<'a> {
                     },
                 ),
                 Span::styled(truncated_title, style),
-                Span::styled(domain, theme::dim_style().bg(if is_selected { theme::SURFACE } else { theme::BG })),
+                Span::styled(
+                    domain,
+                    theme::dim_style().bg(if is_selected {
+                        theme::SURFACE
+                    } else {
+                        theme::BG
+                    }),
+                ),
             ]);
             buf.set_line(inner.left(), y, &line, inner.width);
 
