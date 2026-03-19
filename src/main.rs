@@ -36,7 +36,7 @@ async fn main() -> Result<()> {
         // Handle events
         match events.next().await? {
             Event::Key(key) => {
-                let action = keys::map_key(key, app.show_help);
+                let action = keys::map_key(key, app.show_help, app.reader_state.is_some());
                 app.dispatch(action);
             }
             Event::Mouse(mouse) => {

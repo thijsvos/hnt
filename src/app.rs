@@ -2,12 +2,17 @@ use crate::api::client::HnClient;
 use crate::api::types::{FeedKind, Item};
 use crate::keys::Action;
 use crate::state::comment_state::CommentTreeState;
+use crate::state::reader_state::{ReaderState, StyledFragment};
 use crate::state::story_state::StoryListState;
+use crate::ui::theme;
+use html2text::render::RichAnnotation;
+use ratatui::style::{Modifier, Style};
 use tokio::sync::mpsc;
 
 const MIN_PAGE_SIZE: usize = 30;
 const SCROLL_PAGE: usize = 10;
 const MAX_COMMENT_DEPTH: usize = 10;
+const MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024; // 5MB
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
@@ -32,6 +37,10 @@ pub enum AppMessage {
         children: Vec<(Item, usize)>,
     },
     CommentsDone,
+    ArticleLoaded {
+        lines: Vec<Vec<StyledFragment>>,
+    },
+    ArticleError(String),
     Error(String),
 }
 
@@ -41,6 +50,7 @@ pub struct App {
     pub focus: Pane,
     pub story_state: StoryListState,
     pub comment_state: CommentTreeState,
+    pub reader_state: Option<ReaderState>,
     pub show_help: bool,
     pub error: Option<String>,
     pub terminal_height: u16,
@@ -62,6 +72,7 @@ impl App {
             focus: Pane::Stories,
             story_state: StoryListState::new(),
             comment_state: CommentTreeState::new(),
+            reader_state: None,
             show_help: false,
             error: None,
             terminal_height,
@@ -110,6 +121,7 @@ impl App {
                     // Auto-load comments for the first story on initial load
                     if !append && !self.story_state.stories.is_empty() && self.comment_state.story.is_none() {
                         self.load_selected_comments();
+                        self.focus = Pane::Stories;
                     }
                 }
                 AppMessage::CommentsLoaded { story, comments } => {
@@ -124,6 +136,16 @@ impl App {
                 AppMessage::CommentsDone => {
                     self.comment_state.loading = false;
                 }
+                AppMessage::ArticleLoaded { lines } => {
+                    if let Some(ref mut reader) = self.reader_state {
+                        reader.set_content(lines);
+                    }
+                }
+                AppMessage::ArticleError(msg) => {
+                    if let Some(ref mut reader) = self.reader_state {
+                        reader.set_error(msg);
+                    }
+                }
                 AppMessage::Error(e) => {
                     self.error = Some(e);
                     self.story_state.loading = false;
@@ -135,6 +157,61 @@ impl App {
 
     /// Dispatch an action from keybindings.
     pub fn dispatch(&mut self, action: Action) {
+        // When reader is open, route actions to reader
+        if self.reader_state.is_some() {
+            match action {
+                Action::Back => {
+                    self.reader_state = None;
+                    return;
+                }
+                Action::MoveDown => {
+                    if let Some(ref mut r) = self.reader_state {
+                        r.scroll_down(1);
+                    }
+                    return;
+                }
+                Action::MoveUp => {
+                    if let Some(ref mut r) = self.reader_state {
+                        r.scroll_up(1);
+                    }
+                    return;
+                }
+                Action::PageDown => {
+                    if let Some(ref mut r) = self.reader_state {
+                        r.page_down(SCROLL_PAGE);
+                    }
+                    return;
+                }
+                Action::PageUp => {
+                    if let Some(ref mut r) = self.reader_state {
+                        r.page_up(SCROLL_PAGE);
+                    }
+                    return;
+                }
+                Action::JumpTop => {
+                    if let Some(ref mut r) = self.reader_state {
+                        r.jump_top();
+                    }
+                    return;
+                }
+                Action::JumpBottom => {
+                    if let Some(ref mut r) = self.reader_state {
+                        r.jump_bottom();
+                    }
+                    return;
+                }
+                Action::OpenInBrowser => {
+                    if let Some(ref reader) = self.reader_state {
+                        if let Some(ref url) = reader.url {
+                            let _ = open::that(url);
+                        }
+                    }
+                    return;
+                }
+                _ => return, // Consume all other keys
+            }
+        }
+
         match action {
             Action::Quit => self.running = false,
             Action::Back => {
@@ -161,6 +238,7 @@ impl App {
                 Pane::Comments => self.comment_state.toggle_collapse(),
             },
             Action::OpenInBrowser => self.open_in_browser(),
+            Action::OpenReader => self.open_article_reader(),
             Action::SwitchPane => {
                 self.focus = match self.focus {
                     Pane::Stories => Pane::Comments,
@@ -289,6 +367,55 @@ impl App {
         }
     }
 
+    fn open_article_reader(&mut self) {
+        let story = match self.focus {
+            Pane::Stories => self.story_state.selected_story().cloned(),
+            Pane::Comments => self.comment_state.story.clone(),
+        };
+
+        let story = match story {
+            Some(s) => s,
+            None => return,
+        };
+
+        let title = story.title.clone().unwrap_or_default();
+        let domain = story.domain();
+        let url = story.url.clone();
+
+        // For Ask HN / text-only stories: render inline text directly
+        if url.is_none() {
+            if let Some(ref text) = story.text {
+                let width = self.terminal_width.saturating_sub(6) as usize;
+                let lines = html_to_styled_lines(text.as_bytes(), width);
+                let mut reader = ReaderState::new_loading(title, domain, None);
+                reader.set_content(lines);
+                self.reader_state = Some(reader);
+            }
+            return;
+        }
+
+        self.reader_state = Some(ReaderState::new_loading(
+            title,
+            domain,
+            url.clone(),
+        ));
+
+        let tx = self.msg_tx.clone();
+        let width = self.terminal_width.saturating_sub(6) as usize;
+        let url = url.unwrap();
+
+        tokio::spawn(async move {
+            match fetch_and_extract_article(&url, width).await {
+                Ok(lines) => {
+                    let _ = tx.send(AppMessage::ArticleLoaded { lines });
+                }
+                Err(e) => {
+                    let _ = tx.send(AppMessage::ArticleError(e));
+                }
+            }
+        });
+    }
+
     fn open_in_browser(&self) {
         let url = match self.focus {
             Pane::Stories => self
@@ -325,6 +452,11 @@ impl App {
 
     /// Handle a mouse left-click at the given terminal position.
     pub fn handle_click(&mut self, column: u16, row: u16) {
+        // When reader is open, consume clicks
+        if self.reader_state.is_some() {
+            return;
+        }
+
         use crate::ui::layout::build_layout;
         use ratatui::layout::Rect;
         use ratatui::widgets::{Block, Borders};
@@ -388,16 +520,28 @@ impl App {
     }
 
     /// Handle mouse scroll in the pane under the cursor.
-    pub fn handle_scroll(&mut self, column: u16, row: u16, down: bool) {
+    pub fn handle_scroll(&mut self, _column: u16, _row: u16, down: bool) {
+        // When reader is open, scroll reader
+        if self.reader_state.is_some() {
+            if let Some(ref mut reader) = self.reader_state {
+                if down {
+                    reader.scroll_down(3);
+                } else {
+                    reader.scroll_up(3);
+                }
+            }
+            return;
+        }
+
         use crate::ui::layout::build_layout;
         use ratatui::layout::Rect;
 
         let area = Rect::new(0, 0, self.terminal_width, self.terminal_height);
         let layout = build_layout(area);
 
-        let pane = if layout.stories.contains(ratatui::layout::Position::new(column, row)) {
+        let pane = if layout.stories.contains(ratatui::layout::Position::new(_column, _row)) {
             Some(Pane::Stories)
-        } else if layout.comments.contains(ratatui::layout::Position::new(column, row)) {
+        } else if layout.comments.contains(ratatui::layout::Position::new(_column, _row)) {
             Some(Pane::Comments)
         } else {
             None
@@ -421,4 +565,346 @@ impl App {
             }
         }
     }
+}
+
+/// For GitHub/GitLab repo pages, try to fetch the raw README instead of the
+/// JS-heavy HTML shell (the README content is loaded dynamically by JS).
+async fn try_fetch_readme(
+    client: &reqwest::Client,
+    url: &str,
+) -> Option<(String, bool)> {
+    let parsed = url::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    let path_segs: Vec<&str> = parsed.path().trim_matches('/').split('/').collect();
+
+    // Only match repo root pages (no sub-paths like /issues, /blob, etc.)
+    let readme_urls: Vec<String> = if host == "github.com" || host.ends_with(".github.com") {
+        if path_segs.len() != 2 || path_segs[0].is_empty() || path_segs[1].is_empty() {
+            return None;
+        }
+        let (owner, repo) = (path_segs[0], path_segs[1]);
+        vec![
+            format!("https://raw.githubusercontent.com/{}/{}/HEAD/README.md", owner, repo),
+            format!("https://raw.githubusercontent.com/{}/{}/HEAD/readme.md", owner, repo),
+            format!("https://raw.githubusercontent.com/{}/{}/HEAD/README.rst", owner, repo),
+            format!("https://raw.githubusercontent.com/{}/{}/HEAD/README", owner, repo),
+        ]
+    } else if host == "gitlab.com" || host.ends_with(".gitlab.com") {
+        if path_segs.len() < 2 || path_segs.iter().any(|s| s.is_empty()) {
+            return None;
+        }
+        // GitLab can have nested groups: gitlab.com/group/subgroup/repo
+        let project_path = path_segs.join("/");
+        vec![
+            format!("https://gitlab.com/{}/-/raw/HEAD/README.md", project_path),
+            format!("https://gitlab.com/{}/-/raw/HEAD/readme.md", project_path),
+            format!("https://gitlab.com/{}/-/raw/HEAD/README.rst", project_path),
+            format!("https://gitlab.com/{}/-/raw/HEAD/README", project_path),
+        ]
+    } else {
+        return None;
+    };
+
+    for readme_url in readme_urls {
+        if let Ok(resp) = client.get(&readme_url).send().await {
+            if resp.status().is_success() {
+                if let Ok(text) = resp.text().await {
+                    if !text.trim().is_empty() {
+                        let is_markdown = readme_url.ends_with(".md");
+                        return Some((text, is_markdown));
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Convert markdown text to styled lines with basic formatting.
+fn markdown_to_styled_lines(text: &str, width: usize) -> Vec<Vec<StyledFragment>> {
+    let mut lines: Vec<Vec<StyledFragment>> = Vec::new();
+
+    for raw_line in text.lines() {
+        // Heading detection
+        if let Some(rest) = raw_line.strip_prefix("# ") {
+            lines.push(vec![StyledFragment {
+                text: rest.to_string(),
+                style: Style::default()
+                    .fg(theme::HN_ORANGE)
+                    .add_modifier(Modifier::BOLD),
+            }]);
+            lines.push(vec![]);
+        } else if let Some(rest) = raw_line.strip_prefix("## ") {
+            lines.push(vec![StyledFragment {
+                text: rest.to_string(),
+                style: Style::default()
+                    .fg(theme::YELLOW)
+                    .add_modifier(Modifier::BOLD),
+            }]);
+            lines.push(vec![]);
+        } else if let Some(rest) = raw_line.strip_prefix("### ") {
+            lines.push(vec![StyledFragment {
+                text: rest.to_string(),
+                style: Style::default()
+                    .fg(theme::GREEN)
+                    .add_modifier(Modifier::BOLD),
+            }]);
+            lines.push(vec![]);
+        } else if raw_line.starts_with("```") {
+            // Code fence marker — just skip the marker line
+            lines.push(vec![StyledFragment {
+                text: raw_line.to_string(),
+                style: Style::default().fg(theme::DIM),
+            }]);
+        } else if raw_line.starts_with("    ") || raw_line.starts_with('\t') {
+            // Indented code
+            lines.push(vec![StyledFragment {
+                text: raw_line.to_string(),
+                style: Style::default().fg(theme::GREEN).bg(theme::SURFACE),
+            }]);
+        } else if raw_line.starts_with("- ") || raw_line.starts_with("* ") {
+            lines.push(vec![
+                StyledFragment {
+                    text: "  \u{2022} ".to_string(),
+                    style: Style::default().fg(theme::HN_ORANGE),
+                },
+                StyledFragment {
+                    text: raw_line[2..].to_string(),
+                    style: Style::default().fg(theme::TEXT),
+                },
+            ]);
+        } else if raw_line.starts_with("> ") {
+            lines.push(vec![
+                StyledFragment {
+                    text: "\u{2502} ".to_string(),
+                    style: Style::default().fg(theme::DIM),
+                },
+                StyledFragment {
+                    text: raw_line[2..].to_string(),
+                    style: Style::default()
+                        .fg(theme::SUBTEXT)
+                        .add_modifier(Modifier::ITALIC),
+                },
+            ]);
+        } else {
+            // Word-wrap long lines
+            if raw_line.len() > width && width > 0 {
+                let mut remaining = raw_line;
+                while !remaining.is_empty() {
+                    let split_at = if remaining.len() <= width {
+                        remaining.len()
+                    } else {
+                        remaining[..width]
+                            .rfind(' ')
+                            .map(|p| p + 1)
+                            .unwrap_or(width)
+                    };
+                    lines.push(vec![StyledFragment {
+                        text: remaining[..split_at].to_string(),
+                        style: Style::default().fg(theme::TEXT),
+                    }]);
+                    remaining = &remaining[split_at..];
+                }
+            } else {
+                lines.push(vec![StyledFragment {
+                    text: raw_line.to_string(),
+                    style: Style::default().fg(theme::TEXT),
+                }]);
+            }
+        }
+    }
+
+    lines
+}
+
+/// Fetch article HTML, run readability extraction, convert to styled lines.
+async fn fetch_and_extract_article(
+    url: &str,
+    width: usize,
+) -> Result<Vec<Vec<StyledFragment>>, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (compatible; hnt/0.2)")
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
+
+    // For GitHub/GitLab repo pages, try fetching the README directly
+    if let Some((readme_text, is_markdown)) = try_fetch_readme(&client, url).await {
+        return if is_markdown {
+            Ok(markdown_to_styled_lines(&readme_text, width))
+        } else {
+            // RST / plain text — render as plain styled lines
+            Ok(readme_text
+                .lines()
+                .map(|line| {
+                    vec![StyledFragment {
+                        text: line.to_string(),
+                        style: Style::default().fg(theme::TEXT),
+                    }]
+                })
+                .collect())
+        };
+    }
+
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+
+    // Check content-type — reject non-HTML
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_lowercase();
+
+    if !content_type.is_empty()
+        && !content_type.contains("text/html")
+        && !content_type.contains("text/plain")
+        && !content_type.contains("application/xhtml")
+    {
+        return Err(format!(
+            "Not an article (content-type: {})",
+            content_type.split(';').next().unwrap_or(&content_type)
+        ));
+    }
+
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read response: {}", e))?;
+
+    if bytes.len() > MAX_RESPONSE_BYTES {
+        return Err("Article too large (>5MB)".to_string());
+    }
+
+    // Run readability extraction in a blocking task (CPU-bound)
+    let url_string = url.to_string();
+    let width_copy = width;
+    tokio::task::spawn_blocking(move || {
+        extract_article_content(&bytes, &url_string, width_copy)
+    })
+    .await
+    .map_err(|e| format!("Processing error: {}", e))?
+}
+
+/// Run readability extraction + html2text rich rendering (blocking/CPU-bound).
+fn extract_article_content(
+    html_bytes: &[u8],
+    url_str: &str,
+    width: usize,
+) -> Result<Vec<Vec<StyledFragment>>, String> {
+    let parsed_url =
+        url::Url::parse(url_str).map_err(|e| format!("Invalid URL: {}", e))?;
+
+    // Try readability extraction first, fall back to full HTML if it produces no content
+    let tagged_lines = {
+        let mut cursor = std::io::Cursor::new(html_bytes);
+        let readability_lines = match readability::extractor::extract(&mut cursor, &parsed_url) {
+            Ok(product) if !product.text.trim().is_empty() => {
+                html2text::from_read_rich(product.content.as_bytes(), width)
+                    .unwrap_or_default()
+            }
+            _ => Vec::new(),
+        };
+
+        if readability_lines.iter().any(|l| l.tagged_strings().any(|ts| !ts.s.trim().is_empty())) {
+            readability_lines
+        } else {
+            // Fallback: render the full HTML
+            html2text::from_read_rich(html_bytes, width).unwrap_or_default()
+        }
+    };
+
+    let lines: Vec<Vec<StyledFragment>> = tagged_lines
+        .into_iter()
+        .map(|tagged_line| {
+            let mut fragments = Vec::new();
+            for ts in tagged_line.tagged_strings() {
+                let style = annotations_to_style(&ts.tag);
+                fragments.push(StyledFragment {
+                    text: ts.s.clone(),
+                    style,
+                });
+                // Append URL after link text
+                for ann in &ts.tag {
+                    if let RichAnnotation::Link(ref url) = ann {
+                        fragments.push(StyledFragment {
+                            text: format!(" [{}]", url),
+                            style: Style::default().fg(theme::DIM),
+                        });
+                    }
+                }
+            }
+            fragments
+        })
+        .collect();
+
+    Ok(lines)
+}
+
+/// Convert html2text RichAnnotation set to a ratatui Style.
+fn annotations_to_style(annotations: &[RichAnnotation]) -> Style {
+    let mut style = Style::default().fg(theme::TEXT);
+
+    for ann in annotations {
+        match ann {
+            RichAnnotation::Strong => {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            RichAnnotation::Emphasis => {
+                style = style.add_modifier(Modifier::ITALIC);
+            }
+            RichAnnotation::Code | RichAnnotation::Preformat(_) => {
+                style = style.fg(theme::GREEN).bg(theme::SURFACE);
+            }
+            RichAnnotation::Link(_) => {
+                style = style.fg(theme::BLUE).add_modifier(Modifier::UNDERLINED);
+            }
+            RichAnnotation::Strikeout => {
+                style = style.add_modifier(Modifier::CROSSED_OUT);
+            }
+            RichAnnotation::Image(_) => {
+                style = style.fg(theme::MAUVE).add_modifier(Modifier::ITALIC);
+            }
+            _ => {}
+        }
+    }
+
+    style
+}
+
+/// Convert raw HTML bytes to styled lines using html2text rich rendering.
+fn html_to_styled_lines(html: &[u8], width: usize) -> Vec<Vec<StyledFragment>> {
+    let tagged_lines = html2text::from_read_rich(html, width).unwrap_or_default();
+
+    tagged_lines
+        .into_iter()
+        .map(|tagged_line| {
+            let mut fragments = Vec::new();
+            for ts in tagged_line.tagged_strings() {
+                let style = annotations_to_style(&ts.tag);
+                fragments.push(StyledFragment {
+                    text: ts.s.clone(),
+                    style,
+                });
+                for ann in &ts.tag {
+                    if let RichAnnotation::Link(ref url) = ann {
+                        fragments.push(StyledFragment {
+                            text: format!(" [{}]", url),
+                            style: Style::default().fg(theme::DIM),
+                        });
+                    }
+                }
+            }
+            fragments
+        })
+        .collect()
 }
