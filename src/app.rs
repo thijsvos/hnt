@@ -674,14 +674,14 @@ fn markdown_to_styled_lines(text: &str, width: usize) -> Vec<Vec<StyledFragment>
                     style: Style::default().fg(theme::TEXT),
                 },
             ]);
-        } else if raw_line.starts_with("> ") {
+        } else if let Some(rest) = raw_line.strip_prefix("> ") {
             lines.push(vec![
                 StyledFragment {
                     text: "\u{2502} ".to_string(),
                     style: Style::default().fg(theme::DIM),
                 },
                 StyledFragment {
-                    text: raw_line[2..].to_string(),
+                    text: rest.to_string(),
                     style: Style::default()
                         .fg(theme::SUBTEXT)
                         .add_modifier(Modifier::ITALIC),
