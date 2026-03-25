@@ -15,8 +15,11 @@ Browse stories, read threaded comments, and open links — all from your termina
 - **Dark theme** — Catppuccin Mocha-inspired colors with HN orange accents
 - **Split-pane layout** — Stories on the left, comments on the right
 - **6 feeds** — Top, New, Best, Ask HN, Show HN, Jobs
+- **Story type badges** — Visual labels for Ask HN, Show HN, and Jobs posts
 - **Threaded comments** — Depth-colored bars for visual tracking, collapse/expand
 - **Vim-style navigation** — `j`/`k`, `g`/`G`, `Ctrl+d`/`Ctrl+u`
+- **Search** — Algolia-powered full-text search across stories
+- **Reader mode** — Read article content directly in the terminal
 - **Open in browser** — Press `o` to open the story URL
 - **Progressive loading** — Root comments appear instantly, children load in the background
 - **Lazy pagination** — Stories load automatically as you scroll
@@ -62,6 +65,8 @@ cargo build --release
 | `j` / `k` or arrows | Navigate up / down |
 | `Enter` | Select story / toggle collapse |
 | `o` | Open URL in browser |
+| `p` | Open reader mode |
+| `/` | Search stories |
 | `Tab` | Switch pane focus |
 | `1`-`6` | Switch feed (Top/New/Best/Ask/Show/Jobs) |
 | `r` | Refresh |
