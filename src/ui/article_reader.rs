@@ -37,8 +37,9 @@ pub fn render_article_overlay(frame: &mut Frame, area: Rect, reader: &ReaderStat
 }
 
 fn build_title(reader: &ReaderState) -> String {
-    let title = if reader.title.len() > 60 {
-        format!("{}...", &reader.title[..57])
+    let title = if reader.title.chars().count() > 60 {
+        let truncated: String = reader.title.chars().take(57).collect();
+        format!("{}...", truncated)
     } else {
         reader.title.clone()
     };

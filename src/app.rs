@@ -242,7 +242,11 @@ impl App {
                 Action::OpenInBrowser => {
                     if let Some(ref reader) = self.reader_state {
                         if let Some(ref url) = reader.url {
-                            let _ = open::that(url);
+                            if let Ok(parsed) = url::Url::parse(url) {
+                                if parsed.scheme() == "http" || parsed.scheme() == "https" {
+                                    let _ = open::that(parsed.as_str());
+                                }
+                            }
                         }
                     }
                     return;
@@ -575,7 +579,11 @@ impl App {
         });
 
         if let Some(url) = url {
-            let _ = open::that(url);
+            if let Ok(parsed) = url::Url::parse(&url) {
+                if parsed.scheme() == "http" || parsed.scheme() == "https" {
+                    let _ = open::that(parsed.as_str());
+                }
+            }
         }
     }
 
@@ -861,17 +869,25 @@ fn markdown_to_styled_lines(text: &str, width: usize) -> Vec<Vec<StyledFragment>
             ]);
         } else {
             // Word-wrap long lines
-            if raw_line.len() > width && width > 0 {
+            if raw_line.chars().count() > width && width > 0 {
                 let mut remaining = raw_line;
                 while !remaining.is_empty() {
-                    let split_at = if remaining.len() <= width {
-                        remaining.len()
-                    } else {
-                        remaining[..width]
-                            .rfind(' ')
-                            .map(|p| p + 1)
-                            .unwrap_or(width)
-                    };
+                    if remaining.chars().count() <= width {
+                        lines.push(vec![StyledFragment {
+                            text: remaining.to_string(),
+                            style: Style::default().fg(theme::TEXT),
+                        }]);
+                        break;
+                    }
+                    let byte_pos = remaining
+                        .char_indices()
+                        .nth(width)
+                        .map(|(i, _)| i)
+                        .unwrap_or(remaining.len());
+                    let split_at = remaining[..byte_pos]
+                        .rfind(' ')
+                        .map(|p| p + 1)
+                        .unwrap_or(byte_pos);
                     lines.push(vec![StyledFragment {
                         text: remaining[..split_at].to_string(),
                         style: Style::default().fg(theme::TEXT),
