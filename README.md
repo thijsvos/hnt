@@ -76,6 +76,12 @@ cargo build --release
 | `Esc` | Back / close |
 | `?` | Help overlay |
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+
+Found a bug or have an idea? [Open an issue](https://github.com/thijsvos/hnt/issues).
+
 ## License
 
 [MIT](LICENSE)
