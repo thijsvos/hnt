@@ -225,17 +225,26 @@ mod tests {
 
     #[test]
     fn url_domain_https() {
-        assert_eq!(url_domain("https://example.com/path"), Some("example.com".into()));
+        assert_eq!(
+            url_domain("https://example.com/path"),
+            Some("example.com".into())
+        );
     }
 
     #[test]
     fn url_domain_http() {
-        assert_eq!(url_domain("http://example.com/path"), Some("example.com".into()));
+        assert_eq!(
+            url_domain("http://example.com/path"),
+            Some("example.com".into())
+        );
     }
 
     #[test]
     fn url_domain_strips_www() {
-        assert_eq!(url_domain("https://www.example.com/path"), Some("example.com".into()));
+        assert_eq!(
+            url_domain("https://www.example.com/path"),
+            Some("example.com".into())
+        );
     }
 
     #[test]
@@ -250,7 +259,10 @@ mod tests {
 
     #[test]
     fn url_domain_no_trailing_path() {
-        assert_eq!(url_domain("https://example.com"), Some("example.com".into()));
+        assert_eq!(
+            url_domain("https://example.com"),
+            Some("example.com".into())
+        );
     }
 
     // --- is_dead_or_deleted ---

@@ -100,19 +100,39 @@ mod tests {
 
     #[test]
     fn search_input_always_returns_none() {
-        assert_eq!(map_key(key(KeyCode::Char('q')), false, false, InputMode::SearchInput), Action::None);
-        assert_eq!(map_key(key(KeyCode::Char('q')), true, true, InputMode::SearchInput), Action::None);
+        assert_eq!(
+            map_key(
+                key(KeyCode::Char('q')),
+                false,
+                false,
+                InputMode::SearchInput
+            ),
+            Action::None
+        );
+        assert_eq!(
+            map_key(key(KeyCode::Char('q')), true, true, InputMode::SearchInput),
+            Action::None
+        );
     }
 
     #[test]
     fn help_visible_closes_on_any_key() {
-        assert_eq!(map_key(key(KeyCode::Char('q')), true, false, InputMode::Normal), Action::ToggleHelp);
-        assert_eq!(map_key(key(KeyCode::Enter), true, false, InputMode::Normal), Action::ToggleHelp);
+        assert_eq!(
+            map_key(key(KeyCode::Char('q')), true, false, InputMode::Normal),
+            Action::ToggleHelp
+        );
+        assert_eq!(
+            map_key(key(KeyCode::Enter), true, false, InputMode::Normal),
+            Action::ToggleHelp
+        );
     }
 
     #[test]
     fn help_takes_priority_over_reader() {
-        assert_eq!(map_key(key(KeyCode::Char('j')), true, true, InputMode::Normal), Action::ToggleHelp);
+        assert_eq!(
+            map_key(key(KeyCode::Char('j')), true, true, InputMode::Normal),
+            Action::ToggleHelp
+        );
     }
 
     // --- Reader mode ---
@@ -133,14 +153,26 @@ mod tests {
 
     #[test]
     fn reader_ctrl_keys() {
-        assert_eq!(map_key(ctrl('d'), false, true, InputMode::Normal), Action::PageDown);
-        assert_eq!(map_key(ctrl('u'), false, true, InputMode::Normal), Action::PageUp);
+        assert_eq!(
+            map_key(ctrl('d'), false, true, InputMode::Normal),
+            Action::PageDown
+        );
+        assert_eq!(
+            map_key(ctrl('u'), false, true, InputMode::Normal),
+            Action::PageUp
+        );
     }
 
     #[test]
     fn reader_unmapped_returns_none() {
-        assert_eq!(map_key(key(KeyCode::Char('p')), false, true, InputMode::Normal), Action::None);
-        assert_eq!(map_key(key(KeyCode::Enter), false, true, InputMode::Normal), Action::None);
+        assert_eq!(
+            map_key(key(KeyCode::Char('p')), false, true, InputMode::Normal),
+            Action::None
+        );
+        assert_eq!(
+            map_key(key(KeyCode::Enter), false, true, InputMode::Normal),
+            Action::None
+        );
     }
 
     // --- Normal mode ---
@@ -166,8 +198,14 @@ mod tests {
 
     #[test]
     fn normal_ctrl_keys() {
-        assert_eq!(map_key(ctrl('d'), false, false, InputMode::Normal), Action::PageDown);
-        assert_eq!(map_key(ctrl('u'), false, false, InputMode::Normal), Action::PageUp);
+        assert_eq!(
+            map_key(ctrl('d'), false, false, InputMode::Normal),
+            Action::PageDown
+        );
+        assert_eq!(
+            map_key(ctrl('u'), false, false, InputMode::Normal),
+            Action::PageUp
+        );
     }
 
     #[test]
@@ -194,6 +232,9 @@ mod tests {
 
     #[test]
     fn normal_unmapped_returns_none() {
-        assert_eq!(map_key(key(KeyCode::Char('z')), false, false, InputMode::Normal), Action::None);
+        assert_eq!(
+            map_key(key(KeyCode::Char('z')), false, false, InputMode::Normal),
+            Action::None
+        );
     }
 }
