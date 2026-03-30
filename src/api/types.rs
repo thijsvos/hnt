@@ -199,3 +199,299 @@ impl fmt::Display for FeedKind {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_item() -> Item {
+        Item {
+            id: 1,
+            title: None,
+            url: None,
+            text: None,
+            by: None,
+            score: None,
+            time: None,
+            kids: None,
+            descendants: None,
+            item_type: None,
+            dead: None,
+            deleted: None,
+        }
+    }
+
+    // --- url_domain ---
+
+    #[test]
+    fn url_domain_https() {
+        assert_eq!(url_domain("https://example.com/path"), Some("example.com".into()));
+    }
+
+    #[test]
+    fn url_domain_http() {
+        assert_eq!(url_domain("http://example.com/path"), Some("example.com".into()));
+    }
+
+    #[test]
+    fn url_domain_strips_www() {
+        assert_eq!(url_domain("https://www.example.com/path"), Some("example.com".into()));
+    }
+
+    #[test]
+    fn url_domain_no_scheme() {
+        assert_eq!(url_domain("ftp://example.com"), None);
+    }
+
+    #[test]
+    fn url_domain_empty_string() {
+        assert_eq!(url_domain(""), None);
+    }
+
+    #[test]
+    fn url_domain_no_trailing_path() {
+        assert_eq!(url_domain("https://example.com"), Some("example.com".into()));
+    }
+
+    // --- is_dead_or_deleted ---
+
+    #[test]
+    fn is_dead_or_deleted_neither() {
+        let item = make_item();
+        assert!(!item.is_dead_or_deleted());
+    }
+
+    #[test]
+    fn is_dead_or_deleted_dead() {
+        let mut item = make_item();
+        item.dead = Some(true);
+        assert!(item.is_dead_or_deleted());
+    }
+
+    #[test]
+    fn is_dead_or_deleted_deleted() {
+        let mut item = make_item();
+        item.deleted = Some(true);
+        assert!(item.is_dead_or_deleted());
+    }
+
+    #[test]
+    fn is_dead_or_deleted_both_true() {
+        let mut item = make_item();
+        item.dead = Some(true);
+        item.deleted = Some(true);
+        assert!(item.is_dead_or_deleted());
+    }
+
+    #[test]
+    fn is_dead_or_deleted_both_false() {
+        let mut item = make_item();
+        item.dead = Some(false);
+        item.deleted = Some(false);
+        assert!(!item.is_dead_or_deleted());
+    }
+
+    // --- domain ---
+
+    #[test]
+    fn domain_some_url() {
+        let mut item = make_item();
+        item.url = Some("https://example.com/page".into());
+        assert_eq!(item.domain(), Some("example.com".into()));
+    }
+
+    #[test]
+    fn domain_none_url() {
+        let item = make_item();
+        assert_eq!(item.domain(), None);
+    }
+
+    // --- badge ---
+
+    #[test]
+    fn badge_job() {
+        let mut item = make_item();
+        item.item_type = Some("job".into());
+        assert_eq!(item.badge(), Some(StoryBadge::Job));
+    }
+
+    #[test]
+    fn badge_poll() {
+        let mut item = make_item();
+        item.item_type = Some("poll".into());
+        assert_eq!(item.badge(), Some(StoryBadge::Poll));
+    }
+
+    #[test]
+    fn badge_ask_hn() {
+        let mut item = make_item();
+        item.title = Some("Ask HN: What is Rust?".into());
+        assert_eq!(item.badge(), Some(StoryBadge::Ask));
+    }
+
+    #[test]
+    fn badge_show_hn() {
+        let mut item = make_item();
+        item.title = Some("Show HN: My project".into());
+        assert_eq!(item.badge(), Some(StoryBadge::Show));
+    }
+
+    #[test]
+    fn badge_tell_hn() {
+        let mut item = make_item();
+        item.title = Some("Tell HN: Something".into());
+        assert_eq!(item.badge(), Some(StoryBadge::Tell));
+    }
+
+    #[test]
+    fn badge_launch_hn() {
+        let mut item = make_item();
+        item.title = Some("Launch HN: New product".into());
+        assert_eq!(item.badge(), Some(StoryBadge::Launch));
+    }
+
+    #[test]
+    fn badge_no_badge() {
+        let mut item = make_item();
+        item.title = Some("Regular title".into());
+        assert_eq!(item.badge(), None);
+    }
+
+    #[test]
+    fn badge_no_title() {
+        let item = make_item();
+        assert_eq!(item.badge(), None);
+    }
+
+    #[test]
+    fn badge_job_takes_priority_over_title() {
+        let mut item = make_item();
+        item.item_type = Some("job".into());
+        item.title = Some("Ask HN: Something".into());
+        assert_eq!(item.badge(), Some(StoryBadge::Job));
+    }
+
+    // --- display_title ---
+
+    #[test]
+    fn display_title_strips_ask_hn() {
+        let mut item = make_item();
+        item.title = Some("Ask HN: What is Rust?".into());
+        assert_eq!(item.display_title(), "What is Rust?");
+    }
+
+    #[test]
+    fn display_title_strips_show_hn() {
+        let mut item = make_item();
+        item.title = Some("Show HN: My project".into());
+        assert_eq!(item.display_title(), "My project");
+    }
+
+    #[test]
+    fn display_title_no_prefix() {
+        let mut item = make_item();
+        item.title = Some("Regular title".into());
+        assert_eq!(item.display_title(), "Regular title");
+    }
+
+    #[test]
+    fn display_title_none() {
+        let item = make_item();
+        assert_eq!(item.display_title(), "[no title]");
+    }
+
+    #[test]
+    fn display_title_strips_tell_hn() {
+        let mut item = make_item();
+        item.title = Some("Tell HN: Something".into());
+        assert_eq!(item.display_title(), "Something");
+    }
+
+    #[test]
+    fn display_title_strips_launch_hn() {
+        let mut item = make_item();
+        item.title = Some("Launch HN: New product".into());
+        assert_eq!(item.display_title(), "New product");
+    }
+
+    #[test]
+    fn display_title_case_sensitive() {
+        let mut item = make_item();
+        item.title = Some("ask hn: lowercase".into());
+        assert_eq!(item.display_title(), "ask hn: lowercase");
+    }
+
+    // --- StoryBadge::label ---
+
+    #[test]
+    fn badge_labels() {
+        assert_eq!(StoryBadge::Ask.label(), "Ask HN");
+        assert_eq!(StoryBadge::Show.label(), "Show HN");
+        assert_eq!(StoryBadge::Tell.label(), "Tell HN");
+        assert_eq!(StoryBadge::Launch.label(), "Launch HN");
+        assert_eq!(StoryBadge::Job.label(), "Job");
+        assert_eq!(StoryBadge::Poll.label(), "Poll");
+    }
+
+    // --- FeedKind ---
+
+    #[test]
+    fn feed_kind_endpoints() {
+        assert_eq!(FeedKind::Top.endpoint(), "topstories");
+        assert_eq!(FeedKind::New.endpoint(), "newstories");
+        assert_eq!(FeedKind::Best.endpoint(), "beststories");
+        assert_eq!(FeedKind::Ask.endpoint(), "askstories");
+        assert_eq!(FeedKind::Show.endpoint(), "showstories");
+        assert_eq!(FeedKind::Jobs.endpoint(), "jobstories");
+    }
+
+    #[test]
+    fn feed_kind_display() {
+        assert_eq!(format!("{}", FeedKind::Top), "Top");
+        assert_eq!(format!("{}", FeedKind::New), "New");
+        assert_eq!(format!("{}", FeedKind::Best), "Best");
+        assert_eq!(format!("{}", FeedKind::Ask), "Ask");
+        assert_eq!(format!("{}", FeedKind::Show), "Show");
+        assert_eq!(format!("{}", FeedKind::Jobs), "Jobs");
+    }
+
+    // --- From<SearchHit> for Item ---
+
+    #[test]
+    fn search_hit_to_item() {
+        let hit = SearchHit {
+            object_id: "12345".into(),
+            title: Some("Test".into()),
+            url: Some("https://example.com".into()),
+            author: Some("user".into()),
+            points: Some(42),
+            num_comments: Some(10),
+            created_at_i: Some(1000),
+            story_text: Some("body".into()),
+        };
+        let item = Item::from(hit);
+        assert_eq!(item.id, 12345);
+        assert_eq!(item.title.as_deref(), Some("Test"));
+        assert_eq!(item.by.as_deref(), Some("user"));
+        assert_eq!(item.score, Some(42));
+        assert_eq!(item.descendants, Some(10));
+        assert_eq!(item.text.as_deref(), Some("body"));
+        assert_eq!(item.item_type.as_deref(), Some("story"));
+    }
+
+    #[test]
+    fn search_hit_invalid_object_id() {
+        let hit = SearchHit {
+            object_id: "not_a_number".into(),
+            title: None,
+            url: None,
+            author: None,
+            points: None,
+            num_comments: None,
+            created_at_i: None,
+            story_text: None,
+        };
+        let item = Item::from(hit);
+        assert_eq!(item.id, 0);
+    }
+}
