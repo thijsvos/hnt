@@ -163,3 +163,53 @@ fn url_encode(s: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn url_encode_space() {
+        assert_eq!(url_encode("hello world"), "hello+world");
+    }
+
+    #[test]
+    fn url_encode_unreserved() {
+        assert_eq!(url_encode("rust-lang_0.9~"), "rust-lang_0.9~");
+    }
+
+    #[test]
+    fn url_encode_special_chars() {
+        assert_eq!(url_encode("foo@bar.com"), "foo%40bar.com");
+    }
+
+    #[test]
+    fn url_encode_empty() {
+        assert_eq!(url_encode(""), "");
+    }
+
+    #[test]
+    fn url_encode_alphanumeric() {
+        assert_eq!(url_encode("ABCxyz012"), "ABCxyz012");
+    }
+
+    #[test]
+    fn url_encode_percent_sign() {
+        assert_eq!(url_encode("100%"), "100%25");
+    }
+
+    #[test]
+    fn url_encode_ampersand_and_equals() {
+        assert_eq!(url_encode("q=a&b=c"), "q%3Da%26b%3Dc");
+    }
+
+    #[test]
+    fn url_encode_multiple_spaces() {
+        assert_eq!(url_encode("a b c"), "a+b+c");
+    }
+
+    #[test]
+    fn url_encode_slash() {
+        assert_eq!(url_encode("path/to"), "path%2Fto");
+    }
+}
