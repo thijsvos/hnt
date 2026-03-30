@@ -1,5 +1,5 @@
 # Stage 1: Builder
-FROM rust:slim AS builder
+FROM rust:1.94-slim AS builder
 
 RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
@@ -16,7 +16,7 @@ COPY src/ src/
 RUN cargo build --release
 
 # Stage 2: Runtime
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
