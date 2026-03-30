@@ -4,13 +4,22 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    labels: ["dependencies", "rust"]
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    labels: ["dependencies", "github_actions"]
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "weekly"
+    labels: ["dependencies"]
