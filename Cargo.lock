@@ -709,7 +709,7 @@ dependencies = [
  "html2text",
  "open",
  "ratatui",
- "readability",
+ "readability-rs",
  "reqwest",
  "serde",
  "serde_json",
@@ -1910,15 +1910,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "readability"
-version = "0.3.0"
+name = "readability-rs"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e56596e20a6d3cf715182d9b6829220621e6e985cec04d00410cee29821b4220"
+checksum = "5a17841ca2fc1c3e2aed7c44b29121ab099176923c0ac55d9906edea8ab025bc"
 dependencies = [
  "html5ever 0.26.0",
  "lazy_static",
+ "log",
  "markup5ever_rcdom",
  "regex",
+ "thiserror 2.0.18",
  "url",
 ]
 
