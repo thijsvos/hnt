@@ -992,9 +992,13 @@ fn extract_article_content(
     // Try readability extraction first, fall back to full HTML if it produces no content
     let tagged_lines = {
         let mut cursor = std::io::Cursor::new(html_bytes);
-        let readability_lines = match readability::extractor::extract(&mut cursor, &parsed_url) {
-            Ok(product) if !product.text.trim().is_empty() => {
-                html2text::from_read_rich(product.content.as_bytes(), width).unwrap_or_default()
+        let readability_lines = match readability::extract(
+            &mut cursor,
+            &parsed_url,
+            readability::ExtractOptions::default(),
+        ) {
+            Ok(readable) if !readable.text.trim().is_empty() => {
+                html2text::from_read_rich(readable.content.as_bytes(), width).unwrap_or_default()
             }
             _ => Vec::new(),
         };
