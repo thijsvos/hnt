@@ -8,6 +8,7 @@ use crate::state::story_state::StoryListState;
 use crate::ui::theme;
 use html2text::render::RichAnnotation;
 use ratatui::style::{Modifier, Style};
+use std::collections::HashSet;
 use tokio::sync::mpsc;
 
 const MIN_PAGE_SIZE: usize = 30;
@@ -29,8 +30,9 @@ pub enum AppMessage {
         append: bool,
     },
     CommentsLoaded {
-        story: Item,
+        story: Box<Item>,
         comments: Vec<(Item, usize)>,
+        pending_roots: HashSet<u64>,
     },
     /// Progressive update — append more child comments into the tree.
     CommentsAppended {
@@ -64,6 +66,7 @@ pub struct App {
     pub error: Option<String>,
     pub terminal_height: u16,
     pub terminal_width: u16,
+    pub tick_count: u64,
 
     last_comment_click: Option<(std::time::Instant, usize)>,
 
@@ -88,6 +91,7 @@ impl App {
             error: None,
             terminal_height,
             terminal_width,
+            tick_count: 0,
             last_comment_click: None,
             client: HnClient::new(),
             msg_tx,
@@ -160,9 +164,14 @@ impl App {
                         self.focus = Pane::Stories;
                     }
                 }
-                AppMessage::CommentsLoaded { story, comments } => {
-                    self.comment_state.story = Some(story);
+                AppMessage::CommentsLoaded {
+                    story,
+                    comments,
+                    pending_roots,
+                } => {
+                    self.comment_state.story = Some(*story);
                     self.comment_state.set_comments(comments);
+                    self.comment_state.pending_root_ids = pending_roots;
                     // Still loading children in background
                     self.error = None;
                 }
@@ -171,9 +180,11 @@ impl App {
                     children,
                 } => {
                     self.comment_state.insert_children(parent_id, children);
+                    self.comment_state.pending_root_ids.remove(&parent_id);
                 }
                 AppMessage::CommentsDone => {
                     self.comment_state.loading = false;
+                    self.comment_state.pending_root_ids.clear();
                 }
                 AppMessage::ArticleLoaded { lines } => {
                     if let Some(ref mut reader) = self.reader_state {
@@ -482,9 +493,16 @@ impl App {
                     .map(|item| (item, 0))
                     .collect();
 
+                let pending_roots: HashSet<u64> = root_comments
+                    .iter()
+                    .filter(|(r, _)| r.kids.as_ref().is_some_and(|k| !k.is_empty()))
+                    .map(|(r, _)| r.id)
+                    .collect();
+
                 let _ = tx.send(AppMessage::CommentsLoaded {
-                    story: story_clone,
+                    story: Box::new(story_clone),
                     comments: root_comments.clone(),
+                    pending_roots,
                 });
 
                 // Step 2: For each root comment, fetch its children progressively

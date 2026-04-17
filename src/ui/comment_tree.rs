@@ -1,4 +1,5 @@
 use crate::state::comment_state::{CommentTreeState, FlatComment};
+use crate::ui::spinner;
 use crate::ui::story_list::format_time_ago;
 use crate::ui::theme;
 use ratatui::{
@@ -11,6 +12,7 @@ use ratatui::{
 pub struct CommentTree<'a> {
     pub state: &'a CommentTreeState,
     pub focused: bool,
+    pub tick: u64,
 }
 
 /// A pre-measured comment: all the lines it will produce and its visual index.
@@ -53,8 +55,13 @@ impl<'a> Widget for CommentTree<'a> {
         let inner = block.inner(area);
         block.render(area, buf);
 
+        let spinner_frame = spinner::frame(self.tick);
+
         if self.state.loading && self.state.story.is_none() {
-            let loading = Line::from(Span::styled("  Loading comments...", theme::dim_style()));
+            let loading = Line::from(vec![
+                Span::styled(format!("  {} ", spinner_frame), theme::accent_style()),
+                Span::styled("Loading comments...", theme::dim_style()),
+            ]);
             buf.set_line(inner.left(), inner.top(), &loading, inner.width);
             return;
         }
@@ -157,7 +164,10 @@ impl<'a> Widget for CommentTree<'a> {
                 buf.set_line(
                     inner.left(),
                     inner.top() + header_height,
-                    &Line::from(Span::styled("  Loading comments...", theme::dim_style())),
+                    &Line::from(vec![
+                        Span::styled(format!("  {} ", spinner_frame), theme::accent_style()),
+                        Span::styled("Loading comments...", theme::dim_style()),
+                    ]),
                     inner.width,
                 );
             }
@@ -184,6 +194,8 @@ impl<'a> Widget for CommentTree<'a> {
             &self.state.collapsed,
             &self.state.comments,
             inner.width as usize,
+            &self.state.pending_root_ids,
+            spinner_frame,
         );
 
         // Find the row offset where the selected comment starts
@@ -232,8 +244,9 @@ impl<'a> Widget for CommentTree<'a> {
                     return;
                 }
 
-                // Fill background for selected comment
-                if is_selected {
+                // Fill background for selected comment (skip trailing gap so the
+                // highlight aligns with the left `│` bar)
+                if is_selected && !matches!(line, CommentLine::Gap) {
                     for x in inner.left()..inner.right() {
                         buf[(x, inner.top() + screen_y)]
                             .set_style(ratatui::style::Style::default().bg(bg));
@@ -276,10 +289,10 @@ impl<'a> Widget for CommentTree<'a> {
             buf.set_line(
                 inner.left(),
                 inner.top() + screen_y,
-                &Line::from(Span::styled(
-                    "  Loading more comments...",
-                    theme::dim_style(),
-                )),
+                &Line::from(vec![
+                    Span::styled(format!("  {} ", spinner_frame), theme::accent_style()),
+                    Span::styled("Loading more comments...", theme::dim_style()),
+                ]),
                 inner.width,
             );
         }
@@ -292,6 +305,8 @@ fn measure_comments<'a>(
     collapsed: &std::collections::HashSet<u64>,
     all_comments: &[FlatComment],
     width: usize,
+    pending_root_ids: &std::collections::HashSet<u64>,
+    spinner_frame: &str,
 ) -> Vec<MeasuredComment<'a>> {
     let mut result = Vec::new();
 
@@ -318,11 +333,17 @@ fn measure_comments<'a>(
         };
 
         // Header line
-        let header_spans = vec![
-            (
-                format!("{}{}", indent, bar),
-                ratatui::style::Style::default().fg(depth_color),
-            ),
+        let mut header_spans = vec![(
+            format!("{}{}", indent, bar),
+            ratatui::style::Style::default().fg(depth_color),
+        )];
+        if comment.depth == 0 && pending_root_ids.contains(&comment.item.id) {
+            header_spans.push((
+                format!("{} ", spinner_frame),
+                ratatui::style::Style::default().fg(theme::HN_ORANGE),
+            ));
+        }
+        header_spans.extend([
             (
                 format!("{} ", author),
                 ratatui::style::Style::default()
@@ -338,7 +359,7 @@ fn measure_comments<'a>(
                 ratatui::style::Style::default().fg(theme::YELLOW),
             ),
             (child_count, ratatui::style::Style::default().fg(theme::DIM)),
-        ];
+        ]);
         lines.push(CommentLine::Header(header_spans));
 
         // Comment text lines
@@ -363,10 +384,9 @@ fn measure_comments<'a>(
             }
         }
 
-        // Gap after top-level comments
-        if comment.depth == 0 {
-            lines.push(CommentLine::Gap);
-        }
+        // Blank gap after every comment — prevents the next comment's vertical
+        // bar from visually bleeding into this comment's last row.
+        lines.push(CommentLine::Gap);
 
         result.push(MeasuredComment {
             _comment: comment,

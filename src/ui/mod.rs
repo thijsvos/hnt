@@ -2,6 +2,7 @@ pub mod article_reader;
 pub mod comment_tree;
 pub mod header;
 pub mod layout;
+pub mod spinner;
 pub mod status_bar;
 pub mod story_list;
 pub mod theme;
@@ -53,6 +54,7 @@ pub fn render(app: &App, frame: &mut Frame) {
         comment_tree::CommentTree {
             state: &app.comment_state,
             focused: app.focus == crate::app::Pane::Comments,
+            tick: app.tick_count,
         },
         layout.comments,
     );
