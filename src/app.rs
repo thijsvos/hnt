@@ -30,7 +30,7 @@ pub enum AppMessage {
         append: bool,
     },
     CommentsLoaded {
-        story: Item,
+        story: Box<Item>,
         comments: Vec<(Item, usize)>,
         pending_roots: HashSet<u64>,
     },
@@ -169,7 +169,7 @@ impl App {
                     comments,
                     pending_roots,
                 } => {
-                    self.comment_state.story = Some(story);
+                    self.comment_state.story = Some(*story);
                     self.comment_state.set_comments(comments);
                     self.comment_state.pending_root_ids = pending_roots;
                     // Still loading children in background
@@ -500,7 +500,7 @@ impl App {
                     .collect();
 
                 let _ = tx.send(AppMessage::CommentsLoaded {
-                    story: story_clone,
+                    story: Box::new(story_clone),
                     comments: root_comments.clone(),
                     pending_roots,
                 });

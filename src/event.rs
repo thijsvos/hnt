@@ -34,24 +34,15 @@ impl EventHandler {
                         }
                     }
                     event = reader.next() => {
-                        match event {
-                            Some(Ok(CrosstermEvent::Key(key))) => {
-                                if tx.send(Event::Key(key)).is_err() {
-                                    break;
-                                }
-                            }
-                            Some(Ok(CrosstermEvent::Mouse(mouse))) => {
-                                if tx.send(Event::Mouse(mouse)).is_err() {
-                                    break;
-                                }
-                            }
-                            Some(Ok(CrosstermEvent::Resize(w, h))) => {
-                                if tx.send(Event::Resize(w, h)).is_err() {
-                                    break;
-                                }
-                            }
+                        let send_result = match event {
+                            Some(Ok(CrosstermEvent::Key(key))) => tx.send(Event::Key(key)),
+                            Some(Ok(CrosstermEvent::Mouse(mouse))) => tx.send(Event::Mouse(mouse)),
+                            Some(Ok(CrosstermEvent::Resize(w, h))) => tx.send(Event::Resize(w, h)),
                             Some(Err(_)) | None => break,
-                            _ => {}
+                            _ => continue,
+                        };
+                        if send_result.is_err() {
+                            break;
                         }
                     }
                 }
