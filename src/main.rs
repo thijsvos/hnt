@@ -89,7 +89,7 @@ async fn main() -> Result<()> {
                 app.set_terminal_size(w, h);
             }
             Event::Tick => {
-                // Tick — just triggers redraw above
+                app.tick_count = app.tick_count.wrapping_add(1);
             }
         }
     }

@@ -15,6 +15,8 @@ pub struct CommentTreeState {
     pub collapsed: HashSet<u64>,
     pub loading: bool,
     pub story: Option<Item>,
+    /// Root-comment IDs whose subtrees are still being fetched.
+    pub pending_root_ids: HashSet<u64>,
     /// Maps screen row (relative to inner area top) → visible comment index.
     /// Populated during render for mouse click handling.
     pub row_map: RefCell<Vec<Option<usize>>>,
@@ -29,6 +31,7 @@ impl CommentTreeState {
             collapsed: HashSet::new(),
             loading: false,
             story: None,
+            pending_root_ids: HashSet::new(),
             row_map: RefCell::new(Vec::new()),
         }
     }
@@ -136,6 +139,7 @@ impl CommentTreeState {
         self.collapsed.clear();
         self.loading = false;
         self.story = None;
+        self.pending_root_ids.clear();
         self.row_map.borrow_mut().clear();
     }
 }
@@ -415,6 +419,7 @@ mod tests {
         state.selected = 2;
         state.loading = true;
         state.story = Some(make_item(99));
+        state.pending_root_ids.insert(1);
         state.reset();
         assert!(state.comments.is_empty());
         assert_eq!(state.scroll.get(), 0);
@@ -422,5 +427,26 @@ mod tests {
         assert!(state.collapsed.is_empty());
         assert!(!state.loading);
         assert!(state.story.is_none());
+        assert!(state.pending_root_ids.is_empty());
+    }
+
+    #[test]
+    fn pending_root_ids_lifecycle() {
+        let mut state = CommentTreeState::new();
+        state.set_comments(sample_tree());
+        // Populate — simulating app.rs inserting after CommentsLoaded
+        state.pending_root_ids.insert(1);
+        state.pending_root_ids.insert(4);
+        assert_eq!(state.pending_root_ids.len(), 2);
+
+        // CommentsAppended for root 1 → children arrive, remove from pending
+        state.insert_children(1, vec![(make_item(10), 1)]);
+        state.pending_root_ids.remove(&1);
+        assert!(!state.pending_root_ids.contains(&1));
+        assert!(state.pending_root_ids.contains(&4));
+
+        // CommentsDone → clear remaining
+        state.pending_root_ids.clear();
+        assert!(state.pending_root_ids.is_empty());
     }
 }
