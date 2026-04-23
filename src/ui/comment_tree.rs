@@ -1,3 +1,11 @@
+//! Comment tree widget — renders the right-hand pane.
+//!
+//! Two-pass rendering: `measure_comments` produces per-comment line lists
+//! (header + wrapped text + gap), then the widget scrolls to keep the
+//! selected comment in view and draws from the computed offset. Also
+//! populates `CommentTreeState::row_map` so mouse clicks can map rows
+//! back to comment indices.
+
 use crate::state::comment_state::{CommentTreeState, FlatComment};
 use crate::ui::spinner;
 use crate::ui::story_list::format_time_ago;
@@ -9,6 +17,9 @@ use ratatui::{
     widgets::{Block, Borders, Widget},
 };
 
+/// Stateless widget that renders the right pane. Takes a mutable reference
+/// to [`CommentTreeState`] because rendering populates the `row_map` and
+/// may advance `scroll` to keep the selected comment visible.
 pub struct CommentTree<'a> {
     pub state: &'a mut CommentTreeState,
     pub visible: &'a [usize],
@@ -22,6 +33,9 @@ struct MeasuredComment {
     lines: Vec<CommentLine>,
 }
 
+/// One rendered line in the measure pass. `Header` is the author/time
+/// line, `Text` is a single wrapped body line, `Gap` is a blank row
+/// between comments.
 enum CommentLine {
     Header(Vec<(String, ratatui::style::Style)>),
     Text(Vec<(String, ratatui::style::Style)>),
@@ -296,7 +310,10 @@ impl<'a> Widget for CommentTree<'a> {
     }
 }
 
-/// Measure all visible comments into pre-computed line lists.
+/// Pre-renders each visible comment to a [`MeasuredComment`] (header line,
+/// wrapped body lines capped at 20, trailing gap). Collapsed comments omit
+/// body lines and render a `[+] (N hidden)` suffix. Root comments still
+/// fetching children get a spinner glyph.
 fn measure_comments(
     visible_indices: &[usize],
     collapsed: &std::collections::HashSet<u64>,
@@ -401,6 +418,8 @@ fn measure_comments(
     result
 }
 
+/// Counts descendants of `parent` in the flat list — the contiguous run
+/// of comments with strictly greater depth that follow it.
 fn count_hidden_children(all: &[FlatComment], parent: &FlatComment) -> usize {
     let parent_idx = all.iter().position(|c| c.item.id == parent.item.id);
     match parent_idx {

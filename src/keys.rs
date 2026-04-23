@@ -1,11 +1,24 @@
+//! Keybinding → [`Action`] translation.
+//!
+//! [`map_key`] is a pure, context-aware dispatch: search-input mode
+//! suppresses normal keys, the help overlay eats any keypress, and
+//! the reader overlay has its own reduced map. The [`InputMode`] enum
+//! distinguishes character-capturing search input from normal navigation.
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+/// Whether the keyboard is in normal-navigation mode or accumulating
+/// characters for the search-query input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
     Normal,
     SearchInput,
 }
 
+/// A keybinding-independent operation the app may perform.
+///
+/// Produced by [`map_key`] from raw [`KeyEvent`]s, consumed by
+/// [`crate::app::App::dispatch`]. `Action::None` means "unmapped — ignore."
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Quit,
@@ -27,6 +40,14 @@ pub enum Action {
     None,
 }
 
+/// Translates a [`KeyEvent`] into an [`Action`] for the current UI
+/// context.
+///
+/// Priority order: search-input mode suppresses normal keys (returns
+/// [`Action::None`] so `main.rs` can handle raw characters); a visible
+/// help overlay consumes any key as [`Action::ToggleHelp`]; a visible
+/// reader overlay uses its own reduced keymap; otherwise the standard
+/// navigation keymap applies.
 pub fn map_key(
     key: KeyEvent,
     help_visible: bool,

@@ -1,3 +1,11 @@
+//! Central application state and event dispatch.
+//!
+//! [`App`] owns every pane's state, the HN client, and an MPSC channel
+//! used by spawned tokio tasks to deliver results back to the main loop
+//! via [`AppMessage`]. [`App::dispatch`] translates [`Action`]s from the
+//! keybinding layer into state mutations and task spawns;
+//! [`App::process_messages`] drains pending async results each frame.
+
 use crate::api::client::HnClient;
 use crate::api::types::{FeedKind, Item};
 use crate::article::{fetch_and_extract_article, html_to_styled_lines};
@@ -13,6 +21,7 @@ const MIN_PAGE_SIZE: usize = 30;
 const SCROLL_PAGE: usize = 10;
 const MAX_COMMENT_DEPTH: usize = 10;
 
+/// Which content pane currently has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Stories,
@@ -20,14 +29,24 @@ pub enum Pane {
 }
 
 /// Messages sent from async tasks back to the main loop.
+///
+/// Variants correspond to the lifecycle of each async operation: a one-shot
+/// load (`StoriesLoaded`, `SearchResultsLoaded`, `ArticleLoaded`), a
+/// multi-step progressive load (`CommentsLoaded` → zero or more
+/// `CommentsAppended` → `CommentsDone`), or a terminal error (`Error`,
+/// `ArticleError`).
 pub enum AppMessage {
+    /// Initial or paginated batch of stories finished loading.
     StoriesLoaded {
         stories: Vec<Item>,
-        // Only populated on initial load; subsequent paginated loads reuse
-        // the cached ID list to avoid drift when the feed changes mid-session.
+        /// Only populated on initial load; subsequent paginated loads
+        /// reuse the cached ID list to avoid drift when the feed changes
+        /// mid-session.
         all_ids: Option<Vec<u64>>,
         append: bool,
     },
+    /// Root-level comments for a story are available; deeper descendants
+    /// still pending.
     CommentsLoaded {
         story: Box<Item>,
         comments: Vec<(Item, usize)>,
@@ -38,20 +57,30 @@ pub enum AppMessage {
         parent_id: u64,
         children: Vec<(Item, usize)>,
     },
+    /// All outstanding comment fetches finished; clear any "loading"
+    /// spinners.
     CommentsDone,
-    ArticleLoaded {
-        lines: Vec<Vec<StyledFragment>>,
-    },
+    /// Article reader content extracted and ready to render.
+    ArticleLoaded { lines: Vec<Vec<StyledFragment>> },
+    /// Algolia search returned a page of results.
     SearchResultsLoaded {
         stories: Vec<Item>,
         total_pages: usize,
         total_hits: usize,
         append: bool,
     },
+    /// Article fetch/extract failed; surface in the reader overlay.
     ArticleError(String),
+    /// Generic error to surface in the status bar.
     Error(String),
 }
 
+/// Central application state — owned by the main loop.
+///
+/// Aggregates every pane's state, the shared [`HnClient`], and an MPSC
+/// channel that async tasks use to send [`AppMessage`]s back. All input
+/// flows through [`App::dispatch`]; all async results flow through
+/// [`App::process_messages`].
 pub struct App {
     pub running: bool,
     pub current_feed: FeedKind,
@@ -75,6 +104,8 @@ pub struct App {
 }
 
 impl App {
+    /// Constructs an [`App`] sized to the given terminal dimensions, with
+    /// a fresh HN client, empty state, and a brand-new message channel.
     pub fn new(terminal_width: u16, terminal_height: u16) -> Self {
         let (msg_tx, msg_rx) = mpsc::unbounded_channel();
         Self {
@@ -105,17 +136,21 @@ impl App {
         visible.max(MIN_PAGE_SIZE)
     }
 
+    /// Updates cached terminal dimensions after a resize event.
     pub fn set_terminal_size(&mut self, w: u16, h: u16) {
         self.terminal_width = w;
         self.terminal_height = h;
     }
 
-    /// Initial load on startup.
+    /// Spawns a background fetch for the first page of the current feed.
+    ///
+    /// Intended to be called once at startup; calling it concurrently will
+    /// race two `StoriesLoaded` messages into the channel.
     pub fn load_initial_feed(&self) {
         self.spawn_load_stories(false);
     }
 
-    /// Process any pending async messages (non-blocking).
+    /// Processes any pending async messages (non-blocking).
     pub fn process_messages(&mut self) {
         while let Ok(msg) = self.msg_rx.try_recv() {
             match msg {
@@ -206,7 +241,12 @@ impl App {
         }
     }
 
-    /// Dispatch an action from keybindings.
+    /// Applies an [`Action`] from the keybinding layer.
+    ///
+    /// Routing is context-sensitive: when the article reader is open, a
+    /// restricted set of actions drives the reader and others are consumed.
+    /// Otherwise the action mutates the focused pane's state or spawns an
+    /// async task (feed switch, refresh, comment load, search).
     pub fn dispatch(&mut self, action: Action) {
         // When reader is open, route actions to reader
         if self.reader_state.is_some() {
@@ -362,12 +402,15 @@ impl App {
         }
     }
 
+    /// Transitions into search-input mode, showing an empty search prompt.
     pub fn enter_search_mode(&mut self) {
         self.input_mode = InputMode::SearchInput;
         self.search_state = Some(SearchState::new());
         self.focus = Pane::Stories;
     }
 
+    /// Commits the typed `input` as the active search query and spawns an
+    /// Algolia fetch for page 0. An empty input cancels search instead.
     pub fn submit_search(&mut self) {
         let query = if let Some(ref ss) = self.search_state {
             ss.input.trim().to_string()
@@ -391,6 +434,7 @@ impl App {
         self.spawn_search(&query, 0, false);
     }
 
+    /// Exits search mode, clears the cache, and reloads the current feed.
     pub fn cancel_search(&mut self) {
         self.search_state = None;
         self.input_mode = InputMode::Normal;
@@ -400,18 +444,22 @@ impl App {
         self.spawn_load_stories(false);
     }
 
+    /// Appends a typed character to the in-progress search input.
     pub fn search_input_char(&mut self, c: char) {
         if let Some(ref mut ss) = self.search_state {
             ss.input.push(c);
         }
     }
 
+    /// Removes the last character from the in-progress search input.
     pub fn search_input_backspace(&mut self) {
         if let Some(ref mut ss) = self.search_state {
             ss.input.pop();
         }
     }
 
+    /// Kicks off an async Algolia search. `append = true` extends the
+    /// current result list (lazy pagination); `append = false` replaces it.
     fn spawn_search(&mut self, query: &str, page: usize, append: bool) {
         self.story_state.loading = true;
         let client = self.client.clone();
@@ -436,6 +484,9 @@ impl App {
         });
     }
 
+    /// Kicks off an async feed-page load. When `append` is true, reuses
+    /// the cached ID list to compute a stable offset (so newly posted
+    /// stories don't shift the page); otherwise fetches a fresh ID list.
     fn spawn_load_stories(&self, append: bool) {
         let client = self.client.clone();
         let tx = self.msg_tx.clone();
@@ -484,6 +535,11 @@ impl App {
         }
     }
 
+    /// Kicks off a two-phase comment fetch for the currently selected story:
+    /// (1) loads and displays root-level comments immediately, then
+    /// (2) walks each root's subtree depth-first and appends children via
+    ///     [`AppMessage::CommentsAppended`] as they arrive.
+    /// For search results (kids missing), fetches the full item first.
     fn load_selected_comments(&mut self) {
         if let Some(story) = self.story_state.selected_story().cloned() {
             self.comment_state.loading = true;
@@ -551,6 +607,11 @@ impl App {
         }
     }
 
+    /// Opens the reader overlay for the story in the focused pane.
+    ///
+    /// For text-only posts (Ask HN, etc.) renders the inline `text`
+    /// locally. For URL stories, validates the http(s) scheme and then
+    /// spawns a fetch + readability extraction task.
     fn open_article_reader(&mut self) {
         let story = match self.focus {
             Pane::Stories => self.story_state.selected_story().cloned(),
@@ -602,6 +663,9 @@ impl App {
         });
     }
 
+    /// Opens the focused story's URL in the system browser. Falls back to
+    /// the HN item page for text-only stories. Only http(s) URLs are
+    /// opened.
     fn open_in_browser(&self) {
         let url = match self.focus {
             Pane::Stories => self
@@ -633,6 +697,9 @@ impl App {
         }
     }
 
+    /// If the selection has crossed the lazy-load threshold, kicks off
+    /// the next page. Uses Algolia page-based pagination in search mode
+    /// and offset-based pagination over cached IDs otherwise.
     fn check_lazy_load(&mut self) {
         if self.story_state.loading {
             return;
@@ -653,7 +720,13 @@ impl App {
         }
     }
 
-    /// Handle a mouse left-click at the given terminal position.
+    /// Handles a mouse left-click at the given terminal cell.
+    ///
+    /// Maps the cell to a pane via `build_layout`: in the stories pane,
+    /// selects the clicked story (triggering lazy load + comment fetch);
+    /// in the comments pane, selects the clicked comment, treating a second
+    /// click on the same row within 400ms as a double-click to toggle
+    /// collapse. No-op when the reader overlay is open.
     pub fn handle_click(&mut self, column: u16, row: u16) {
         // When reader is open, consume clicks
         if self.reader_state.is_some() {
@@ -732,7 +805,9 @@ impl App {
         }
     }
 
-    /// Handle mouse scroll in the pane under the cursor.
+    /// Handles a mouse wheel event in the pane under the cursor. When the
+    /// reader overlay is open, scrolls the reader (3 lines per tick);
+    /// otherwise moves the selected item in the hit pane.
     pub fn handle_scroll(&mut self, _column: u16, _row: u16, down: bool) {
         // When reader is open, scroll reader
         if self.reader_state.is_some() {

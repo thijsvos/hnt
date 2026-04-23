@@ -1,3 +1,9 @@
+//! Full-screen article-reader overlay rendering.
+//!
+//! [`render_article_overlay`] dispatches to loading, error, or content
+//! renderers based on [`ReaderState`]. Content is drawn as wrapped
+//! styled lines with a title, domain, and keybinding footer.
+
 use crate::state::reader_state::ReaderState;
 use crate::ui::theme;
 use ratatui::{
@@ -7,6 +13,9 @@ use ratatui::{
     Frame,
 };
 
+/// Draws the full-screen reader overlay for `reader`'s current state
+/// (loading, error, or content) into `area` with a small margin. No-op if
+/// the available space is too small.
 pub fn render_article_overlay(frame: &mut Frame, area: Rect, reader: &ReaderState) {
     // Fullscreen overlay with 2-cell margin on each side
     let margin = 2u16;

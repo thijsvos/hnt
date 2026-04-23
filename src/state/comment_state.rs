@@ -1,6 +1,18 @@
+//! Comment-tree state: a flattened list with depth, collapse tracking,
+//! and an incremental-insertion API for progressive loads.
+//!
+//! Comments are stored as a pre-order flat [`Vec`] of [`FlatComment`]
+//! (item + depth); [`CommentTreeState::visible_indices`] applies collapse
+//! rules by skipping subtrees. [`CommentTreeState::insert_children`]
+//! splices a root's children in-place as async fetches complete.
+
 use crate::api::types::Item;
 use std::collections::HashSet;
 
+/// One comment in the flattened, depth-tagged comment tree.
+///
+/// `depth == 0` is a root-level comment; children have strictly greater
+/// depth and are stored contiguously after their parent in pre-order.
 pub struct FlatComment {
     pub item: Item,
     pub depth: usize,
@@ -10,6 +22,7 @@ pub struct FlatComment {
 }
 
 impl FlatComment {
+    /// Wraps an [`Item`] at the given tree depth with an empty text cache.
     pub fn new(item: Item, depth: usize) -> Self {
         Self {
             item,
@@ -19,7 +32,8 @@ impl FlatComment {
     }
 
     /// Returns the plain-text rendering of `item.text` at `width`, reusing
-    /// the last-rendered result if the width matches.
+    /// the last-rendered result if the width matches. The cache is keyed
+    /// only on width because each `FlatComment` wraps a single `Item`.
     pub fn plain_text(&mut self, width: usize) -> Option<&str> {
         let text = self.item.text.as_deref()?;
         let needs_refresh = !matches!(&self.plain_text_cache, Some((w, _)) if *w == width);
@@ -31,11 +45,20 @@ impl FlatComment {
     }
 }
 
+/// State for the comments pane: flattened tree, collapse set, selection,
+/// and render-populated scroll/row-map.
+///
+/// [`CommentTreeState::set_comments`] replaces the tree;
+/// [`CommentTreeState::insert_children`] splices in subtrees as progressive
+/// loads complete.
 pub struct CommentTreeState {
     pub comments: Vec<FlatComment>,
     /// Row-based scroll offset, updated by the renderer.
     pub scroll: usize,
+    /// Index into `visible_comments()`, not into `comments`.
     pub selected: usize,
+    /// Collapsed-subtree comment IDs; their descendants are hidden from
+    /// `visible_comments()`.
     pub collapsed: HashSet<u64>,
     pub loading: bool,
     pub story: Option<Item>,
@@ -50,6 +73,7 @@ pub struct CommentTreeState {
 }
 
 impl CommentTreeState {
+    /// Constructs an empty state with no loaded story and no pending fetches.
     pub fn new() -> Self {
         Self {
             comments: Vec::new(),
@@ -64,8 +88,9 @@ impl CommentTreeState {
         }
     }
 
-    /// Return the plain-text rendering of the current story's text at `width`,
-    /// reusing the last-rendered result if the story and width match.
+    /// Returns the plain-text rendering of the current story's text at
+    /// `width`, reusing the last-rendered result if the story and width
+    /// match.
     pub fn story_plain_text(&mut self, width: usize) -> Option<&str> {
         let story = self.story.as_ref()?;
         let text = story.text.as_deref()?;
@@ -79,6 +104,8 @@ impl CommentTreeState {
         self.story_text_cache.as_ref().map(|(_, _, s)| s.as_str())
     }
 
+    /// Replaces the flat list and resets selection/scroll to the top.
+    /// Each tuple is `(item, depth)` in pre-order.
     pub fn set_comments(&mut self, items: Vec<(Item, usize)>) {
         self.comments = items
             .into_iter()
@@ -127,6 +154,8 @@ impl CommentTreeState {
         indices
     }
 
+    /// Resolves [`visible_indices`](Self::visible_indices) into borrowed
+    /// comment references.
     pub fn visible_comments(&self) -> Vec<&FlatComment> {
         self.visible_indices()
             .into_iter()
@@ -168,6 +197,8 @@ impl CommentTreeState {
         self.selected = self.selected.saturating_sub(page_size);
     }
 
+    /// Flips the collapse state of the currently selected comment.
+    /// Collapsing hides the subtree on the next `visible_indices` call.
     pub fn toggle_collapse(&mut self) {
         let visible = self.visible_comments();
         if let Some(comment) = visible.get(self.selected) {

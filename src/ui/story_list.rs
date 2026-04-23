@@ -1,3 +1,10 @@
+//! Story-list widget for the left pane.
+//!
+//! [`StoryList`] renders numbered story rows with badge, title, and
+//! domain, scrolling to keep the selected row in view. Also exposes
+//! [`format_time_ago`], used by the comment-tree widget for author
+//! timestamps.
+
 use crate::api::types::Item;
 use crate::ui::theme;
 use ratatui::{
@@ -7,6 +14,8 @@ use ratatui::{
     widgets::{Block, Borders, Widget},
 };
 
+/// Stateless widget that renders the left pane. Composed from borrowed
+/// app state; rebuilt each frame.
 pub struct StoryList<'a> {
     pub stories: &'a [Item],
     pub selected: usize,
@@ -142,6 +151,8 @@ impl<'a> Widget for StoryList<'a> {
     }
 }
 
+/// Renders a Unix timestamp as `"Ns"`/`"Nm"`/`"Nh"`/`"Nd"` relative to
+/// the current wall-clock time.
 pub fn format_time_ago(timestamp: i64) -> String {
     format_time_ago_since(timestamp, chrono::Utc::now().timestamp())
 }

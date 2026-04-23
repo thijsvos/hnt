@@ -1,6 +1,20 @@
+//! Wire types for the Hacker News Firebase API and Algolia search.
+//!
+//! [`Item`] is the unified story/comment/job record used throughout the
+//! app; [`FeedKind`] enumerates the six listing endpoints; [`StoryBadge`]
+//! classifies stories by their title prefix (`Ask HN:`, `Show HN:`, etc.)
+//! or item type. [`SearchHit`]/[`SearchResponse`] decode the Algolia
+//! response and convert into [`Item`] via [`From`].
+
 use serde::Deserialize;
 use std::fmt;
 
+/// A Hacker News item: story, comment, job, or poll.
+///
+/// Most fields are optional because the Firebase API omits unset keys and
+/// deleted items arrive as skeletons. `kids` holds direct-child IDs (comment
+/// replies, or a story's top-level comments); `descendants` is only set on
+/// stories and counts the total transitive comment count.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Item {
     pub id: u64,
@@ -29,14 +43,21 @@ pub struct Item {
 }
 
 impl Item {
+    /// Whether this item was removed by moderators or its author — either
+    /// flag suppresses rendering.
     pub fn is_dead_or_deleted(&self) -> bool {
         self.dead.unwrap_or(false) || self.deleted.unwrap_or(false)
     }
 
+    /// Host component of `url` (with a leading `www.` stripped), or `None`
+    /// for HN-native posts and non-http(s) schemes.
     pub fn domain(&self) -> Option<String> {
         self.url.as_ref().and_then(|u| url_domain(u))
     }
 
+    /// Classifies this item by `item_type` (Job/Poll) or by title prefix
+    /// (`Ask HN:`, `Show HN:`, `Tell HN:`, `Launch HN:`). Returns `None`
+    /// for plain stories. `item_type` takes priority over title prefix.
     pub fn badge(&self) -> Option<StoryBadge> {
         if self.item_type.as_deref() == Some("job") {
             return Some(StoryBadge::Job);
@@ -60,7 +81,7 @@ impl Item {
         None
     }
 
-    /// Title with badge prefix stripped (e.g. "Ask HN: Foo" → "Foo")
+    /// Title with badge prefix stripped (e.g. `"Ask HN: Foo"` → `"Foo"`).
     pub fn display_title(&self) -> &str {
         let title = self.title.as_deref().unwrap_or("[no title]");
         if let Some(rest) = title.strip_prefix("Ask HN:") {
@@ -79,6 +100,8 @@ impl Item {
     }
 }
 
+/// A classification label shown next to a story title. See [`Item::badge`]
+/// for how values are derived.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoryBadge {
     Ask,
@@ -90,6 +113,7 @@ pub enum StoryBadge {
 }
 
 impl StoryBadge {
+    /// Human-readable label (e.g. `"Ask HN"`, `"Show HN"`) used in the UI.
     pub fn label(self) -> &'static str {
         match self {
             StoryBadge::Ask => "Ask HN",
@@ -104,6 +128,8 @@ impl StoryBadge {
 
 // --- Algolia Search types ---
 
+/// One result entry returned by the Algolia HN search endpoint. Shape
+/// differs from the Firebase [`Item`]; convert via [`From`].
 #[derive(Debug, Deserialize)]
 pub struct SearchHit {
     #[serde(rename = "objectID")]
@@ -117,6 +143,7 @@ pub struct SearchHit {
     pub story_text: Option<String>,
 }
 
+/// Top-level envelope of an Algolia search response.
 #[derive(Debug, Deserialize)]
 pub struct SearchResponse {
     pub hits: Vec<SearchHit>,
@@ -154,6 +181,8 @@ fn url_domain(raw: &str) -> Option<String> {
     Some(host.strip_prefix("www.").unwrap_or(host).to_string())
 }
 
+/// The six Hacker News feeds the app can display; mirrors the Firebase
+/// endpoints exposed via [`FeedKind::endpoint`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeedKind {
     Top,
@@ -165,6 +194,8 @@ pub enum FeedKind {
 }
 
 impl FeedKind {
+    /// Every [`FeedKind`] in display order — indexed by the 1–6 number keys
+    /// and iterated to build the header tab bar.
     pub const ALL: [FeedKind; 6] = [
         FeedKind::Top,
         FeedKind::New,
@@ -174,6 +205,7 @@ impl FeedKind {
         FeedKind::Jobs,
     ];
 
+    /// Firebase path segment (e.g. `"topstories"`) for this feed.
     pub fn endpoint(&self) -> &'static str {
         match self {
             FeedKind::Top => "topstories",
