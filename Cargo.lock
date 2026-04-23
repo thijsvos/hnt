@@ -726,6 +726,7 @@ dependencies = [
  "futures",
  "html2text",
  "indicatif",
+ "lru",
  "open",
  "ratatui",
  "readability-rs",
