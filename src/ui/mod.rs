@@ -49,10 +49,15 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         layout.stories,
     );
 
+    // Walk the comment tree once per frame and share the result between the
+    // comment tree widget and the status bar.
+    let visible_indices = app.comment_state.visible_indices();
+
     // Comment tree
     frame.render_widget(
         comment_tree::CommentTree {
             state: &mut app.comment_state,
+            visible: &visible_indices,
             focused: app.focus == crate::app::Pane::Comments,
             tick: app.tick_count,
         },
@@ -71,14 +76,13 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             )
         }
     } else {
-        let visible = app.comment_state.visible_comments();
         let total = app
             .comment_state
             .story
             .as_ref()
             .and_then(|s| s.descendants)
-            .unwrap_or(visible.len() as i64);
-        if visible.is_empty() {
+            .unwrap_or(visible_indices.len() as i64);
+        if visible_indices.is_empty() {
             "0/0".to_string()
         } else {
             format!("{}/{}", app.comment_state.selected + 1, total)

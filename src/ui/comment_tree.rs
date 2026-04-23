@@ -11,6 +11,7 @@ use ratatui::{
 
 pub struct CommentTree<'a> {
     pub state: &'a mut CommentTreeState,
+    pub visible: &'a [usize],
     pub focused: bool,
     pub tick: u64,
 }
@@ -74,7 +75,7 @@ impl<'a> Widget for CommentTree<'a> {
             return;
         }
 
-        let visible = self.state.visible_comments();
+        let visible = self.visible;
 
         if visible.is_empty() && !self.state.loading {
             let no_comments = Line::from(Span::styled("  No comments", theme::dim_style()));
@@ -178,18 +179,15 @@ impl<'a> Widget for CommentTree<'a> {
             return;
         }
 
-        // Pass 1: measure all comments into rows. After this, `measured` owns
-        // all the data it needs and `visible` can be dropped so we can mutate
-        // other fields on self.state (row_map, scroll).
+        // Pass 1: measure all comments into rows.
         let measured = measure_comments(
-            &visible,
+            visible,
             &self.state.collapsed,
             &self.state.comments,
             inner.width as usize,
             &self.state.pending_root_ids,
             spinner_frame,
         );
-        drop(visible);
 
         // Initialize row_map for mouse click handling
         self.state.row_map.clear();
@@ -295,7 +293,7 @@ impl<'a> Widget for CommentTree<'a> {
 
 /// Measure all visible comments into pre-computed line lists.
 fn measure_comments(
-    visible: &[&FlatComment],
+    visible_indices: &[usize],
     collapsed: &std::collections::HashSet<u64>,
     all_comments: &[FlatComment],
     width: usize,
@@ -304,7 +302,8 @@ fn measure_comments(
 ) -> Vec<MeasuredComment> {
     let mut result = Vec::new();
 
-    for (vi, comment) in visible.iter().enumerate() {
+    for (vi, &idx) in visible_indices.iter().enumerate() {
+        let comment = &all_comments[idx];
         let mut lines = Vec::new();
         let depth_color = theme::depth_color(comment.depth);
         let indent = "  ".repeat(comment.depth);
