@@ -138,14 +138,6 @@ impl<'a> Widget for StoryList<'a> {
 
             let line = Line::from(spans);
             buf.set_line(inner.left(), y, &line, inner.width);
-
-            // Meta line (if space allows: every other row)
-            if visible_height > self.stories.len() || i == self.selected {
-                // We only show meta inline with compact display
-            }
-
-            // Show score/author/time on the same concept but we'll keep it compact
-            // Actually let's use 2 lines per story if there's room, otherwise 1
         }
     }
 }
