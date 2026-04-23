@@ -145,14 +145,13 @@ impl From<SearchHit> for Item {
     }
 }
 
-fn url_domain(url: &str) -> Option<String> {
-    // Simple domain extraction without pulling in the url crate
-    let without_scheme = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))?;
-    let domain = without_scheme.split('/').next()?;
-    let domain = domain.strip_prefix("www.").unwrap_or(domain);
-    Some(domain.to_string())
+fn url_domain(raw: &str) -> Option<String> {
+    let parsed = url::Url::parse(raw).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = parsed.host_str()?;
+    Some(host.strip_prefix("www.").unwrap_or(host).to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
