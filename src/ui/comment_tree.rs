@@ -10,14 +10,13 @@ use ratatui::{
 };
 
 pub struct CommentTree<'a> {
-    pub state: &'a CommentTreeState,
+    pub state: &'a mut CommentTreeState,
     pub focused: bool,
     pub tick: u64,
 }
 
 /// A pre-measured comment: all the lines it will produce and its visual index.
-struct MeasuredComment<'a> {
-    _comment: &'a FlatComment,
+struct MeasuredComment {
     visual_index: usize,
     lines: Vec<CommentLine>,
 }
@@ -176,19 +175,12 @@ impl<'a> Widget for CommentTree<'a> {
 
         let available_height = inner.height.saturating_sub(header_height) as usize;
         if available_height == 0 {
-            // Clear row_map when nothing to render
-            self.state.row_map.borrow_mut().clear();
             return;
         }
 
-        // Initialize row_map for mouse click handling
-        {
-            let mut row_map = self.state.row_map.borrow_mut();
-            row_map.clear();
-            row_map.resize(inner.height as usize, None);
-        }
-
-        // Pass 1: measure all comments into rows
+        // Pass 1: measure all comments into rows. After this, `measured` owns
+        // all the data it needs and `visible` can be dropped so we can mutate
+        // other fields on self.state (row_map, scroll).
         let measured = measure_comments(
             &visible,
             &self.state.collapsed,
@@ -197,6 +189,11 @@ impl<'a> Widget for CommentTree<'a> {
             &self.state.pending_root_ids,
             spinner_frame,
         );
+        drop(visible);
+
+        // Initialize row_map for mouse click handling
+        self.state.row_map.clear();
+        self.state.row_map.resize(inner.height as usize, None);
 
         // Find the row offset where the selected comment starts
         let mut selected_row_start: usize = 0;
@@ -213,7 +210,7 @@ impl<'a> Widget for CommentTree<'a> {
         }
 
         // Scroll so selected comment is visible — prefer selected at top
-        let current_scroll = self.state.scroll.get();
+        let current_scroll = self.state.scroll;
         let scroll_row = if selected_row_start < current_scroll
             || selected_row_end > current_scroll + available_height
         {
@@ -221,7 +218,7 @@ impl<'a> Widget for CommentTree<'a> {
         } else {
             current_scroll
         };
-        self.state.scroll.set(scroll_row);
+        self.state.scroll = scroll_row;
 
         // Pass 2: render from scroll_row
         let mut screen_y = header_height;
@@ -254,11 +251,8 @@ impl<'a> Widget for CommentTree<'a> {
                 }
 
                 // Record row → comment mapping for mouse clicks
-                {
-                    let mut row_map = self.state.row_map.borrow_mut();
-                    if (screen_y as usize) < row_map.len() {
-                        row_map[screen_y as usize] = Some(mc.visual_index);
-                    }
+                if (screen_y as usize) < self.state.row_map.len() {
+                    self.state.row_map[screen_y as usize] = Some(mc.visual_index);
                 }
 
                 match line {
@@ -300,14 +294,14 @@ impl<'a> Widget for CommentTree<'a> {
 }
 
 /// Measure all visible comments into pre-computed line lists.
-fn measure_comments<'a>(
-    visible: &[&'a FlatComment],
+fn measure_comments(
+    visible: &[&FlatComment],
     collapsed: &std::collections::HashSet<u64>,
     all_comments: &[FlatComment],
     width: usize,
     pending_root_ids: &std::collections::HashSet<u64>,
     spinner_frame: &str,
-) -> Vec<MeasuredComment<'a>> {
+) -> Vec<MeasuredComment> {
     let mut result = Vec::new();
 
     for (vi, comment) in visible.iter().enumerate() {
@@ -389,7 +383,6 @@ fn measure_comments<'a>(
         lines.push(CommentLine::Gap);
 
         result.push(MeasuredComment {
-            _comment: comment,
             visual_index: vi,
             lines,
         });

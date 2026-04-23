@@ -705,10 +705,12 @@ impl App {
             self.focus = Pane::Comments;
 
             let screen_row = (row - inner.y) as usize;
-            let visual_index = {
-                let row_map = self.comment_state.row_map.borrow();
-                row_map.get(screen_row).copied().flatten()
-            };
+            let visual_index = self
+                .comment_state
+                .row_map
+                .get(screen_row)
+                .copied()
+                .flatten();
 
             if let Some(vi) = visual_index {
                 let visible_len = self.comment_state.visible_comments().len();

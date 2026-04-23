@@ -1,5 +1,4 @@
 use crate::api::types::Item;
-use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 
 pub struct FlatComment {
@@ -9,8 +8,8 @@ pub struct FlatComment {
 
 pub struct CommentTreeState {
     pub comments: Vec<FlatComment>,
-    /// Row-based scroll offset, updated by the renderer via interior mutability.
-    pub scroll: Cell<usize>,
+    /// Row-based scroll offset, updated by the renderer.
+    pub scroll: usize,
     pub selected: usize,
     pub collapsed: HashSet<u64>,
     pub loading: bool,
@@ -19,20 +18,20 @@ pub struct CommentTreeState {
     pub pending_root_ids: HashSet<u64>,
     /// Maps screen row (relative to inner area top) → visible comment index.
     /// Populated during render for mouse click handling.
-    pub row_map: RefCell<Vec<Option<usize>>>,
+    pub row_map: Vec<Option<usize>>,
 }
 
 impl CommentTreeState {
     pub fn new() -> Self {
         Self {
             comments: Vec::new(),
-            scroll: Cell::new(0),
+            scroll: 0,
             selected: 0,
             collapsed: HashSet::new(),
             loading: false,
             story: None,
             pending_root_ids: HashSet::new(),
-            row_map: RefCell::new(Vec::new()),
+            row_map: Vec::new(),
         }
     }
 
@@ -41,7 +40,7 @@ impl CommentTreeState {
             .into_iter()
             .map(|(item, depth)| FlatComment { item, depth })
             .collect();
-        self.scroll.set(0);
+        self.scroll = 0;
         self.selected = 0;
     }
 
@@ -99,7 +98,7 @@ impl CommentTreeState {
 
     pub fn jump_top(&mut self) {
         self.selected = 0;
-        self.scroll.set(0);
+        self.scroll = 0;
     }
 
     pub fn jump_bottom(&mut self) {
@@ -134,13 +133,13 @@ impl CommentTreeState {
 
     pub fn reset(&mut self) {
         self.comments.clear();
-        self.scroll.set(0);
+        self.scroll = 0;
         self.selected = 0;
         self.collapsed.clear();
         self.loading = false;
         self.story = None;
         self.pending_root_ids.clear();
-        self.row_map.borrow_mut().clear();
+        self.row_map.clear();
     }
 }
 
@@ -188,10 +187,10 @@ mod tests {
     #[test]
     fn set_comments_resets_scroll() {
         let mut state = CommentTreeState::new();
-        state.scroll.set(10);
+        state.scroll = 10;
         state.selected = 5;
         state.set_comments(sample_tree());
-        assert_eq!(state.scroll.get(), 0);
+        assert_eq!(state.scroll, 0);
         assert_eq!(state.selected, 0);
     }
 
@@ -295,10 +294,10 @@ mod tests {
         let mut state = CommentTreeState::new();
         state.set_comments(sample_tree());
         state.selected = 3;
-        state.scroll.set(5);
+        state.scroll = 5;
         state.jump_top();
         assert_eq!(state.selected, 0);
-        assert_eq!(state.scroll.get(), 0);
+        assert_eq!(state.scroll, 0);
     }
 
     #[test]
@@ -422,7 +421,7 @@ mod tests {
         state.pending_root_ids.insert(1);
         state.reset();
         assert!(state.comments.is_empty());
-        assert_eq!(state.scroll.get(), 0);
+        assert_eq!(state.scroll, 0);
         assert_eq!(state.selected, 0);
         assert!(state.collapsed.is_empty());
         assert!(!state.loading);
