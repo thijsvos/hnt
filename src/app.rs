@@ -837,7 +837,15 @@ async fn try_fetch_readme(client: &reqwest::Client, url: &str) -> Option<(String
     for readme_url in readme_urls {
         if let Ok(resp) = client.get(&readme_url).send().await {
             if resp.status().is_success() {
+                if let Some(len) = resp.content_length() {
+                    if len > MAX_RESPONSE_BYTES as u64 {
+                        continue;
+                    }
+                }
                 if let Ok(text) = resp.text().await {
+                    if text.len() > MAX_RESPONSE_BYTES {
+                        continue;
+                    }
                     if !text.trim().is_empty() {
                         let is_markdown = readme_url.ends_with(".md");
                         return Some((text, is_markdown));
@@ -996,6 +1004,12 @@ async fn fetch_and_extract_article(
 
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
+    }
+
+    if let Some(len) = resp.content_length() {
+        if len > MAX_RESPONSE_BYTES as u64 {
+            return Err("Article too large (>5MB)".to_string());
+        }
     }
 
     // Check content-type — reject non-HTML
