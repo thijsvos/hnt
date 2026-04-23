@@ -384,3 +384,176 @@ pub fn html_to_styled_lines(html: &[u8], width: usize) -> Vec<Vec<StyledFragment
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- markdown_to_styled_lines ---
+
+    #[test]
+    fn markdown_empty_input_produces_no_lines() {
+        let lines = markdown_to_styled_lines("", 80);
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn markdown_h1_is_bold_orange_followed_by_blank() {
+        let lines = markdown_to_styled_lines("# Title", 80);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0][0].text, "Title");
+        assert_eq!(lines[0][0].style.fg, Some(theme::HN_ORANGE));
+        assert!(lines[0][0].style.add_modifier.contains(Modifier::BOLD));
+        assert!(lines[1].is_empty());
+    }
+
+    #[test]
+    fn markdown_h2_is_bold_yellow() {
+        let lines = markdown_to_styled_lines("## Subtitle", 80);
+        assert_eq!(lines[0][0].text, "Subtitle");
+        assert_eq!(lines[0][0].style.fg, Some(theme::YELLOW));
+        assert!(lines[0][0].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn markdown_h3_is_bold_green() {
+        let lines = markdown_to_styled_lines("### Small heading", 80);
+        assert_eq!(lines[0][0].text, "Small heading");
+        assert_eq!(lines[0][0].style.fg, Some(theme::GREEN));
+    }
+
+    #[test]
+    fn markdown_bullet_dash_renders_bullet_glyph() {
+        let lines = markdown_to_styled_lines("- first\n- second", 80);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0][0].text.contains('\u{2022}'));
+        assert_eq!(lines[0][1].text, "first");
+        assert_eq!(lines[1][1].text, "second");
+    }
+
+    #[test]
+    fn markdown_bullet_asterisk_also_renders_bullet_glyph() {
+        let lines = markdown_to_styled_lines("* one", 80);
+        assert!(lines[0][0].text.contains('\u{2022}'));
+        assert_eq!(lines[0][1].text, "one");
+    }
+
+    #[test]
+    fn markdown_blockquote_is_italic_subtext_with_bar() {
+        let lines = markdown_to_styled_lines("> quoted", 80);
+        assert_eq!(lines[0][0].text, "\u{2502} ");
+        assert_eq!(lines[0][1].text, "quoted");
+        assert!(lines[0][1].style.add_modifier.contains(Modifier::ITALIC));
+    }
+
+    #[test]
+    fn markdown_indented_four_spaces_is_code_style() {
+        let lines = markdown_to_styled_lines("    let x = 1;", 80);
+        assert_eq!(lines[0][0].text, "    let x = 1;");
+        assert_eq!(lines[0][0].style.fg, Some(theme::GREEN));
+        assert_eq!(lines[0][0].style.bg, Some(theme::SURFACE));
+    }
+
+    #[test]
+    fn markdown_code_fence_keeps_marker_line() {
+        let lines = markdown_to_styled_lines("```rust", 80);
+        assert_eq!(lines[0][0].text, "```rust");
+        assert_eq!(lines[0][0].style.fg, Some(theme::DIM));
+    }
+
+    #[test]
+    fn markdown_long_line_is_word_wrapped() {
+        // 4-char word repeated; width 10 should wrap every 2-3 words.
+        let input = "word word word word word word word word";
+        let lines = markdown_to_styled_lines(input, 10);
+        assert!(lines.len() > 1);
+        for line in &lines {
+            let total: usize = line.iter().map(|f| f.text.chars().count()).sum();
+            assert!(total <= 10, "wrapped line exceeds width: len={}", total);
+        }
+    }
+
+    #[test]
+    fn markdown_plain_short_line_is_single_fragment() {
+        let lines = markdown_to_styled_lines("hello", 80);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0][0].text, "hello");
+        assert_eq!(lines[0][0].style.fg, Some(theme::TEXT));
+    }
+
+    // --- annotations_to_style ---
+
+    #[test]
+    fn annotations_empty_gives_default_text_color() {
+        let style = annotations_to_style(&[]);
+        assert_eq!(style.fg, Some(theme::TEXT));
+        assert!(style.add_modifier.is_empty());
+    }
+
+    #[test]
+    fn annotations_strong_adds_bold() {
+        let style = annotations_to_style(&[RichAnnotation::Strong]);
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn annotations_emphasis_adds_italic() {
+        let style = annotations_to_style(&[RichAnnotation::Emphasis]);
+        assert!(style.add_modifier.contains(Modifier::ITALIC));
+    }
+
+    #[test]
+    fn annotations_code_is_green_on_surface() {
+        let style = annotations_to_style(&[RichAnnotation::Code]);
+        assert_eq!(style.fg, Some(theme::GREEN));
+        assert_eq!(style.bg, Some(theme::SURFACE));
+    }
+
+    #[test]
+    fn annotations_link_is_blue_underlined() {
+        let style = annotations_to_style(&[RichAnnotation::Link("https://example.com".into())]);
+        assert_eq!(style.fg, Some(theme::BLUE));
+        assert!(style.add_modifier.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn annotations_strikeout_adds_crossed_out() {
+        let style = annotations_to_style(&[RichAnnotation::Strikeout]);
+        assert!(style.add_modifier.contains(Modifier::CROSSED_OUT));
+    }
+
+    #[test]
+    fn annotations_combined_strong_and_emphasis() {
+        let style = annotations_to_style(&[RichAnnotation::Strong, RichAnnotation::Emphasis]);
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+        assert!(style.add_modifier.contains(Modifier::ITALIC));
+    }
+
+    // --- html_to_styled_lines ---
+
+    #[test]
+    fn html_plain_paragraph_produces_fragments() {
+        let html = b"<p>hello world</p>";
+        let lines = html_to_styled_lines(html, 80);
+        assert!(!lines.is_empty());
+        let joined: String = lines[0].iter().map(|f| f.text.as_str()).collect();
+        assert!(joined.contains("hello world"));
+    }
+
+    #[test]
+    fn html_link_appends_url_in_dim_fragment() {
+        let html = b"<a href=\"https://example.com\">click</a>";
+        let lines = html_to_styled_lines(html, 80);
+        let joined: String = lines
+            .iter()
+            .flat_map(|l| l.iter().map(|f| f.text.as_str()))
+            .collect();
+        assert!(joined.contains("https://example.com"));
+    }
+
+    #[test]
+    fn html_empty_input_is_empty_output() {
+        let lines = html_to_styled_lines(b"", 80);
+        assert!(lines.is_empty());
+    }
+}
