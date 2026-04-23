@@ -26,7 +26,9 @@ pub enum Pane {
 pub enum AppMessage {
     StoriesLoaded {
         stories: Vec<Item>,
-        all_ids: Vec<u64>,
+        // Only populated on initial load; subsequent paginated loads reuse
+        // the cached ID list to avoid drift when the feed changes mid-session.
+        all_ids: Option<Vec<u64>>,
         append: bool,
     },
     CommentsLoaded {
@@ -130,7 +132,9 @@ impl App {
                     } else {
                         self.story_state.stories = stories;
                     }
-                    self.story_state.all_ids = all_ids;
+                    if let Some(ids) = all_ids {
+                        self.story_state.all_ids = ids;
+                    }
                     self.story_state.loading = false;
                     self.error = None;
                     // Auto-load comments for the first story on initial load
@@ -437,29 +441,50 @@ impl App {
 
     fn spawn_load_stories(&self, append: bool) {
         let client = self.client.clone();
-        let feed = self.current_feed;
-        let offset = if append {
-            self.story_state.stories.len()
-        } else {
-            0
-        };
         let tx = self.msg_tx.clone();
         let page_size = self.page_size();
 
-        tokio::spawn(async move {
-            match client.fetch_stories(feed, offset, page_size).await {
-                Ok((stories, all_ids)) => {
-                    let _ = tx.send(AppMessage::StoriesLoaded {
-                        stories,
-                        all_ids,
-                        append,
-                    });
+        if append {
+            // Reuse the ID list from the initial load so offsets stay stable
+            // even if new stories have been posted to the feed since.
+            let cached_ids = self.story_state.all_ids.clone();
+            let offset = self.story_state.stories.len();
+            tokio::spawn(async move {
+                match client
+                    .fetch_items_page(&cached_ids, offset, page_size)
+                    .await
+                {
+                    Ok(stories) => {
+                        let _ = tx.send(AppMessage::StoriesLoaded {
+                            stories,
+                            all_ids: None,
+                            append: true,
+                        });
+                    }
+                    Err(e) => {
+                        let _ =
+                            tx.send(AppMessage::Error(format!("Failed to load stories: {}", e)));
+                    }
                 }
-                Err(e) => {
-                    let _ = tx.send(AppMessage::Error(format!("Failed to load stories: {}", e)));
+            });
+        } else {
+            let feed = self.current_feed;
+            tokio::spawn(async move {
+                match client.fetch_stories(feed, 0, page_size).await {
+                    Ok((stories, all_ids)) => {
+                        let _ = tx.send(AppMessage::StoriesLoaded {
+                            stories,
+                            all_ids: Some(all_ids),
+                            append: false,
+                        });
+                    }
+                    Err(e) => {
+                        let _ =
+                            tx.send(AppMessage::Error(format!("Failed to load stories: {}", e)));
+                    }
                 }
-            }
-        });
+            });
+        }
     }
 
     fn load_selected_comments(&mut self) {

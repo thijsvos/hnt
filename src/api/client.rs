@@ -76,7 +76,30 @@ impl HnClient {
         ids.iter().map(|id| result_map.get(id).cloned()).collect()
     }
 
-    /// Fetch stories for a feed: get IDs, then batch fetch first `count` items.
+    /// Fetch a page of items from a pre-fetched ID list. Used for pagination
+    /// so callers can reuse the initial ID list instead of re-fetching it —
+    /// avoiding drift when new stories have been posted since the last fetch.
+    pub async fn fetch_items_page(
+        &self,
+        ids: &[u64],
+        offset: usize,
+        count: usize,
+    ) -> Result<Vec<Item>> {
+        if offset >= ids.len() {
+            return Ok(Vec::new());
+        }
+        let end = (offset + count).min(ids.len());
+        let page_ids = &ids[offset..end];
+
+        Ok(self
+            .fetch_items(page_ids)
+            .await
+            .into_iter()
+            .flatten()
+            .collect())
+    }
+
+    /// Fetch stories for a feed: get IDs, then batch fetch a page of items.
     pub async fn fetch_stories(
         &self,
         feed: FeedKind,
@@ -84,16 +107,7 @@ impl HnClient {
         count: usize,
     ) -> Result<(Vec<Item>, Vec<u64>)> {
         let all_ids = self.fetch_story_ids(feed).await?;
-        let end = (offset + count).min(all_ids.len());
-        let page_ids = &all_ids[offset..end];
-
-        let items: Vec<Item> = self
-            .fetch_items(page_ids)
-            .await
-            .into_iter()
-            .flatten()
-            .collect();
-
+        let items = self.fetch_items_page(&all_ids, offset, count).await?;
         Ok((items, all_ids))
     }
 
