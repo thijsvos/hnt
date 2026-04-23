@@ -23,7 +23,7 @@ impl HnClient {
     }
 
     pub fn clear_cache(&self) {
-        self.cache.lock().unwrap().clear();
+        self.cache.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
     /// Fetch the list of story IDs for a given feed.
@@ -37,7 +37,7 @@ impl HnClient {
     pub async fn fetch_item(&self, id: u64) -> Result<Option<Item>> {
         // Check cache first
         {
-            let cache = self.cache.lock().unwrap();
+            let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(item) = cache.get(&id) {
                 return Ok(Some(item.clone()));
             }
@@ -48,7 +48,7 @@ impl HnClient {
         let item: Option<Item> = resp.json().await?;
 
         if let Some(ref item) = item {
-            let mut cache = self.cache.lock().unwrap();
+            let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             cache.insert(id, item.clone());
         }
 
