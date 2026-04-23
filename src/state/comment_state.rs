@@ -4,6 +4,31 @@ use std::collections::HashSet;
 pub struct FlatComment {
     pub item: Item,
     pub depth: usize,
+    /// Cached plain-text rendering of `item.text` at the given width.
+    /// Populated on first render; invalidated by a width change.
+    plain_text_cache: Option<(usize, String)>,
+}
+
+impl FlatComment {
+    pub fn new(item: Item, depth: usize) -> Self {
+        Self {
+            item,
+            depth,
+            plain_text_cache: None,
+        }
+    }
+
+    /// Returns the plain-text rendering of `item.text` at `width`, reusing
+    /// the last-rendered result if the width matches.
+    pub fn plain_text(&mut self, width: usize) -> Option<&str> {
+        let text = self.item.text.as_deref()?;
+        let needs_refresh = !matches!(&self.plain_text_cache, Some((w, _)) if *w == width);
+        if needs_refresh {
+            let rendered = html2text::from_read(text.as_bytes(), width.max(20)).unwrap_or_default();
+            self.plain_text_cache = Some((width, rendered));
+        }
+        self.plain_text_cache.as_ref().map(|(_, s)| s.as_str())
+    }
 }
 
 pub struct CommentTreeState {
@@ -19,6 +44,9 @@ pub struct CommentTreeState {
     /// Maps screen row (relative to inner area top) → visible comment index.
     /// Populated during render for mouse click handling.
     pub row_map: Vec<Option<usize>>,
+    /// Cached plain-text rendering of the current story's text (id, width, text).
+    /// Invalidated automatically when story id or width changes.
+    story_text_cache: Option<(u64, usize, String)>,
 }
 
 impl CommentTreeState {
@@ -32,13 +60,29 @@ impl CommentTreeState {
             story: None,
             pending_root_ids: HashSet::new(),
             row_map: Vec::new(),
+            story_text_cache: None,
         }
+    }
+
+    /// Return the plain-text rendering of the current story's text at `width`,
+    /// reusing the last-rendered result if the story and width match.
+    pub fn story_plain_text(&mut self, width: usize) -> Option<&str> {
+        let story = self.story.as_ref()?;
+        let text = story.text.as_deref()?;
+        let id = story.id;
+        let needs_refresh =
+            !matches!(&self.story_text_cache, Some((cid, w, _)) if *cid == id && *w == width);
+        if needs_refresh {
+            let rendered = html2text::from_read(text.as_bytes(), width.max(20)).unwrap_or_default();
+            self.story_text_cache = Some((id, width, rendered));
+        }
+        self.story_text_cache.as_ref().map(|(_, _, s)| s.as_str())
     }
 
     pub fn set_comments(&mut self, items: Vec<(Item, usize)>) {
         self.comments = items
             .into_iter()
-            .map(|(item, depth)| FlatComment { item, depth })
+            .map(|(item, depth)| FlatComment::new(item, depth))
             .collect();
         self.scroll = 0;
         self.selected = 0;
@@ -55,7 +99,7 @@ impl CommentTreeState {
         if let Some(pos) = insert_pos {
             let new_comments: Vec<FlatComment> = children
                 .into_iter()
-                .map(|(item, depth)| FlatComment { item, depth })
+                .map(|(item, depth)| FlatComment::new(item, depth))
                 .collect();
             // Splice them in after the parent
             self.comments.splice(pos..pos, new_comments);

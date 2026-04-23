@@ -86,9 +86,14 @@ impl<'a> Widget for CommentTree<'a> {
         // Render story meta header (fixed, not scrolled)
         let mut header_height: u16 = 0;
 
+        let story_plain = self
+            .state
+            .story_plain_text(inner.width as usize)
+            .map(str::to_owned);
+
         if let Some(story) = &self.state.story {
-            if let Some(text) = &story.text {
-                let plain = html_to_plain(text, inner.width as usize);
+            if let Some(_text) = &story.text {
+                let plain = story_plain.clone().unwrap_or_default();
                 let meta = format!(
                     "  {} pts | {} | {} comments",
                     story.score.unwrap_or(0),
@@ -183,7 +188,7 @@ impl<'a> Widget for CommentTree<'a> {
         let measured = measure_comments(
             visible,
             &self.state.collapsed,
-            &self.state.comments,
+            &mut self.state.comments,
             inner.width as usize,
             &self.state.pending_root_ids,
             spinner_frame,
@@ -295,7 +300,7 @@ impl<'a> Widget for CommentTree<'a> {
 fn measure_comments(
     visible_indices: &[usize],
     collapsed: &std::collections::HashSet<u64>,
-    all_comments: &[FlatComment],
+    all_comments: &mut [FlatComment],
     width: usize,
     pending_root_ids: &std::collections::HashSet<u64>,
     spinner_frame: &str,
@@ -303,15 +308,26 @@ fn measure_comments(
     let mut result = Vec::new();
 
     for (vi, &idx) in visible_indices.iter().enumerate() {
-        let comment = &all_comments[idx];
         let mut lines = Vec::new();
-        let depth_color = theme::depth_color(comment.depth);
-        let indent = "  ".repeat(comment.depth);
+        let depth = all_comments[idx].depth;
+        let indent = "  ".repeat(depth);
         let bar = "│ ";
+        let text_width = width.saturating_sub(indent.len() + bar.len() + 2);
+        let is_collapsed = collapsed.contains(&all_comments[idx].item.id);
+
+        // Populate/refresh the plain-text cache for this comment under a
+        // short-lived mutable borrow, then read everything else immutably.
+        let plain_text = if is_collapsed {
+            None
+        } else {
+            all_comments[idx].plain_text(text_width).map(str::to_owned)
+        };
+
+        let comment = &all_comments[idx];
+        let depth_color = theme::depth_color(comment.depth);
 
         let author = comment.item.by.as_deref().unwrap_or("[deleted]");
         let time_ago = comment.item.time.map(format_time_ago).unwrap_or_default();
-        let is_collapsed = collapsed.contains(&comment.item.id);
         let collapse_indicator = if is_collapsed { " [+]" } else { "" };
 
         let child_count = if is_collapsed {
@@ -356,24 +372,19 @@ fn measure_comments(
         lines.push(CommentLine::Header(header_spans));
 
         // Comment text lines
-        if !is_collapsed {
-            if let Some(text) = &comment.item.text {
-                let text_width = width.saturating_sub(indent.len() + bar.len() + 2);
-                let plain = html_to_plain(text, text_width);
-
-                for line in plain.lines().take(20) {
-                    let text_spans = vec![
-                        (
-                            format!("{}{}", indent, bar),
-                            ratatui::style::Style::default().fg(depth_color),
-                        ),
-                        (
-                            line.to_string(),
-                            ratatui::style::Style::default().fg(theme::TEXT),
-                        ),
-                    ];
-                    lines.push(CommentLine::Text(text_spans));
-                }
+        if let Some(plain) = &plain_text {
+            for line in plain.lines().take(20) {
+                let text_spans = vec![
+                    (
+                        format!("{}{}", indent, bar),
+                        ratatui::style::Style::default().fg(depth_color),
+                    ),
+                    (
+                        line.to_string(),
+                        ratatui::style::Style::default().fg(theme::TEXT),
+                    ),
+                ];
+                lines.push(CommentLine::Text(text_spans));
             }
         }
 
@@ -406,9 +417,4 @@ fn count_hidden_children(all: &[FlatComment], parent: &FlatComment) -> usize {
         }
         None => 0,
     }
-}
-
-fn html_to_plain(html: &str, width: usize) -> String {
-    let width = width.max(20);
-    html2text::from_read(html.as_bytes(), width).unwrap_or_default()
 }
