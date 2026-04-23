@@ -1,24 +1,28 @@
 use super::types::{FeedKind, Item, SearchResponse};
 use anyhow::Result;
 use futures::stream::{self, StreamExt};
+use lru::LruCache;
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
 const BASE_URL: &str = "https://hacker-news.firebaseio.com/v0";
 const ALGOLIA_URL: &str = "https://hn.algolia.com/api/v1/search";
 const CONCURRENT_REQUESTS: usize = 20;
+const CACHE_CAPACITY: usize = 2000;
 
 #[derive(Clone)]
 pub struct HnClient {
     client: reqwest::Client,
-    cache: Arc<Mutex<HashMap<u64, Item>>>,
+    cache: Arc<Mutex<LruCache<u64, Item>>>,
 }
 
 impl HnClient {
     pub fn new() -> Self {
+        let capacity = NonZeroUsize::new(CACHE_CAPACITY).expect("cache capacity > 0");
         Self {
             client: reqwest::Client::new(),
-            cache: Arc::new(Mutex::new(HashMap::new())),
+            cache: Arc::new(Mutex::new(LruCache::new(capacity))),
         }
     }
 
@@ -37,7 +41,7 @@ impl HnClient {
     pub async fn fetch_item(&self, id: u64) -> Result<Option<Item>> {
         // Check cache first
         {
-            let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+            let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(item) = cache.get(&id) {
                 return Ok(Some(item.clone()));
             }
@@ -49,7 +53,7 @@ impl HnClient {
 
         if let Some(ref item) = item {
             let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-            cache.insert(id, item.clone());
+            cache.put(id, item.clone());
         }
 
         Ok(item)
