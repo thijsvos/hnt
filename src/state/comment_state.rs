@@ -62,11 +62,12 @@ impl CommentTreeState {
         }
     }
 
-    pub fn visible_comments(&self) -> Vec<&FlatComment> {
-        let mut result = Vec::new();
+    /// Walk the comment tree, skipping subtrees rooted at a collapsed comment.
+    /// Returns the indices (into `self.comments`) that should be shown.
+    pub fn visible_indices(&self) -> Vec<usize> {
+        let mut indices = Vec::with_capacity(self.comments.len());
         let mut skip_depth: Option<usize> = None;
-
-        for comment in &self.comments {
+        for (i, comment) in self.comments.iter().enumerate() {
             if let Some(sd) = skip_depth {
                 if comment.depth > sd {
                     continue;
@@ -74,15 +75,19 @@ impl CommentTreeState {
                     skip_depth = None;
                 }
             }
-
             if self.collapsed.contains(&comment.item.id) {
                 skip_depth = Some(comment.depth);
             }
-
-            result.push(comment);
+            indices.push(i);
         }
+        indices
+    }
 
-        result
+    pub fn visible_comments(&self) -> Vec<&FlatComment> {
+        self.visible_indices()
+            .into_iter()
+            .map(|i| &self.comments[i])
+            .collect()
     }
 
     pub fn select_next(&mut self) {
