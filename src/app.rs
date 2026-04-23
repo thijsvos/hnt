@@ -556,6 +556,12 @@ impl App {
             return;
         }
 
+        // Reject non-http(s) schemes (file://, javascript:, data:, etc.) before fetching.
+        match url::Url::parse(url.as_deref().unwrap_or("")) {
+            Ok(parsed) if matches!(parsed.scheme(), "http" | "https") => {}
+            _ => return,
+        }
+
         self.reader_state = Some(ReaderState::new_loading(title, domain, url.clone()));
 
         let tx = self.msg_tx.clone();
