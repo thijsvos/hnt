@@ -143,7 +143,10 @@ impl<'a> Widget for StoryList<'a> {
 }
 
 pub fn format_time_ago(timestamp: i64) -> String {
-    let now = chrono::Utc::now().timestamp();
+    format_time_ago_since(timestamp, chrono::Utc::now().timestamp())
+}
+
+fn format_time_ago_since(timestamp: i64, now: i64) -> String {
     let diff = now - timestamp;
 
     if diff < 60 {
@@ -154,5 +157,51 @@ pub fn format_time_ago(timestamp: i64) -> String {
         format!("{}h", diff / 3600)
     } else {
         format!("{}d", diff / 86400)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_time_ago_since;
+
+    #[test]
+    fn zero_seconds_is_0s() {
+        assert_eq!(format_time_ago_since(1_000, 1_000), "0s");
+    }
+
+    #[test]
+    fn fifty_nine_seconds_is_seconds() {
+        assert_eq!(format_time_ago_since(0, 59), "59s");
+    }
+
+    #[test]
+    fn sixty_seconds_rolls_over_to_minutes() {
+        assert_eq!(format_time_ago_since(0, 60), "1m");
+    }
+
+    #[test]
+    fn just_under_an_hour_is_minutes() {
+        assert_eq!(format_time_ago_since(0, 3599), "59m");
+    }
+
+    #[test]
+    fn one_hour_rolls_over_to_hours() {
+        assert_eq!(format_time_ago_since(0, 3600), "1h");
+    }
+
+    #[test]
+    fn just_under_a_day_is_hours() {
+        assert_eq!(format_time_ago_since(0, 86_399), "23h");
+    }
+
+    #[test]
+    fn one_day_rolls_over_to_days() {
+        assert_eq!(format_time_ago_since(0, 86_400), "1d");
+    }
+
+    #[test]
+    fn large_diff_counts_days() {
+        // ~30 days
+        assert_eq!(format_time_ago_since(0, 86_400 * 30), "30d");
     }
 }
