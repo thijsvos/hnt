@@ -1,3 +1,8 @@
+//! Bottom status bar: mode indicator, keybinding hint, position counter.
+//!
+//! Renders three visual modes — search-input prompt, search-results
+//! banner, and normal — plus a right-aligned `N/total [Pane]` counter.
+
 use crate::api::types::FeedKind;
 use crate::keys::InputMode;
 use crate::ui::theme;
@@ -8,6 +13,9 @@ use ratatui::{
     widgets::Widget,
 };
 
+/// Bottom status bar. Display mode depends on `input_mode` and
+/// `search_query`: a `/` prompt during input, a search-results banner
+/// while search results are shown, or the normal feed/hint line.
 pub struct StatusBar {
     pub feed: FeedKind,
     pub position: String,

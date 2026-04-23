@@ -1,10 +1,21 @@
+//! Article-reader overlay state.
+//!
+//! [`ReaderState`] tracks the pre-rendered [`StyledFragment`] lines,
+//! scroll position, and loading/error status for an article fetched via
+//! `crate::article`. [`StyledFragment`] is the shared line-fragment type
+//! used by both article extraction and HTML comment rendering.
+
 use ratatui::style::Style;
 
+/// A run of text sharing one ratatui [`Style`]. Multiple fragments compose
+/// one rendered line (see `Vec<Vec<StyledFragment>>`).
 pub struct StyledFragment {
     pub text: String,
     pub style: Style,
 }
 
+/// Article-reader overlay state: title/domain chrome, pre-rendered styled
+/// lines, scroll position, and loading/error status.
 pub struct ReaderState {
     pub title: String,
     pub domain: Option<String>,
@@ -16,6 +27,9 @@ pub struct ReaderState {
 }
 
 impl ReaderState {
+    /// Starts in the loading state; the overlay renders a placeholder until
+    /// [`set_content`](Self::set_content) or [`set_error`](Self::set_error)
+    /// is called.
     pub fn new_loading(title: String, domain: Option<String>, url: Option<String>) -> Self {
         Self {
             title,
@@ -28,6 +42,8 @@ impl ReaderState {
         }
     }
 
+    /// Installs loaded content, clears the loading flag and any prior
+    /// error, and resets scroll to the top.
     pub fn set_content(&mut self, lines: Vec<Vec<StyledFragment>>) {
         self.lines = lines;
         self.loading = false;
@@ -35,6 +51,7 @@ impl ReaderState {
         self.scroll = 0;
     }
 
+    /// Transitions from loading to error state with the given message.
     pub fn set_error(&mut self, msg: String) {
         self.error = Some(msg);
         self.loading = false;
@@ -65,6 +82,8 @@ impl ReaderState {
         self.scroll = self.max_scroll();
     }
 
+    /// Position as a percentage of `max_scroll`, clamped 0..=100. Returns
+    /// 100 when the content is empty or fits on one line.
     pub fn scroll_percent(&self) -> u16 {
         let max = self.max_scroll();
         if max == 0 {

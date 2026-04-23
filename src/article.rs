@@ -1,3 +1,10 @@
+//! Article fetching and rendering for the inline reader overlay.
+//!
+//! [`fetch_and_extract_article`] downloads a URL, runs readability
+//! extraction, and returns styled lines ready for rendering. For GitHub
+//! and GitLab repo roots it short-circuits to the raw README. HN-native
+//! text posts (Ask HN, etc.) go through [`html_to_styled_lines`] directly.
+
 use crate::state::reader_state::StyledFragment;
 use crate::ui::theme;
 use html2text::render::RichAnnotation;
@@ -5,8 +12,8 @@ use ratatui::style::{Modifier, Style};
 
 const MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024; // 5MB
 
-/// For GitHub/GitLab repo pages, try to fetch the raw README instead of the
-/// JS-heavy HTML shell (the README content is loaded dynamically by JS).
+/// For GitHub/GitLab repo pages, tries to fetch the raw README instead of
+/// the JS-heavy HTML shell (the README content is loaded dynamically by JS).
 async fn try_fetch_readme(client: &reqwest::Client, url: &str) -> Option<(String, bool)> {
     let parsed = url::Url::parse(url).ok()?;
     let host = parsed.host_str()?;
@@ -76,7 +83,11 @@ async fn try_fetch_readme(client: &reqwest::Client, url: &str) -> Option<(String
     None
 }
 
-/// Convert markdown text to styled lines with basic formatting.
+/// Converts markdown text to styled lines with basic formatting.
+///
+/// Handles h1/h2/h3 headings, bullet lists, blockquotes, fenced code
+/// markers, and 4-space/tab indented code blocks. Long lines are
+/// word-wrapped at `width`.
 fn markdown_to_styled_lines(text: &str, width: usize) -> Vec<Vec<StyledFragment>> {
     let mut lines: Vec<Vec<StyledFragment>> = Vec::new();
 
@@ -181,7 +192,8 @@ fn markdown_to_styled_lines(text: &str, width: usize) -> Vec<Vec<StyledFragment>
     lines
 }
 
-/// Fetch article HTML, run readability extraction, convert to styled lines.
+/// Fetches article HTML, runs readability extraction, converts to styled
+/// lines.
 pub async fn fetch_and_extract_article(
     url: &str,
     width: usize,
@@ -266,7 +278,8 @@ pub async fn fetch_and_extract_article(
         .map_err(|e| format!("Processing error: {}", e))?
 }
 
-/// Run readability extraction + html2text rich rendering (blocking/CPU-bound).
+/// Runs readability extraction + html2text rich rendering
+/// (blocking/CPU-bound).
 fn extract_article_content(
     html_bytes: &[u8],
     url_str: &str,
@@ -326,7 +339,7 @@ fn extract_article_content(
     Ok(lines)
 }
 
-/// Convert html2text RichAnnotation set to a ratatui Style.
+/// Converts an html2text `RichAnnotation` set to a ratatui [`Style`].
 fn annotations_to_style(annotations: &[RichAnnotation]) -> Style {
     let mut style = Style::default().fg(theme::TEXT);
 
@@ -357,7 +370,7 @@ fn annotations_to_style(annotations: &[RichAnnotation]) -> Style {
     style
 }
 
-/// Convert raw HTML bytes to styled lines using html2text rich rendering.
+/// Converts raw HTML bytes to styled lines using html2text rich rendering.
 pub fn html_to_styled_lines(html: &[u8], width: usize) -> Vec<Vec<StyledFragment>> {
     let tagged_lines = html2text::from_read_rich(html, width).unwrap_or_default();
 

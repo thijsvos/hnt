@@ -1,3 +1,10 @@
+//! Terminal UI widgets and top-level frame renderer.
+//!
+//! [`render`] composes one ratatui frame from [`App`] state: header tab bar,
+//! story list, comment tree, status bar, plus the help and article-reader
+//! overlays when active. Submodules expose individual widgets and the
+//! shared [`theme`] palette.
+
 pub mod article_reader;
 pub mod comment_tree;
 pub mod header;

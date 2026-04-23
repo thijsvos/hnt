@@ -1,3 +1,10 @@
+//! HTTP client for the Hacker News Firebase API and Algolia search.
+//!
+//! [`HnClient`] is cheaply [`Clone`]able (shared `reqwest::Client` plus
+//! `Arc<Mutex<LruCache>>`) so async tasks can each take their own handle.
+//! Item fetches are cached up to `CACHE_CAPACITY` entries and fan out
+//! with `CONCURRENT_REQUESTS` in flight.
+
 use super::types::{FeedKind, Item, SearchResponse};
 use anyhow::Result;
 use futures::stream::{self, StreamExt};
@@ -11,6 +18,11 @@ const ALGOLIA_URL: &str = "https://hn.algolia.com/api/v1/search";
 const CONCURRENT_REQUESTS: usize = 20;
 const CACHE_CAPACITY: usize = 2000;
 
+/// Shared HTTP client for the Hacker News API.
+///
+/// Cheaply [`Clone`]able — both fields are `Arc`-backed — so each spawned
+/// task can take its own handle. Item fetches hit the internal LRU cache
+/// before the network.
 #[derive(Clone)]
 pub struct HnClient {
     client: reqwest::Client,
@@ -18,6 +30,8 @@ pub struct HnClient {
 }
 
 impl HnClient {
+    /// Builds a fresh client with an empty LRU cache of up to
+    /// `CACHE_CAPACITY` items.
     pub fn new() -> Self {
         let capacity = NonZeroUsize::new(CACHE_CAPACITY).expect("cache capacity > 0");
         Self {
@@ -26,18 +40,20 @@ impl HnClient {
         }
     }
 
+    /// Drops every cached item. Called on feed switch and refresh to avoid
+    /// serving stale data.
     pub fn clear_cache(&self) {
         self.cache.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
-    /// Fetch the list of story IDs for a given feed.
+    /// Fetches the list of story IDs for a given feed.
     pub async fn fetch_story_ids(&self, feed: FeedKind) -> Result<Vec<u64>> {
         let url = format!("{}/{}.json", BASE_URL, feed.endpoint());
         let ids: Vec<u64> = self.client.get(&url).send().await?.json().await?;
         Ok(ids)
     }
 
-    /// Fetch a single item by ID (uses cache).
+    /// Fetches a single item by ID, consulting the LRU cache first.
     pub async fn fetch_item(&self, id: u64) -> Result<Option<Item>> {
         // Check cache first
         {
@@ -59,7 +75,10 @@ impl HnClient {
         Ok(item)
     }
 
-    /// Fetch multiple items concurrently (up to CONCURRENT_REQUESTS at a time).
+    /// Fetches multiple items concurrently (up to `CONCURRENT_REQUESTS`
+    /// in flight) and returns them in the order of `ids` — `result[i]`
+    /// corresponds to `ids[i]`, and is `None` when the item was missing
+    /// or its fetch failed.
     pub async fn fetch_items(&self, ids: &[u64]) -> Vec<Option<Item>> {
         let results: Vec<Option<Item>> = stream::iter(ids.iter().copied())
             .map(|id| {
@@ -80,7 +99,7 @@ impl HnClient {
         ids.iter().map(|id| result_map.get(id).cloned()).collect()
     }
 
-    /// Fetch a page of items from a pre-fetched ID list. Used for pagination
+    /// Fetches a page of items from a pre-fetched ID list. Used for pagination
     /// so callers can reuse the initial ID list instead of re-fetching it —
     /// avoiding drift when new stories have been posted since the last fetch.
     pub async fn fetch_items_page(
@@ -103,7 +122,9 @@ impl HnClient {
             .collect())
     }
 
-    /// Fetch stories for a feed: get IDs, then batch fetch a page of items.
+    /// Fetches a page of a feed. Returns `(items, all_ids)` where `all_ids`
+    /// is the complete ID list from the feed endpoint — callers should stash
+    /// it for stable subsequent pagination.
     pub async fn fetch_stories(
         &self,
         feed: FeedKind,
@@ -115,7 +136,11 @@ impl HnClient {
         Ok((items, all_ids))
     }
 
-    /// Search stories via the HN Algolia API.
+    /// Searches stories via the HN Algolia API.
+    ///
+    /// Returns `(stories, total_pages, total_hits)`. `page` is 0-indexed.
+    /// Story [`Item::kids`] is always `None` in results — fetch the full
+    /// item if comment IDs are needed.
     pub async fn search_stories(
         &self,
         query: &str,
@@ -132,7 +157,10 @@ impl HnClient {
         Ok((stories, resp.nb_pages, resp.nb_hits))
     }
 
-    /// Recursively fetch children of a comment, depth-first.
+    /// Walks a comment subtree depth-first, appending `(Item, depth)` into
+    /// `result` for every live descendant up to `max_depth`. Dead/deleted
+    /// comments are skipped. Returns a boxed future so the recursion can
+    /// cross `async` boundaries.
     pub fn fetch_children_recursive<'a>(
         &'a self,
         ids: &'a [u64],
@@ -163,7 +191,9 @@ impl HnClient {
     }
 }
 
-/// Minimal percent-encoding for query parameters.
+/// Percent-encodes a query-string value. Preserves unreserved characters
+/// (`A-Z a-z 0-9 -_.~`), encodes space as `+`, and percent-encodes every
+/// other byte.
 fn url_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {

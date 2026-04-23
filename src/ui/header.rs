@@ -1,3 +1,5 @@
+//! Top header bar: app brand, feed tabs, and search-mode indicator.
+
 use crate::api::types::FeedKind;
 use crate::ui::theme;
 use ratatui::{
@@ -7,6 +9,8 @@ use ratatui::{
     widgets::Widget,
 };
 
+/// Top header: brand, feed tabs (highlighting `current_feed` unless a
+/// search is active), and a "Search" chip when `search_active`.
 pub struct Header {
     pub current_feed: FeedKind,
     pub search_active: bool,

@@ -1,5 +1,17 @@
+//! State for the left-hand story list pane.
+//!
+//! Holds the loaded [`Item`]s, the full ID list from the initial feed
+//! fetch (used to compute stable pagination offsets), selection index,
+//! and the loading flag. [`StoryListState::needs_more`] drives lazy
+//! pagination when the cursor approaches the end.
+
 use crate::api::types::Item;
 
+/// State for the story-list pane.
+///
+/// `stories` is the currently loaded window; `all_ids` is the full ID list
+/// from the initial feed fetch, used as a stable index for pagination so
+/// appended pages don't drift when new stories are posted mid-session.
 pub struct StoryListState {
     pub stories: Vec<Item>,
     pub all_ids: Vec<u64>,
@@ -53,6 +65,8 @@ impl StoryListState {
         self.stories.get(self.selected)
     }
 
+    /// Whether the selected story is within 80% of the loaded window and
+    /// more IDs remain to be fetched — signals lazy-pagination time.
     pub fn needs_more(&self) -> bool {
         // Load more when within 80% of loaded stories
         if self.stories.is_empty() {

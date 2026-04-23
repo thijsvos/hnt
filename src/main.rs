@@ -1,3 +1,8 @@
+//! `hnt` — a terminal Hacker News reader built on ratatui + tokio.
+//!
+//! Two-pane layout (stories/comments) with an overlay article reader,
+//! Algolia-backed search, and progressive comment-tree fetching.
+
 mod api;
 mod app;
 mod article;
