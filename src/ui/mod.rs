@@ -16,7 +16,7 @@ use ratatui::{
     Frame,
 };
 
-pub fn render(app: &App, frame: &mut Frame) {
+pub fn render(app: &mut App, frame: &mut Frame) {
     let area = frame.area();
 
     // Fill background
@@ -52,7 +52,7 @@ pub fn render(app: &App, frame: &mut Frame) {
     // Comment tree
     frame.render_widget(
         comment_tree::CommentTree {
-            state: &app.comment_state,
+            state: &mut app.comment_state,
             focused: app.focus == crate::app::Pane::Comments,
             tick: app.tick_count,
         },
