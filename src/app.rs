@@ -961,7 +961,11 @@ async fn fetch_and_extract_article(
     width: usize,
 ) -> Result<Vec<Vec<StyledFragment>>, String> {
     let client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (compatible; hnt/0.2)")
+        .user_agent(concat!(
+            "Mozilla/5.0 (compatible; hnt/",
+            env!("CARGO_PKG_VERSION"),
+            ")"
+        ))
         .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| format!("HTTP client error: {}", e))?;
