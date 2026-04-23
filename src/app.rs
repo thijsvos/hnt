@@ -61,9 +61,7 @@ pub enum AppMessage {
     /// spinners.
     CommentsDone,
     /// Article reader content extracted and ready to render.
-    ArticleLoaded {
-        lines: Vec<Vec<StyledFragment>>,
-    },
+    ArticleLoaded { lines: Vec<Vec<StyledFragment>> },
     /// Algolia search returned a page of results.
     SearchResultsLoaded {
         stories: Vec<Item>,
