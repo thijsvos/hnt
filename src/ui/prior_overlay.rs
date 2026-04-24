@@ -14,8 +14,9 @@ use ratatui::{
     Frame,
 };
 
-/// Draws the prior-discussions overlay for `state` into `area` with a
-/// small margin. No-op if the available space is too small.
+/// Draws the prior-discussions overlay for `state` into `area`.
+///
+/// Leaves a small margin and no-ops if the available space is too small.
 pub fn render_prior_overlay(frame: &mut Frame, area: Rect, state: &PriorDiscussionsState) {
     let margin = 2u16;
     let x = margin.min(area.width / 2);
@@ -157,6 +158,9 @@ fn format_submission(item: &Item, selected: bool, width: usize) -> [Line<'static
     [line1, line2]
 }
 
+/// Truncates `s` to at most `max` characters (operating on `char`s to stay
+/// UTF-8-safe), appending `...` when truncation occurs. Returns `s`
+/// unchanged when it already fits.
 fn truncate_to(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();

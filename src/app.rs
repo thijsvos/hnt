@@ -74,9 +74,9 @@ pub enum AppMessage {
     ArticleError(String),
     /// Generic error to surface in the status bar.
     Error(String),
-    /// Algolia returned prior HN submissions of the selected story's URL.
-    /// `story_id` is the story that triggered the query — used to drop
-    /// results whose story has since been deselected.
+    /// Carries prior HN submissions of the selected story's URL returned
+    /// by Algolia. `story_id` identifies the originating query so stale
+    /// results (user has since deselected the story) can be dropped.
     PriorDiscussionsLoaded {
         story_id: u64,
         submissions: Vec<Item>,
@@ -105,12 +105,12 @@ pub struct App {
     pub tick_count: u64,
 
     /// Prior-discussions overlay state. `Some` while the overlay is open;
-    /// `None` otherwise. Contents are populated from `prior_results` when
-    /// the user presses `h`.
+    /// `None` otherwise. Contents are populated from [`App::prior_results`]
+    /// when the user presses `h`.
     pub prior_state: Option<PriorDiscussionsState>,
     /// Prior-submissions query results, keyed by the story ID that was
     /// queried. Keeps each result around for the rest of the session so
-    /// reopening the `h` overlay doesn't trigger a refetch.
+    /// reopening the [`PriorDiscussionsState`] overlay doesn't trigger a refetch.
     pub prior_results: HashMap<u64, Vec<Item>>,
     /// Story IDs whose URL queries are in flight. Prevents duplicate spawns.
     prior_in_flight: HashSet<u64>,

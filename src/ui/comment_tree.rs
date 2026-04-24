@@ -23,7 +23,7 @@ use ratatui::{
 ///
 /// `prior_count` is an optional informational badge shown in the title when
 /// non-zero — the number of prior HN submissions of the loaded story's URL
-/// that the `h` overlay will surface.
+/// that the [`crate::ui::prior_overlay`] overlay (bound to `h`) will surface.
 pub struct CommentTree<'a> {
     pub state: &'a mut CommentTreeState,
     pub visible: &'a [usize],

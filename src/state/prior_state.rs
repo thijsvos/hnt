@@ -10,13 +10,18 @@ use crate::api::types::Item;
 
 /// State backing the prior-discussions overlay.
 ///
-/// `story_id` identifies the story whose URL was queried — the UI checks
-/// this against the currently selected story to avoid stale data. `submissions`
-/// is the list of prior HN submissions of the same URL, sorted by Algolia's
-/// default (most recent first). `selected` is the list cursor.
+/// Populated from [`crate::api::client::HnClient::search_by_url`] results
+/// and displayed by [`crate::ui::prior_overlay::render_prior_overlay`].
+/// [`PriorDiscussionsState::new`] constructs a fresh instance positioned
+/// at the first entry; the `select_*` / `jump_*` methods drive the cursor.
 pub struct PriorDiscussionsState {
+    /// Story whose URL was queried. Checked against the currently selected
+    /// story so stale results from a prior selection are dropped.
     pub story_id: u64,
+    /// Prior HN submissions of `story_id`'s URL, in Algolia default order
+    /// (most recent first). May be empty when the URL has no prior submissions.
     pub submissions: Vec<Item>,
+    /// Cursor into `submissions`. Clamps at `submissions.len() - 1`.
     pub selected: usize,
 }
 
@@ -30,7 +35,8 @@ impl PriorDiscussionsState {
         }
     }
 
-    /// Moves selection down one row, clamping at the last entry.
+    /// Advances selection by one, saturating at the last entry. No-op when
+    /// `submissions` is empty.
     pub fn select_next(&mut self) {
         if !self.submissions.is_empty() {
             self.selected = (self.selected + 1).min(self.submissions.len() - 1);
@@ -47,7 +53,7 @@ impl PriorDiscussionsState {
         self.selected = 0;
     }
 
-    /// Jumps selection to the last entry.
+    /// Jumps selection to the last entry. No-op when `submissions` is empty.
     pub fn jump_bottom(&mut self) {
         if !self.submissions.is_empty() {
             self.selected = self.submissions.len() - 1;
