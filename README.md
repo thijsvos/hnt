@@ -21,6 +21,7 @@ Browse stories, read threaded comments, and open links — all from your termina
 - **Search** — Algolia-powered full-text search across stories
 - **Reader mode** — Read article content directly in the terminal
 - **Prior discussions** — Press `h` to see past HN submissions of the same URL with their scores and dates
+- **Read-state tracking** — Visited stories render dimmed; stories with new comments since your last visit get a `+N` badge. Persisted to `$XDG_DATA_HOME/hnt/read.json`
 - **Open in browser** — Press `o` to open the story URL
 - **Progressive loading** — Root comments appear instantly, children load in the background
 - **Lazy pagination** — Stories load automatically as you scroll

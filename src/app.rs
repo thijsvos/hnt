@@ -12,6 +12,7 @@ use crate::article::{fetch_and_extract_article, html_to_styled_lines};
 use crate::keys::{Action, InputMode};
 use crate::state::comment_state::CommentTreeState;
 use crate::state::prior_state::PriorDiscussionsState;
+use crate::state::read_store::ReadStore;
 use crate::state::reader_state::{ReaderState, StyledFragment};
 use crate::state::search_state::SearchState;
 use crate::state::story_state::StoryListState;
@@ -115,6 +116,13 @@ pub struct App {
     /// Story IDs whose URL queries are in flight. Prevents duplicate spawns.
     prior_in_flight: HashSet<u64>,
 
+    /// Persisted read-state — records which stories have been opened and
+    /// how many comments each had at the time. Rendered by
+    /// [`crate::ui::story_list::StoryList`] to dim visited stories and
+    /// surface `+N` new-comments badges. Loaded from disk at startup and
+    /// flushed via [`App::persist`] on shutdown.
+    pub read_store: ReadStore,
+
     last_comment_click: Option<(std::time::Instant, usize)>,
 
     client: HnClient,
@@ -144,6 +152,7 @@ impl App {
             prior_state: None,
             prior_results: HashMap::new(),
             prior_in_flight: HashSet::new(),
+            read_store: ReadStore::load(),
             last_comment_click: None,
             client: HnClient::new(),
             msg_tx,
@@ -162,6 +171,13 @@ impl App {
     pub fn set_terminal_size(&mut self, w: u16, h: u16) {
         self.terminal_width = w;
         self.terminal_height = h;
+    }
+
+    /// Flushes any in-memory persistent state (read-store) to disk. Call
+    /// once at shutdown after the main loop exits. Silently swallows I/O
+    /// errors — read-state is non-critical.
+    pub fn persist(&mut self) {
+        self.read_store.save();
     }
 
     /// Spawns a background fetch for the first page of the current feed.
@@ -528,6 +544,7 @@ impl App {
         else {
             return;
         };
+        self.read_store.mark(item.id, item.descendants.unwrap_or(0));
         self.prior_state = None;
         self.focus = Pane::Comments;
         self.comment_state.loading = true;
@@ -750,6 +767,8 @@ impl App {
     /// For search results (kids missing), fetches the full item first.
     fn load_selected_comments(&mut self) {
         if let Some(story) = self.story_state.selected_story().cloned() {
+            self.read_store
+                .mark(story.id, story.descendants.unwrap_or(0));
             self.comment_state.loading = true;
             self.focus = Pane::Comments;
 

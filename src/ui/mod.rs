@@ -58,6 +58,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             focused: app.focus == crate::app::Pane::Stories,
             loading: app.story_state.loading,
             search_query: if search_active { search_query } else { None },
+            read_store: &app.read_store,
         },
         layout.stories,
     );
@@ -154,7 +155,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 /// Bounded to at most 50×22 cells; auto-shrinks on small terminals.
 fn render_help_overlay(frame: &mut Frame, area: Rect) {
     let width = 50u16.min(area.width.saturating_sub(4));
-    let height = 22u16.min(area.height.saturating_sub(4));
+    let height = 24u16.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let popup_area = Rect::new(x, y, width, height);
@@ -223,6 +224,11 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
             Span::styled("  ?            ", theme::accent_style()),
             Span::styled("Toggle this help", theme::base_style()),
         ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Visited stories are dimmed; +N marks new comments",
+            theme::dim_style(),
+        )),
         Line::from(""),
         Line::from(Span::styled("  Press any key to close", theme::dim_style())),
     ];
