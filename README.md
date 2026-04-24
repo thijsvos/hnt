@@ -20,6 +20,7 @@ Browse stories, read threaded comments, and open links — all from your termina
 - **Vim-style navigation** — `j`/`k`, `g`/`G`, `Ctrl+d`/`Ctrl+u`
 - **Search** — Algolia-powered full-text search across stories
 - **Reader mode** — Read article content directly in the terminal
+- **Prior discussions** — Press `h` to see past HN submissions of the same URL with their scores and dates
 - **Open in browser** — Press `o` to open the story URL
 - **Progressive loading** — Root comments appear instantly, children load in the background
 - **Lazy pagination** — Stories load automatically as you scroll
@@ -66,6 +67,7 @@ cargo build --release
 | `Enter` | Select story / toggle collapse |
 | `o` | Open URL in browser |
 | `p` | Open reader mode |
+| `h` | Show prior HN submissions of this URL |
 | `/` | Search stories |
 | `Tab` | Switch pane focus |
 | `1`-`6` | Switch feed (Top/New/Best/Ask/Show/Jobs) |

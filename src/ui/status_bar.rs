@@ -67,7 +67,7 @@ impl Widget for StatusBar {
                 ));
             } else {
                 spans.push(Span::styled(
-                    "j/k:nav enter:comments o:browser p:read /:new search esc:back ?:help ",
+                    "j/k:nav enter:comments o:browser p:read h:prior /:new search esc:back ?:help ",
                     theme::status_style(),
                 ));
             }
@@ -88,7 +88,7 @@ impl Widget for StatusBar {
                 ));
             } else {
                 spans.push(Span::styled(
-                    "j/k:nav tab:switch enter:open 1-6:feed /:search o:browser p:read r:refresh ?:help q:quit ",
+                    "j/k:nav tab:switch enter:open 1-6:feed /:search o:browser p:read h:prior r:refresh ?:help q:quit ",
                     theme::status_style(),
                 ));
             }

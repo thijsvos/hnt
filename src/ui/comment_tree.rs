@@ -20,11 +20,16 @@ use ratatui::{
 /// Stateless widget that renders the right pane. Takes a mutable reference
 /// to [`CommentTreeState`] because rendering populates the `row_map` and
 /// may advance `scroll` to keep the selected comment visible.
+///
+/// `prior_count` is an optional informational badge shown in the title when
+/// non-zero — the number of prior HN submissions of the loaded story's URL
+/// that the `h` overlay will surface.
 pub struct CommentTree<'a> {
     pub state: &'a mut CommentTreeState,
     pub visible: &'a [usize],
     pub focused: bool,
     pub tick: u64,
+    pub prior_count: usize,
 }
 
 /// A pre-measured comment: all the lines it will produce and its visual index.
@@ -50,7 +55,7 @@ impl<'a> Widget for CommentTree<'a> {
             theme::dim_style()
         };
 
-        let title = if let Some(story) = &self.state.story {
+        let title_text = if let Some(story) = &self.state.story {
             if let Some(badge) = story.badge() {
                 format!(" [{}] {} ", badge.label(), story.display_title())
             } else {
@@ -60,10 +65,18 @@ impl<'a> Widget for CommentTree<'a> {
             " Comments ".to_string()
         };
 
+        let mut title_spans = vec![Span::styled(title_text, theme::title_style())];
+        if self.prior_count > 0 {
+            title_spans.push(Span::styled(
+                format!("· {} prior (h) ", self.prior_count),
+                theme::dim_style(),
+            ));
+        }
+
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(border_style)
-            .title(Span::styled(title, theme::title_style()))
+            .title(Line::from(title_spans))
             .style(theme::base_style());
 
         let inner = block.inner(area);

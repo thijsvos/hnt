@@ -4,9 +4,12 @@
 //! methods: [`story_state::StoryListState`] for the left pane,
 //! [`comment_state::CommentTreeState`] for the comment tree (with collapse
 //! and plain-text caching), [`reader_state::ReaderState`] for the article
-//! overlay, and [`search_state::SearchState`] for the Algolia search flow.
+//! overlay, [`search_state::SearchState`] for the Algolia search flow,
+//! and [`prior_state::PriorDiscussionsState`] for the prior-submissions
+//! overlay.
 
 pub mod comment_state;
+pub mod prior_state;
 pub mod reader_state;
 pub mod search_state;
 pub mod story_state;

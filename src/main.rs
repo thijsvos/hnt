@@ -71,6 +71,7 @@ async fn main() -> Result<()> {
                         key,
                         app.show_help,
                         app.reader_state.is_some(),
+                        app.prior_state.is_some(),
                         app.input_mode,
                     );
                     app.dispatch(action);

@@ -35,6 +35,7 @@ pub enum Action {
     PageDown,
     PageUp,
     ToggleHelp,
+    TogglePriorDiscussions,
     EnterSearch,
     Back,
     None,
@@ -46,12 +47,14 @@ pub enum Action {
 /// Priority order: search-input mode suppresses normal keys (returns
 /// [`Action::None`] so `main.rs` can handle raw characters); a visible
 /// help overlay consumes any key as [`Action::ToggleHelp`]; a visible
-/// reader overlay uses its own reduced keymap; otherwise the standard
-/// navigation keymap applies.
+/// reader overlay uses its own reduced keymap; a visible
+/// prior-discussions overlay uses a reduced keymap of its own; otherwise
+/// the standard navigation keymap applies.
 pub fn map_key(
     key: KeyEvent,
     help_visible: bool,
     reader_visible: bool,
+    prior_visible: bool,
     input_mode: InputMode,
 ) -> Action {
     // When in search input mode, main.rs handles raw keys — return None here
@@ -79,6 +82,22 @@ pub fn map_key(
         };
     }
 
+    // Prior-discussions overlay has its own limited key set. Note: `h` here
+    // does NOT close the overlay — use Esc/q. This leaves `h` free to be the
+    // global toggle in normal mode (below) without ambiguity.
+    if prior_visible {
+        return match key.code {
+            KeyCode::Char('j') | KeyCode::Down => Action::MoveDown,
+            KeyCode::Char('k') | KeyCode::Up => Action::MoveUp,
+            KeyCode::Char('g') => Action::JumpTop,
+            KeyCode::Char('G') => Action::JumpBottom,
+            KeyCode::Enter => Action::Select,
+            KeyCode::Char('o') => Action::OpenInBrowser,
+            KeyCode::Esc | KeyCode::Char('q') => Action::Back,
+            _ => Action::None,
+        };
+    }
+
     match key.code {
         KeyCode::Char('q') => Action::Quit,
         KeyCode::Esc => Action::Back,
@@ -87,6 +106,7 @@ pub fn map_key(
         KeyCode::Enter => Action::Select,
         KeyCode::Char('o') => Action::OpenInBrowser,
         KeyCode::Char('p') => Action::OpenReader,
+        KeyCode::Char('h') => Action::TogglePriorDiscussions,
         KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => Action::SwitchPane,
         KeyCode::Char('1') => Action::SwitchFeed(0),
         KeyCode::Char('2') => Action::SwitchFeed(1),
@@ -126,12 +146,19 @@ mod tests {
                 key(KeyCode::Char('q')),
                 false,
                 false,
+                false,
                 InputMode::SearchInput
             ),
             Action::None
         );
         assert_eq!(
-            map_key(key(KeyCode::Char('q')), true, true, InputMode::SearchInput),
+            map_key(
+                key(KeyCode::Char('q')),
+                true,
+                true,
+                false,
+                InputMode::SearchInput
+            ),
             Action::None
         );
     }
@@ -139,11 +166,17 @@ mod tests {
     #[test]
     fn help_visible_closes_on_any_key() {
         assert_eq!(
-            map_key(key(KeyCode::Char('q')), true, false, InputMode::Normal),
+            map_key(
+                key(KeyCode::Char('q')),
+                true,
+                false,
+                false,
+                InputMode::Normal
+            ),
             Action::ToggleHelp
         );
         assert_eq!(
-            map_key(key(KeyCode::Enter), true, false, InputMode::Normal),
+            map_key(key(KeyCode::Enter), true, false, false, InputMode::Normal),
             Action::ToggleHelp
         );
     }
@@ -151,7 +184,13 @@ mod tests {
     #[test]
     fn help_takes_priority_over_reader() {
         assert_eq!(
-            map_key(key(KeyCode::Char('j')), true, true, InputMode::Normal),
+            map_key(
+                key(KeyCode::Char('j')),
+                true,
+                true,
+                false,
+                InputMode::Normal
+            ),
             Action::ToggleHelp
         );
     }
@@ -160,7 +199,7 @@ mod tests {
 
     #[test]
     fn reader_navigation() {
-        let r = |code| map_key(key(code), false, true, InputMode::Normal);
+        let r = |code| map_key(key(code), false, true, false, InputMode::Normal);
         assert_eq!(r(KeyCode::Char('j')), Action::MoveDown);
         assert_eq!(r(KeyCode::Down), Action::MoveDown);
         assert_eq!(r(KeyCode::Char('k')), Action::MoveUp);
@@ -175,11 +214,11 @@ mod tests {
     #[test]
     fn reader_ctrl_keys() {
         assert_eq!(
-            map_key(ctrl('d'), false, true, InputMode::Normal),
+            map_key(ctrl('d'), false, true, false, InputMode::Normal),
             Action::PageDown
         );
         assert_eq!(
-            map_key(ctrl('u'), false, true, InputMode::Normal),
+            map_key(ctrl('u'), false, true, false, InputMode::Normal),
             Action::PageUp
         );
     }
@@ -187,11 +226,17 @@ mod tests {
     #[test]
     fn reader_unmapped_returns_none() {
         assert_eq!(
-            map_key(key(KeyCode::Char('p')), false, true, InputMode::Normal),
+            map_key(
+                key(KeyCode::Char('p')),
+                false,
+                true,
+                false,
+                InputMode::Normal
+            ),
             Action::None
         );
         assert_eq!(
-            map_key(key(KeyCode::Enter), false, true, InputMode::Normal),
+            map_key(key(KeyCode::Enter), false, true, false, InputMode::Normal),
             Action::None
         );
     }
@@ -200,14 +245,14 @@ mod tests {
 
     #[test]
     fn normal_quit_and_back() {
-        let n = |code| map_key(key(code), false, false, InputMode::Normal);
+        let n = |code| map_key(key(code), false, false, false, InputMode::Normal);
         assert_eq!(n(KeyCode::Char('q')), Action::Quit);
         assert_eq!(n(KeyCode::Esc), Action::Back);
     }
 
     #[test]
     fn normal_navigation() {
-        let n = |code| map_key(key(code), false, false, InputMode::Normal);
+        let n = |code| map_key(key(code), false, false, false, InputMode::Normal);
         assert_eq!(n(KeyCode::Char('j')), Action::MoveDown);
         assert_eq!(n(KeyCode::Down), Action::MoveDown);
         assert_eq!(n(KeyCode::Char('k')), Action::MoveUp);
@@ -220,18 +265,26 @@ mod tests {
     #[test]
     fn normal_ctrl_keys() {
         assert_eq!(
-            map_key(ctrl('d'), false, false, InputMode::Normal),
+            map_key(ctrl('d'), false, false, false, InputMode::Normal),
             Action::PageDown
         );
         assert_eq!(
-            map_key(ctrl('u'), false, false, InputMode::Normal),
+            map_key(ctrl('u'), false, false, false, InputMode::Normal),
             Action::PageUp
         );
     }
 
     #[test]
     fn normal_feed_switching() {
-        let n = |c: char| map_key(key(KeyCode::Char(c)), false, false, InputMode::Normal);
+        let n = |c: char| {
+            map_key(
+                key(KeyCode::Char(c)),
+                false,
+                false,
+                false,
+                InputMode::Normal,
+            )
+        };
         for (c, idx) in [('1', 0), ('2', 1), ('3', 2), ('4', 3), ('5', 4), ('6', 5)] {
             assert_eq!(n(c), Action::SwitchFeed(idx));
         }
@@ -239,9 +292,10 @@ mod tests {
 
     #[test]
     fn normal_actions() {
-        let n = |code| map_key(key(code), false, false, InputMode::Normal);
+        let n = |code| map_key(key(code), false, false, false, InputMode::Normal);
         assert_eq!(n(KeyCode::Char('o')), Action::OpenInBrowser);
         assert_eq!(n(KeyCode::Char('p')), Action::OpenReader);
+        assert_eq!(n(KeyCode::Char('h')), Action::TogglePriorDiscussions);
         assert_eq!(n(KeyCode::Tab), Action::SwitchPane);
         assert_eq!(n(KeyCode::BackTab), Action::SwitchPane);
         assert_eq!(n(KeyCode::Left), Action::SwitchPane);
@@ -254,8 +308,72 @@ mod tests {
     #[test]
     fn normal_unmapped_returns_none() {
         assert_eq!(
-            map_key(key(KeyCode::Char('z')), false, false, InputMode::Normal),
+            map_key(
+                key(KeyCode::Char('z')),
+                false,
+                false,
+                false,
+                InputMode::Normal
+            ),
             Action::None
+        );
+    }
+
+    // --- Prior-discussions overlay ---
+
+    #[test]
+    fn prior_overlay_keymap() {
+        let p = |code| map_key(key(code), false, false, true, InputMode::Normal);
+        assert_eq!(p(KeyCode::Char('j')), Action::MoveDown);
+        assert_eq!(p(KeyCode::Down), Action::MoveDown);
+        assert_eq!(p(KeyCode::Char('k')), Action::MoveUp);
+        assert_eq!(p(KeyCode::Up), Action::MoveUp);
+        assert_eq!(p(KeyCode::Char('g')), Action::JumpTop);
+        assert_eq!(p(KeyCode::Char('G')), Action::JumpBottom);
+        assert_eq!(p(KeyCode::Enter), Action::Select);
+        assert_eq!(p(KeyCode::Char('o')), Action::OpenInBrowser);
+        assert_eq!(p(KeyCode::Esc), Action::Back);
+        assert_eq!(p(KeyCode::Char('q')), Action::Back);
+    }
+
+    #[test]
+    fn prior_overlay_consumes_unmapped_keys() {
+        // Keys that would otherwise dispatch in normal mode — the overlay
+        // should swallow them so e.g. `/` doesn't enter search underneath.
+        let p = |code| map_key(key(code), false, false, true, InputMode::Normal);
+        assert_eq!(p(KeyCode::Char('/')), Action::None);
+        assert_eq!(p(KeyCode::Char('1')), Action::None);
+        assert_eq!(p(KeyCode::Char('p')), Action::None);
+        assert_eq!(p(KeyCode::Char('h')), Action::None);
+    }
+
+    #[test]
+    fn reader_takes_priority_over_prior() {
+        // If both overlays are somehow flagged simultaneously, reader wins
+        // because it's strictly modal (article-reading beats context-lookup).
+        assert_eq!(
+            map_key(
+                key(KeyCode::Char('o')),
+                false,
+                true,
+                true,
+                InputMode::Normal
+            ),
+            Action::OpenInBrowser
+        );
+    }
+
+    #[test]
+    fn help_takes_priority_over_prior() {
+        assert_eq!(
+            map_key(
+                key(KeyCode::Char('j')),
+                true,
+                false,
+                true,
+                InputMode::Normal
+            ),
+            Action::ToggleHelp
         );
     }
 }

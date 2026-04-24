@@ -11,10 +11,11 @@ use crate::api::types::{FeedKind, Item};
 use crate::article::{fetch_and_extract_article, html_to_styled_lines};
 use crate::keys::{Action, InputMode};
 use crate::state::comment_state::CommentTreeState;
+use crate::state::prior_state::PriorDiscussionsState;
 use crate::state::reader_state::{ReaderState, StyledFragment};
 use crate::state::search_state::SearchState;
 use crate::state::story_state::StoryListState;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc;
 
 const MIN_PAGE_SIZE: usize = 30;
@@ -73,6 +74,13 @@ pub enum AppMessage {
     ArticleError(String),
     /// Generic error to surface in the status bar.
     Error(String),
+    /// Algolia returned prior HN submissions of the selected story's URL.
+    /// `story_id` is the story that triggered the query — used to drop
+    /// results whose story has since been deselected.
+    PriorDiscussionsLoaded {
+        story_id: u64,
+        submissions: Vec<Item>,
+    },
 }
 
 /// Central application state — owned by the main loop.
@@ -95,6 +103,17 @@ pub struct App {
     pub terminal_height: u16,
     pub terminal_width: u16,
     pub tick_count: u64,
+
+    /// Prior-discussions overlay state. `Some` while the overlay is open;
+    /// `None` otherwise. Contents are populated from `prior_results` when
+    /// the user presses `h`.
+    pub prior_state: Option<PriorDiscussionsState>,
+    /// Prior-submissions query results, keyed by the story ID that was
+    /// queried. Keeps each result around for the rest of the session so
+    /// reopening the `h` overlay doesn't trigger a refetch.
+    pub prior_results: HashMap<u64, Vec<Item>>,
+    /// Story IDs whose URL queries are in flight. Prevents duplicate spawns.
+    prior_in_flight: HashSet<u64>,
 
     last_comment_click: Option<(std::time::Instant, usize)>,
 
@@ -122,6 +141,9 @@ impl App {
             terminal_height,
             terminal_width,
             tick_count: 0,
+            prior_state: None,
+            prior_results: HashMap::new(),
+            prior_in_flight: HashSet::new(),
             last_comment_click: None,
             client: HnClient::new(),
             msg_tx,
@@ -237,6 +259,21 @@ impl App {
                     self.story_state.loading = false;
                     self.comment_state.loading = false;
                 }
+                AppMessage::PriorDiscussionsLoaded {
+                    story_id,
+                    submissions,
+                } => {
+                    self.prior_in_flight.remove(&story_id);
+                    // If the user has already opened the overlay for this
+                    // same story, backfill its contents now that we have data.
+                    if let Some(ref mut ps) = self.prior_state {
+                        if ps.story_id == story_id && ps.submissions.is_empty() {
+                            ps.submissions = submissions.clone();
+                            ps.selected = 0;
+                        }
+                    }
+                    self.prior_results.insert(story_id, submissions);
+                }
             }
         }
     }
@@ -304,6 +341,60 @@ impl App {
                     return;
                 }
                 _ => return, // Consume all other keys
+            }
+        }
+
+        // When the prior-discussions overlay is open, route a reduced action
+        // set and consume everything else.
+        if self.prior_state.is_some() {
+            match action {
+                Action::Back => {
+                    self.prior_state = None;
+                    return;
+                }
+                Action::MoveDown => {
+                    if let Some(ref mut p) = self.prior_state {
+                        p.select_next();
+                    }
+                    return;
+                }
+                Action::MoveUp => {
+                    if let Some(ref mut p) = self.prior_state {
+                        p.select_prev();
+                    }
+                    return;
+                }
+                Action::JumpTop => {
+                    if let Some(ref mut p) = self.prior_state {
+                        p.jump_top();
+                    }
+                    return;
+                }
+                Action::JumpBottom => {
+                    if let Some(ref mut p) = self.prior_state {
+                        p.jump_bottom();
+                    }
+                    return;
+                }
+                Action::Select => {
+                    self.open_selected_prior_discussion();
+                    return;
+                }
+                Action::OpenInBrowser => {
+                    if let Some(ref p) = self.prior_state {
+                        if let Some(item) = p.selected_submission() {
+                            if let Some(ref url) = item.url {
+                                if let Ok(parsed) = url::Url::parse(url) {
+                                    if parsed.scheme() == "http" || parsed.scheme() == "https" {
+                                        let _ = open::that(parsed.as_str());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return;
+                }
+                _ => return,
             }
         }
 
@@ -398,8 +489,100 @@ impl App {
                 Pane::Comments => self.comment_state.page_up(SCROLL_PAGE),
             },
             Action::ToggleHelp => self.show_help = !self.show_help,
+            Action::TogglePriorDiscussions => self.toggle_prior_discussions(),
             Action::None => {}
         }
+    }
+
+    /// Opens the prior-discussions overlay for the story whose comments are
+    /// currently loaded, using cached results from [`App::prior_results`].
+    /// No-op if no comments-loaded story has a URL-based query result. Opens
+    /// an empty-state overlay if a query returned zero prior submissions.
+    fn toggle_prior_discussions(&mut self) {
+        if self.prior_state.is_some() {
+            self.prior_state = None;
+            return;
+        }
+        let Some(story) = self.comment_state.story.as_ref() else {
+            return;
+        };
+        let story_id = story.id;
+        if let Some(submissions) = self.prior_results.get(&story_id) {
+            self.prior_state = Some(PriorDiscussionsState::new(story_id, submissions.clone()));
+        } else if let Some(url) = story.url.clone() {
+            // No result yet — fire the query (if not already in flight) and
+            // open an empty overlay; it will populate on the next
+            // process_messages tick via the overlay's view of prior_results.
+            self.spawn_prior_discussions(story_id, &url);
+            self.prior_state = Some(PriorDiscussionsState::new(story_id, Vec::new()));
+        }
+    }
+
+    /// Loads the selected prior submission's comments as if the user had
+    /// selected it from the story pane. Closes the prior-discussions overlay.
+    fn open_selected_prior_discussion(&mut self) {
+        let Some(item) = self
+            .prior_state
+            .as_ref()
+            .and_then(|p| p.selected_submission().cloned())
+        else {
+            return;
+        };
+        self.prior_state = None;
+        self.focus = Pane::Comments;
+        self.comment_state.loading = true;
+
+        let client = self.client.clone();
+        let tx = self.msg_tx.clone();
+        let story = item.clone();
+        let kids = item.kids.clone().unwrap_or_default();
+        let needs_full_fetch = item.kids.is_none();
+
+        tokio::spawn(async move {
+            let kids = if needs_full_fetch && story.id > 0 {
+                match client.fetch_item(story.id).await {
+                    Ok(Some(full_item)) => full_item.kids.unwrap_or_default(),
+                    _ => kids,
+                }
+            } else {
+                kids
+            };
+            let root_items = client.fetch_items(&kids).await;
+            let root_comments: Vec<(Item, usize)> = root_items
+                .into_iter()
+                .flatten()
+                .filter(|item| !item.is_dead_or_deleted())
+                .map(|item| (item, 0))
+                .collect();
+            let pending_roots: HashSet<u64> = root_comments
+                .iter()
+                .filter(|(r, _)| r.kids.as_ref().is_some_and(|k| !k.is_empty()))
+                .map(|(r, _)| r.id)
+                .collect();
+            let _ = tx.send(AppMessage::CommentsLoaded {
+                story: Box::new(story.clone()),
+                comments: root_comments.clone(),
+                pending_roots,
+            });
+            for (root, _) in &root_comments {
+                let child_ids = root.kids.clone().unwrap_or_default();
+                if child_ids.is_empty() {
+                    continue;
+                }
+                let parent_id = root.id;
+                let mut children = Vec::new();
+                client
+                    .fetch_children_recursive(&child_ids, 1, MAX_COMMENT_DEPTH, &mut children)
+                    .await;
+                if !children.is_empty() {
+                    let _ = tx.send(AppMessage::CommentsAppended {
+                        parent_id,
+                        children,
+                    });
+                }
+            }
+            let _ = tx.send(AppMessage::CommentsDone);
+        });
     }
 
     /// Transitions into search-input mode, showing an empty search prompt.
@@ -535,6 +718,31 @@ impl App {
         }
     }
 
+    /// Kicks off a background Algolia query for prior HN submissions of the
+    /// given URL. No-ops if the story's URL has already been queried or a
+    /// query is already in flight. Failures silently no-op — prior-discussions
+    /// is optional UX, not critical-path.
+    fn spawn_prior_discussions(&mut self, story_id: u64, url: &str) {
+        if self.prior_results.contains_key(&story_id) || self.prior_in_flight.contains(&story_id) {
+            return;
+        }
+        self.prior_in_flight.insert(story_id);
+
+        let client = self.client.clone();
+        let tx = self.msg_tx.clone();
+        let url = url.to_string();
+        tokio::spawn(async move {
+            let submissions = match client.search_by_url(&url).await {
+                Ok(items) => items.into_iter().filter(|i| i.id != story_id).collect(),
+                Err(_) => Vec::new(),
+            };
+            let _ = tx.send(AppMessage::PriorDiscussionsLoaded {
+                story_id,
+                submissions,
+            });
+        });
+    }
+
     /// Kicks off a two-phase comment fetch for the currently selected story:
     /// (1) loads and displays root-level comments immediately, then
     /// (2) walks each root's subtree depth-first and appends children via
@@ -544,6 +752,12 @@ impl App {
         if let Some(story) = self.story_state.selected_story().cloned() {
             self.comment_state.loading = true;
             self.focus = Pane::Comments;
+
+            // Fire a background prior-submissions query for this story's URL
+            // so the `h` overlay has data ready when the user asks for it.
+            if let Some(url) = story.url.as_deref() {
+                self.spawn_prior_discussions(story.id, url);
+            }
 
             let client = self.client.clone();
             let tx = self.msg_tx.clone();
