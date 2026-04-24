@@ -7,7 +7,7 @@
 //! [`App::process_messages`] drains pending async results each frame.
 
 use crate::api::client::HnClient;
-use crate::api::types::{FeedKind, Item};
+use crate::api::types::{CommentWithDepth, FeedKind, Item};
 use crate::article::{fetch_and_extract_article, html_to_styled_lines};
 use crate::keys::{Action, InputMode};
 use crate::state::comment_state::CommentTreeState;
@@ -30,6 +30,16 @@ pub enum Pane {
     Comments,
 }
 
+/// Whether a paginated load should replace the current story list or
+/// append to it. Previously a `bool` in [`AppMessage`] variants — named
+/// variants make call sites self-documenting (`LoadMode::Append` vs
+/// `false`) and prevent flipped-arg bugs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadMode {
+    Replace,
+    Append,
+}
+
 /// Messages sent from async tasks back to the main loop.
 ///
 /// Variants correspond to the lifecycle of each async operation: a one-shot
@@ -45,19 +55,19 @@ pub enum AppMessage {
         /// reuse the cached ID list to avoid drift when the feed changes
         /// mid-session.
         all_ids: Option<Vec<u64>>,
-        append: bool,
+        mode: LoadMode,
     },
     /// Root-level comments for a story are available; deeper descendants
     /// still pending.
     CommentsLoaded {
         story: Box<Item>,
-        comments: Vec<(Item, usize)>,
+        comments: Vec<CommentWithDepth>,
         pending_roots: HashSet<u64>,
     },
     /// Progressive update — append more child comments into the tree.
     CommentsAppended {
         parent_id: u64,
-        children: Vec<(Item, usize)>,
+        children: Vec<CommentWithDepth>,
     },
     /// All outstanding comment fetches finished; clear any "loading"
     /// spinners.
@@ -69,7 +79,7 @@ pub enum AppMessage {
         stories: Vec<Item>,
         total_pages: usize,
         total_hits: usize,
-        append: bool,
+        mode: LoadMode,
     },
     /// Article fetch/extract failed; surface in the reader overlay.
     ArticleError(String),
@@ -185,7 +195,7 @@ impl App {
     /// Intended to be called once at startup; calling it concurrently will
     /// race two `StoriesLoaded` messages into the channel.
     pub fn load_initial_feed(&self) {
-        self.spawn_load_stories(false);
+        self.spawn_load_stories(LoadMode::Replace);
     }
 
     /// Processes any pending async messages (non-blocking).
@@ -195,12 +205,11 @@ impl App {
                 AppMessage::StoriesLoaded {
                     stories,
                     all_ids,
-                    append,
+                    mode,
                 } => {
-                    if append {
-                        self.story_state.stories.extend(stories);
-                    } else {
-                        self.story_state.stories = stories;
+                    match mode {
+                        LoadMode::Append => self.story_state.stories.extend(stories),
+                        LoadMode::Replace => self.story_state.stories = stories,
                     }
                     if let Some(ids) = all_ids {
                         self.story_state.all_ids = ids;
@@ -208,7 +217,7 @@ impl App {
                     self.story_state.loading = false;
                     self.error = None;
                     // Auto-load comments for the first story on initial load
-                    if !append
+                    if matches!(mode, LoadMode::Replace)
                         && !self.story_state.stories.is_empty()
                         && self.comment_state.story.is_none()
                     {
@@ -220,12 +229,11 @@ impl App {
                     stories,
                     total_pages,
                     total_hits,
-                    append,
+                    mode,
                 } => {
-                    if append {
-                        self.story_state.stories.extend(stories);
-                    } else {
-                        self.story_state.stories = stories;
+                    match mode {
+                        LoadMode::Append => self.story_state.stories.extend(stories),
+                        LoadMode::Replace => self.story_state.stories = stories,
                     }
                     self.story_state.loading = false;
                     self.error = None;
@@ -233,7 +241,7 @@ impl App {
                         ss.total_pages = total_pages;
                         ss.total_hits = total_hits;
                     }
-                    if !append && !self.story_state.stories.is_empty() {
+                    if matches!(mode, LoadMode::Replace) && !self.story_state.stories.is_empty() {
                         self.load_selected_comments();
                         self.focus = Pane::Stories;
                     }
@@ -425,7 +433,7 @@ impl App {
                         self.comment_state.reset();
                         self.client.clear_cache();
                         self.focus = Pane::Stories;
-                        self.spawn_load_stories(false);
+                        self.spawn_load_stories(LoadMode::Replace);
                     }
                 }
             }
@@ -435,13 +443,13 @@ impl App {
                     if !query.is_empty() {
                         self.story_state.reset();
                         self.comment_state.reset();
-                        self.spawn_search(&query, 0, false);
+                        self.spawn_search(&query, 0, LoadMode::Replace);
                     }
                 } else {
                     self.story_state.reset();
                     self.comment_state.reset();
                     self.client.clear_cache();
-                    self.spawn_load_stories(false);
+                    self.spawn_load_stories(LoadMode::Replace);
                 }
             }
             Action::EnterSearch => {
@@ -521,7 +529,10 @@ impl App {
         let needs_full_fetch = item.kids.is_none();
 
         tokio::spawn(async move {
-            let kids = if needs_full_fetch && story.id > 0 {
+            // Search results arrive with kids == None — fetch the full item to
+            // populate them. TryFrom<SearchHit> filters out id=0 upstream, so
+            // no sentinel guard is needed.
+            let kids = if needs_full_fetch {
                 match client.fetch_item(story.id).await {
                     Ok(Some(full_item)) => full_item.kids.unwrap_or_default(),
                     _ => kids,
@@ -530,28 +541,28 @@ impl App {
                 kids
             };
             let root_items = client.fetch_items(&kids).await;
-            let root_comments: Vec<(Item, usize)> = root_items
+            let root_comments: Vec<CommentWithDepth> = root_items
                 .into_iter()
                 .flatten()
                 .filter(|item| !item.is_dead_or_deleted())
-                .map(|item| (item, 0))
+                .map(|item| CommentWithDepth { item, depth: 0 })
                 .collect();
             let pending_roots: HashSet<u64> = root_comments
                 .iter()
-                .filter(|(r, _)| r.kids.as_ref().is_some_and(|k| !k.is_empty()))
-                .map(|(r, _)| r.id)
+                .filter(|c| c.item.kids.as_ref().is_some_and(|k| !k.is_empty()))
+                .map(|c| c.item.id)
                 .collect();
             let _ = tx.send(AppMessage::CommentsLoaded {
                 story: Box::new(story.clone()),
                 comments: root_comments.clone(),
                 pending_roots,
             });
-            for (root, _) in &root_comments {
-                let child_ids = root.kids.clone().unwrap_or_default();
+            for c in &root_comments {
+                let child_ids = c.item.kids.clone().unwrap_or_default();
                 if child_ids.is_empty() {
                     continue;
                 }
-                let parent_id = root.id;
+                let parent_id = c.item.id;
                 let mut children = Vec::new();
                 client
                     .fetch_children_recursive(&child_ids, 1, MAX_COMMENT_DEPTH, &mut children)
@@ -596,7 +607,7 @@ impl App {
         self.input_mode = InputMode::Normal;
         self.story_state.reset();
         self.comment_state.reset();
-        self.spawn_search(&query, 0, false);
+        self.spawn_search(&query, 0, LoadMode::Replace);
     }
 
     /// Exits search mode, clears the cache, and reloads the current feed.
@@ -606,7 +617,7 @@ impl App {
         self.story_state.reset();
         self.comment_state.reset();
         self.client.clear_cache();
-        self.spawn_load_stories(false);
+        self.spawn_load_stories(LoadMode::Replace);
     }
 
     /// Appends a typed character to the in-progress search input.
@@ -623,9 +634,9 @@ impl App {
         }
     }
 
-    /// Kicks off an async Algolia search. `append = true` extends the
-    /// current result list (lazy pagination); `append = false` replaces it.
-    fn spawn_search(&mut self, query: &str, page: usize, append: bool) {
+    /// Kicks off an async Algolia search. [`LoadMode::Append`] extends the
+    /// current result list (lazy pagination); [`LoadMode::Replace`] replaces it.
+    fn spawn_search(&mut self, query: &str, page: usize, mode: LoadMode) {
         self.story_state.loading = true;
         let client = self.client.clone();
         let tx = self.msg_tx.clone();
@@ -639,7 +650,7 @@ impl App {
                         stories,
                         total_pages,
                         total_hits,
-                        append,
+                        mode,
                     });
                 }
                 Err(e) => {
@@ -649,15 +660,15 @@ impl App {
         });
     }
 
-    /// Kicks off an async feed-page load. When `append` is true, reuses
-    /// the cached ID list to compute a stable offset (so newly posted
-    /// stories don't shift the page); otherwise fetches a fresh ID list.
-    fn spawn_load_stories(&self, append: bool) {
+    /// Kicks off an async feed-page load. [`LoadMode::Append`] reuses the
+    /// cached ID list to compute a stable offset (so newly posted stories
+    /// don't shift the page); [`LoadMode::Replace`] fetches a fresh ID list.
+    fn spawn_load_stories(&self, mode: LoadMode) {
         let client = self.client.clone();
         let tx = self.msg_tx.clone();
         let page_size = self.page_size();
 
-        if append {
+        if matches!(mode, LoadMode::Append) {
             // Reuse the ID list from the initial load so offsets stay stable
             // even if new stories have been posted to the feed since.
             let cached_ids = self.story_state.all_ids.clone();
@@ -671,7 +682,7 @@ impl App {
                         let _ = tx.send(AppMessage::StoriesLoaded {
                             stories,
                             all_ids: None,
-                            append: true,
+                            mode: LoadMode::Append,
                         });
                     }
                     Err(e) => {
@@ -688,7 +699,7 @@ impl App {
                         let _ = tx.send(AppMessage::StoriesLoaded {
                             stories,
                             all_ids: Some(all_ids),
-                            append: false,
+                            mode: LoadMode::Replace,
                         });
                     }
                     Err(e) => {
@@ -750,8 +761,9 @@ impl App {
             let kids = story.kids.clone().unwrap_or_default();
 
             tokio::spawn(async move {
-                // For search results, kids is None — fetch the full item first
-                let kids = if needs_full_fetch && story_clone.id > 0 {
+                // For search results, kids is None — fetch the full item first.
+                // TryFrom<SearchHit> filters out id=0 upstream.
+                let kids = if needs_full_fetch {
                     match client.fetch_item(story_clone.id).await {
                         Ok(Some(full_item)) => full_item.kids.unwrap_or_default(),
                         _ => kids,
@@ -762,17 +774,17 @@ impl App {
 
                 // Step 1: Fetch root-level comments and show them immediately
                 let root_items = client.fetch_items(&kids).await;
-                let root_comments: Vec<(Item, usize)> = root_items
+                let root_comments: Vec<CommentWithDepth> = root_items
                     .into_iter()
                     .flatten()
                     .filter(|item| !item.is_dead_or_deleted())
-                    .map(|item| (item, 0))
+                    .map(|item| CommentWithDepth { item, depth: 0 })
                     .collect();
 
                 let pending_roots: HashSet<u64> = root_comments
                     .iter()
-                    .filter(|(r, _)| r.kids.as_ref().is_some_and(|k| !k.is_empty()))
-                    .map(|(r, _)| r.id)
+                    .filter(|c| c.item.kids.as_ref().is_some_and(|k| !k.is_empty()))
+                    .map(|c| c.item.id)
                     .collect();
 
                 let _ = tx.send(AppMessage::CommentsLoaded {
@@ -782,12 +794,12 @@ impl App {
                 });
 
                 // Step 2: For each root comment, fetch its children progressively
-                for (root, _) in &root_comments {
-                    let child_ids = root.kids.clone().unwrap_or_default();
+                for c in &root_comments {
+                    let child_ids = c.item.kids.clone().unwrap_or_default();
                     if child_ids.is_empty() {
                         continue;
                     }
-                    let parent_id = root.id;
+                    let parent_id = c.item.id;
                     let mut children = Vec::new();
                     client
                         .fetch_children_recursive(&child_ids, 1, MAX_COMMENT_DEPTH, &mut children)
@@ -904,11 +916,11 @@ impl App {
                 ss.current_page += 1;
                 let query = ss.query.clone();
                 let page = ss.current_page;
-                self.spawn_search(&query, page, true);
+                self.spawn_search(&query, page, LoadMode::Append);
             }
         } else if self.story_state.needs_more() {
             self.story_state.loading = true;
-            self.spawn_load_stories(true);
+            self.spawn_load_stories(LoadMode::Append);
         }
     }
 
