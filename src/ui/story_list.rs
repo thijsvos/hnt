@@ -6,6 +6,7 @@
 //! timestamps.
 
 use crate::api::types::Item;
+use crate::state::read_store::ReadStore;
 use crate::ui::theme;
 use ratatui::{
     buffer::Buffer,
@@ -23,6 +24,9 @@ pub struct StoryList<'a> {
     pub focused: bool,
     pub loading: bool,
     pub search_query: Option<&'a str>,
+    /// Persisted read-state: stories present here render dimmed, and those
+    /// whose comment count has grown since the last visit get a `+N` badge.
+    pub read_store: &'a ReadStore,
 }
 
 impl<'a> Widget for StoryList<'a> {
@@ -90,6 +94,10 @@ impl<'a> Widget for StoryList<'a> {
         {
             let y = inner.top() + (i - scroll) as u16;
             let is_selected = i == self.selected;
+            let is_read = self.read_store.is_read(story.id);
+            let new_comments = self
+                .read_store
+                .new_comments_since(story.id, story.descendants.unwrap_or(0));
 
             let title = story.display_title();
             let badge = story.badge();
@@ -97,12 +105,14 @@ impl<'a> Widget for StoryList<'a> {
                 .domain()
                 .map(|d| format!(" ({})", d))
                 .unwrap_or_default();
+            let new_badge_text = new_comments.map(|n| format!(" +{}", n));
 
             let num = format!("{:>3}. ", i + 1);
             let badge_text = badge.map(|b| format!("[{}] ", b.label()));
             let badge_width = badge_text.as_ref().map_or(0, |t| t.len());
-            let max_title_width =
-                (inner.width as usize).saturating_sub(num.len() + badge_width + domain.len() + 2);
+            let new_badge_width = new_badge_text.as_ref().map_or(0, |t| t.len());
+            let max_title_width = (inner.width as usize)
+                .saturating_sub(num.len() + badge_width + new_badge_width + domain.len() + 2);
             let truncated_title: String = if title.chars().count() > max_title_width {
                 let truncated: String = title
                     .chars()
@@ -113,15 +123,31 @@ impl<'a> Widget for StoryList<'a> {
                 title.to_string()
             };
 
-            let style = if is_selected {
+            let row_bg = if is_selected {
+                theme::SURFACE
+            } else {
+                theme::BG
+            };
+            let row_style = if is_selected {
                 theme::selected_style()
             } else {
                 theme::base_style()
             };
+            // Visited stories use the dim foreground so they recede visually,
+            // while still keeping the selection highlight (bold + surface bg)
+            // so the cursor row remains obvious.
+            let title_style = match (is_selected, is_read) {
+                (true, true) => theme::dim_style()
+                    .bg(theme::SURFACE)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+                (true, false) => theme::selected_style(),
+                (false, true) => theme::dim_style(),
+                (false, false) => theme::base_style(),
+            };
 
             // Fill line background
             for x in inner.left()..inner.right() {
-                buf[(x, y)].set_style(style);
+                buf[(x, y)].set_style(row_style);
             }
 
             let mut spans = vec![Span::styled(
@@ -135,15 +161,11 @@ impl<'a> Widget for StoryList<'a> {
             if let Some((text, b)) = badge_text.zip(badge) {
                 spans.push(Span::styled(text, theme::badge_style(b)));
             }
-            spans.push(Span::styled(truncated_title, style));
-            spans.push(Span::styled(
-                domain,
-                theme::dim_style().bg(if is_selected {
-                    theme::SURFACE
-                } else {
-                    theme::BG
-                }),
-            ));
+            spans.push(Span::styled(truncated_title, title_style));
+            if let Some(text) = new_badge_text {
+                spans.push(Span::styled(text, theme::accent_style().bg(row_bg)));
+            }
+            spans.push(Span::styled(domain, theme::dim_style().bg(row_bg)));
 
             let line = Line::from(spans);
             buf.set_line(inner.left(), y, &line, inner.width);

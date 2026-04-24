@@ -5,11 +5,12 @@
 //! [`comment_state::CommentTreeState`] for the comment tree (with collapse
 //! and plain-text caching), [`reader_state::ReaderState`] for the article
 //! overlay, [`search_state::SearchState`] for the Algolia search flow,
-//! and [`prior_state::PriorDiscussionsState`] for the prior-submissions
-//! overlay.
+//! [`prior_state::PriorDiscussionsState`] for the prior-submissions
+//! overlay, and [`read_store::ReadStore`] for persisted read-state tracking.
 
 pub mod comment_state;
 pub mod prior_state;
+pub mod read_store;
 pub mod reader_state;
 pub mod search_state;
 pub mod story_state;

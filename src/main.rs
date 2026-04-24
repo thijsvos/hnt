@@ -101,6 +101,7 @@ async fn main() -> Result<()> {
         }
     }
 
+    app.persist();
     tui::restore()?;
     Ok(())
 }
