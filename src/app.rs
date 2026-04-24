@@ -301,117 +301,82 @@ impl App {
     /// Otherwise the action mutates the focused pane's state or spawns an
     /// async task (feed switch, refresh, comment load, search).
     pub fn dispatch(&mut self, action: Action) {
-        // When reader is open, route actions to reader
+        // When reader is open, route actions to reader.
         if self.reader_state.is_some() {
-            match action {
-                Action::Back => {
-                    self.reader_state = None;
-                    return;
-                }
-                Action::MoveDown => {
-                    if let Some(ref mut r) = self.reader_state {
-                        r.scroll_down(1);
-                    }
-                    return;
-                }
-                Action::MoveUp => {
-                    if let Some(ref mut r) = self.reader_state {
-                        r.scroll_up(1);
-                    }
-                    return;
-                }
-                Action::PageDown => {
-                    if let Some(ref mut r) = self.reader_state {
-                        r.page_down(SCROLL_PAGE);
-                    }
-                    return;
-                }
-                Action::PageUp => {
-                    if let Some(ref mut r) = self.reader_state {
-                        r.page_up(SCROLL_PAGE);
-                    }
-                    return;
-                }
-                Action::JumpTop => {
-                    if let Some(ref mut r) = self.reader_state {
-                        r.jump_top();
-                    }
-                    return;
-                }
-                Action::JumpBottom => {
-                    if let Some(ref mut r) = self.reader_state {
-                        r.jump_bottom();
-                    }
-                    return;
-                }
-                Action::OpenInBrowser => {
-                    if let Some(ref reader) = self.reader_state {
-                        if let Some(ref url) = reader.url {
-                            if let Ok(parsed) = url::Url::parse(url) {
-                                if parsed.scheme() == "http" || parsed.scheme() == "https" {
-                                    let _ = open::that(parsed.as_str());
-                                }
-                            }
-                        }
-                    }
-                    return;
-                }
-                _ => return, // Consume all other keys
+            // Back mutates the Option itself, so handle it before borrowing
+            // the inner state.
+            if matches!(action, Action::Back) {
+                self.reader_state = None;
+                return;
             }
+            let Some(r) = self.reader_state.as_mut() else {
+                return;
+            };
+            match action {
+                Action::MoveDown => r.scroll_down(1),
+                Action::MoveUp => r.scroll_up(1),
+                Action::PageDown => r.page_down(SCROLL_PAGE),
+                Action::PageUp => r.page_up(SCROLL_PAGE),
+                Action::JumpTop => r.jump_top(),
+                Action::JumpBottom => r.jump_bottom(),
+                Action::OpenInBrowser => open_http_url(r.url.as_deref()),
+                // Exhaustive no-op list — when new Action variants are added
+                // they'll provoke a compile error here so the overlay's
+                // handling is a deliberate choice, not an accident.
+                Action::Quit
+                | Action::Select
+                | Action::OpenReader
+                | Action::SwitchPane
+                | Action::SwitchFeed(_)
+                | Action::Refresh
+                | Action::EnterSearch
+                | Action::ToggleHelp
+                | Action::TogglePriorDiscussions
+                | Action::None => {}
+                Action::Back => unreachable!("Back is handled above"),
+            }
+            return;
         }
 
         // When the prior-discussions overlay is open, route a reduced action
         // set and consume everything else.
         if self.prior_state.is_some() {
-            match action {
-                Action::Back => {
-                    self.prior_state = None;
-                    return;
-                }
-                Action::MoveDown => {
-                    if let Some(ref mut p) = self.prior_state {
-                        p.select_next();
-                    }
-                    return;
-                }
-                Action::MoveUp => {
-                    if let Some(ref mut p) = self.prior_state {
-                        p.select_prev();
-                    }
-                    return;
-                }
-                Action::JumpTop => {
-                    if let Some(ref mut p) = self.prior_state {
-                        p.jump_top();
-                    }
-                    return;
-                }
-                Action::JumpBottom => {
-                    if let Some(ref mut p) = self.prior_state {
-                        p.jump_bottom();
-                    }
-                    return;
-                }
-                Action::Select => {
-                    self.open_selected_prior_discussion();
-                    return;
-                }
-                Action::OpenInBrowser => {
-                    if let Some(ref p) = self.prior_state {
-                        if let Some(item) = p.selected_submission() {
-                            if let Some(ref url) = item.url {
-                                if let Ok(parsed) = url::Url::parse(url) {
-                                    if parsed.scheme() == "http" || parsed.scheme() == "https" {
-                                        let _ = open::that(parsed.as_str());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    return;
-                }
-                _ => return,
+            // Actions that mutate App itself (not just the overlay's inner
+            // state) go first so the subsequent borrow of `p` is clean.
+            if matches!(action, Action::Back) {
+                self.prior_state = None;
+                return;
             }
+            if matches!(action, Action::Select) {
+                self.open_selected_prior_discussion();
+                return;
+            }
+            let Some(p) = self.prior_state.as_mut() else {
+                return;
+            };
+            match action {
+                Action::MoveDown => p.select_next(),
+                Action::MoveUp => p.select_prev(),
+                Action::JumpTop => p.jump_top(),
+                Action::JumpBottom => p.jump_bottom(),
+                Action::OpenInBrowser => {
+                    open_http_url(p.selected_submission().and_then(|i| i.url.as_deref()));
+                }
+                // Exhaustive no-op list — see note in reader block above.
+                Action::Quit
+                | Action::OpenReader
+                | Action::SwitchPane
+                | Action::SwitchFeed(_)
+                | Action::Refresh
+                | Action::EnterSearch
+                | Action::ToggleHelp
+                | Action::TogglePriorDiscussions
+                | Action::PageDown
+                | Action::PageUp
+                | Action::None => {}
+                Action::Back | Action::Select => unreachable!("handled above"),
+            }
+            return;
         }
 
         match action {
@@ -921,13 +886,7 @@ impl App {
             id.map(|id| format!("https://news.ycombinator.com/item?id={}", id))
         });
 
-        if let Some(url) = url {
-            if let Ok(parsed) = url::Url::parse(&url) {
-                if parsed.scheme() == "http" || parsed.scheme() == "https" {
-                    let _ = open::that(parsed.as_str());
-                }
-            }
-        }
+        open_http_url(url.as_deref());
     }
 
     /// If the selection has crossed the lazy-load threshold, kicks off
@@ -1091,5 +1050,20 @@ impl App {
                 }
             }
         }
+    }
+}
+
+/// Opens `url` in the system browser — but only when it parses as an
+/// `http`/`https` URL. Silently drops `None`, parse failures, and other
+/// schemes (so `file://`, `javascript:`, and `data:` can never reach
+/// `open::that`). All three overlay-dispatch sites and
+/// [`App::open_in_browser`] share this entry point.
+fn open_http_url(url: Option<&str>) {
+    let Some(raw) = url else { return };
+    let Ok(parsed) = url::Url::parse(raw) else {
+        return;
+    };
+    if matches!(parsed.scheme(), "http" | "https") {
+        let _ = open::that(parsed.as_str());
     }
 }

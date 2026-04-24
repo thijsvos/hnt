@@ -89,14 +89,16 @@ impl HnClient {
             .collect()
             .await;
 
-        // buffer_unordered doesn't preserve order, so re-order by input IDs
-        let result_map: HashMap<u64, Item> = results
+        // buffer_unordered doesn't preserve order, so re-order by input IDs.
+        // `remove` moves each Item out of the temporary map — `get().cloned()`
+        // would clone the entire Item unnecessarily since the map is discarded.
+        let mut result_map: HashMap<u64, Item> = results
             .into_iter()
             .flatten()
             .map(|item| (item.id, item))
             .collect();
 
-        ids.iter().map(|id| result_map.get(id).cloned()).collect()
+        ids.iter().map(|id| result_map.remove(id)).collect()
     }
 
     /// Fetches a page of items from a pre-fetched ID list. Used for pagination
