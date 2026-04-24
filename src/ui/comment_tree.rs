@@ -41,9 +41,12 @@ struct MeasuredComment {
 /// One rendered line in the measure pass. `Header` is the author/time
 /// line, `Text` is a single wrapped body line, `Gap` is a blank row
 /// between comments.
+///
+/// Spans are built once in the measure pass and consumed (moved) into
+/// [`Line`]s in the render pass — no cloning between the two phases.
 enum CommentLine {
-    Header(Vec<(String, ratatui::style::Style)>),
-    Text(Vec<(String, ratatui::style::Style)>),
+    Header(Vec<Span<'static>>),
+    Text(Vec<Span<'static>>),
     Gap,
 }
 
@@ -250,19 +253,20 @@ impl<'a> Widget for CommentTree<'a> {
         };
         self.state.scroll = scroll_row;
 
-        // Pass 2: render from scroll_row
+        // Pass 2: consume measured and move spans into Lines — no cloning.
         let mut screen_y = header_height;
         let mut row_idx: usize = 0;
 
-        for mc in &measured {
-            let is_selected = mc.visual_index == self.state.selected;
+        for mc in measured {
+            let visual_index = mc.visual_index;
+            let is_selected = visual_index == self.state.selected;
             let bg = if is_selected {
                 theme::SURFACE
             } else {
                 theme::BG
             };
 
-            for line in &mc.lines {
+            for line in mc.lines {
                 if row_idx < scroll_row {
                     row_idx += 1;
                     continue;
@@ -282,19 +286,15 @@ impl<'a> Widget for CommentTree<'a> {
 
                 // Record row → comment mapping for mouse clicks
                 if (screen_y as usize) < self.state.row_map.len() {
-                    self.state.row_map[screen_y as usize] = Some(mc.visual_index);
+                    self.state.row_map[screen_y as usize] = Some(visual_index);
                 }
 
                 match line {
                     CommentLine::Header(spans) | CommentLine::Text(spans) => {
-                        let ratatui_spans: Vec<Span> = spans
-                            .iter()
-                            .map(|(text, style)| Span::styled(text.clone(), *style))
-                            .collect();
                         buf.set_line(
                             inner.left(),
                             inner.top() + screen_y,
-                            &Line::from(ratatui_spans),
+                            &Line::from(spans),
                             inner.width,
                         );
                     }
@@ -371,45 +371,47 @@ fn measure_comments(
             String::new()
         };
 
-        // Header line
-        let mut header_spans = vec![(
+        // Header line — build Spans directly. Each Span owns its String
+        // via Cow::Owned, so it lives to be moved into a Line in the
+        // render pass without further cloning.
+        let mut header_spans: Vec<Span<'static>> = vec![Span::styled(
             format!("{}{}", indent, bar),
             ratatui::style::Style::default().fg(depth_color),
         )];
         if comment.depth == 0 && pending_root_ids.contains(&comment.item.id) {
-            header_spans.push((
+            header_spans.push(Span::styled(
                 format!("{} ", spinner_frame),
                 ratatui::style::Style::default().fg(theme::HN_ORANGE),
             ));
         }
         header_spans.extend([
-            (
+            Span::styled(
                 format!("{} ", author),
                 ratatui::style::Style::default()
                     .fg(depth_color)
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ),
-            (
+            Span::styled(
                 format!("{} ago", time_ago),
                 ratatui::style::Style::default().fg(theme::DIM),
             ),
-            (
+            Span::styled(
                 collapse_indicator.to_string(),
                 ratatui::style::Style::default().fg(theme::YELLOW),
             ),
-            (child_count, ratatui::style::Style::default().fg(theme::DIM)),
+            Span::styled(child_count, ratatui::style::Style::default().fg(theme::DIM)),
         ]);
         lines.push(CommentLine::Header(header_spans));
 
         // Comment text lines
         if let Some(plain) = &plain_text {
             for line in plain.lines().take(20) {
-                let text_spans = vec![
-                    (
+                let text_spans: Vec<Span<'static>> = vec![
+                    Span::styled(
                         format!("{}{}", indent, bar),
                         ratatui::style::Style::default().fg(depth_color),
                     ),
-                    (
+                    Span::styled(
                         line.to_string(),
                         ratatui::style::Style::default().fg(theme::TEXT),
                     ),
