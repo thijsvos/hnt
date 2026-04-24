@@ -531,10 +531,11 @@ impl App {
         tokio::spawn(async move {
             // Search results arrive with kids == None — fetch the full item to
             // populate them. TryFrom<SearchHit> filters out id=0 upstream, so
-            // no sentinel guard is needed.
+            // no sentinel guard is needed. `fetch_item` returns Arc<Item>,
+            // so we clone the kids Vec instead of moving out.
             let kids = if needs_full_fetch {
                 match client.fetch_item(story.id).await {
-                    Ok(Some(full_item)) => full_item.kids.unwrap_or_default(),
+                    Ok(Some(full_item)) => full_item.kids.clone().unwrap_or_default(),
                     _ => kids,
                 }
             } else {
@@ -762,10 +763,11 @@ impl App {
 
             tokio::spawn(async move {
                 // For search results, kids is None — fetch the full item first.
-                // TryFrom<SearchHit> filters out id=0 upstream.
+                // TryFrom<SearchHit> filters out id=0 upstream. `fetch_item`
+                // returns Arc<Item>, so clone the kids Vec instead of moving.
                 let kids = if needs_full_fetch {
                     match client.fetch_item(story_clone.id).await {
-                        Ok(Some(full_item)) => full_item.kids.unwrap_or_default(),
+                        Ok(Some(full_item)) => full_item.kids.clone().unwrap_or_default(),
                         _ => kids,
                     }
                 } else {

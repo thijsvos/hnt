@@ -26,7 +26,11 @@ const CACHE_CAPACITY: usize = 2000;
 #[derive(Clone)]
 pub struct HnClient {
     client: reqwest::Client,
-    cache: Arc<Mutex<LruCache<u64, Item>>>,
+    /// Cached items are stored as `Arc<Item>` so the cache insert path
+    /// avoids a deep `Item` clone and [`HnClient::fetch_item`] can return
+    /// a cheap reference-counted handle. Callers that only read fields
+    /// (e.g., `item.kids`) avoid cloning the whole struct.
+    cache: Arc<Mutex<LruCache<u64, Arc<Item>>>>,
 }
 
 impl HnClient {
@@ -44,7 +48,7 @@ impl HnClient {
     /// the inner guard. Poison can happen if a spawned task panics while
     /// holding the lock; we'd rather keep serving stale cached items than
     /// crash the TUI.
-    fn cache(&self) -> MutexGuard<'_, LruCache<u64, Item>> {
+    fn cache(&self) -> MutexGuard<'_, LruCache<u64, Arc<Item>>> {
         self.cache.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -62,29 +66,34 @@ impl HnClient {
     }
 
     /// Fetches a single item by ID, consulting the LRU cache first.
-    pub async fn fetch_item(&self, id: u64) -> Result<Option<Item>> {
+    /// Returns [`Arc<Item>`] so callers that only read fields (e.g.
+    /// `item.kids`) can skip cloning the whole struct.
+    pub async fn fetch_item(&self, id: u64) -> Result<Option<Arc<Item>>> {
         // Check cache first — release the lock before the network call.
-        if let Some(item) = self.cache().get(&id).cloned() {
-            return Ok(Some(item));
+        // `cloned()` on an `Option<&Arc<Item>>` is just a refcount bump.
+        if let Some(arc) = self.cache().get(&id).cloned() {
+            return Ok(Some(arc));
         }
 
         let url = format!("{}/item/{}.json", BASE_URL, id);
         let resp = self.client.get(&url).send().await?;
         let item: Option<Item> = resp.json().await?;
 
-        if let Some(ref item) = item {
-            self.cache().put(id, item.clone());
-        }
-
-        Ok(item)
+        Ok(item.map(|item| {
+            let arc = Arc::new(item);
+            self.cache().put(id, Arc::clone(&arc));
+            arc
+        }))
     }
 
     /// Fetches multiple items concurrently (up to `CONCURRENT_REQUESTS`
     /// in flight) and returns them in the order of `ids` — `result[i]`
     /// corresponds to `ids[i]`, and is `None` when the item was missing
-    /// or its fetch failed.
+    /// or its fetch failed. Owned `Item`s are returned — deref-cloned from
+    /// the cached [`Arc<Item>`] at the boundary because every downstream
+    /// consumer needs mutable ownership to stash in state.
     pub async fn fetch_items(&self, ids: &[u64]) -> Vec<Option<Item>> {
-        let results: Vec<Option<Item>> = stream::iter(ids.iter().copied())
+        let results: Vec<Option<Arc<Item>>> = stream::iter(ids.iter().copied())
             .map(|id| {
                 let client = self.clone();
                 async move { client.fetch_item(id).await.ok().flatten() }
@@ -94,15 +103,15 @@ impl HnClient {
             .await;
 
         // buffer_unordered doesn't preserve order, so re-order by input IDs.
-        // `remove` moves each Item out of the temporary map — `get().cloned()`
-        // would clone the entire Item unnecessarily since the map is discarded.
-        let mut result_map: HashMap<u64, Item> = results
+        let mut result_map: HashMap<u64, Arc<Item>> = results
             .into_iter()
             .flatten()
-            .map(|item| (item.id, item))
+            .map(|arc| (arc.id, arc))
             .collect();
 
-        ids.iter().map(|id| result_map.remove(id)).collect()
+        ids.iter()
+            .map(|id| result_map.remove(id).map(|arc| (*arc).clone()))
+            .collect()
     }
 
     /// Fetches a page of items from a pre-fetched ID list. Used for pagination
