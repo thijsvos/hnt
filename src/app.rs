@@ -990,7 +990,7 @@ impl App {
                 .flatten();
 
             if let Some(vi) = visual_index {
-                let visible_len = self.comment_state.visible_comments().len();
+                let visible_len = self.comment_state.visible_len();
                 if vi < visible_len {
                     // Check for double-click to toggle collapse
                     let now = std::time::Instant::now();

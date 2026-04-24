@@ -135,40 +135,58 @@ impl CommentTreeState {
         }
     }
 
-    /// Walk the comment tree, skipping subtrees rooted at a collapsed comment.
-    /// Returns the indices (into `self.comments`) that should be shown.
-    pub fn visible_indices(&self) -> Vec<usize> {
-        let mut indices = Vec::with_capacity(self.comments.len());
+    /// Walks the comment tree, skipping subtrees rooted at a collapsed
+    /// comment, and yields the indices (into `self.comments`) that should
+    /// be shown. Allocation-free — prefer this for `.count()` /
+    /// `.nth(...)` over the `Vec`-returning [`Self::visible_indices`].
+    pub fn visible_indices_iter(&self) -> impl Iterator<Item = usize> + '_ {
         let mut skip_depth: Option<usize> = None;
-        for (i, comment) in self.comments.iter().enumerate() {
-            if let Some(sd) = skip_depth {
-                if comment.depth > sd {
-                    continue;
-                } else {
+        self.comments
+            .iter()
+            .enumerate()
+            .filter_map(move |(i, comment)| {
+                if let Some(sd) = skip_depth {
+                    if comment.depth > sd {
+                        return None;
+                    }
                     skip_depth = None;
                 }
-            }
-            if self.collapsed.contains(&comment.item.id) {
-                skip_depth = Some(comment.depth);
-            }
-            indices.push(i);
-        }
-        indices
+                if self.collapsed.contains(&comment.item.id) {
+                    skip_depth = Some(comment.depth);
+                }
+                Some(i)
+            })
     }
 
-    /// Resolves [`visible_indices`](Self::visible_indices) into borrowed
-    /// comment references.
+    /// `Vec`-backed form of [`Self::visible_indices_iter`] — used by the
+    /// renderer which needs to index the list as `&[usize]` for scroll
+    /// calculations.
+    pub fn visible_indices(&self) -> Vec<usize> {
+        self.visible_indices_iter().collect()
+    }
+
+    /// Count of currently-visible comments. Replaces a `Vec`-allocating
+    /// `visible_comments().len()` in navigation hot paths (every
+    /// keystroke).
+    pub fn visible_len(&self) -> usize {
+        self.visible_indices_iter().count()
+    }
+
+    /// Resolves [`Self::visible_indices`] into borrowed comment
+    /// references. Test-only — production code should prefer
+    /// [`Self::visible_indices_iter`] (no allocation) or
+    /// [`Self::visible_len`] (just the count).
+    #[cfg(test)]
     pub fn visible_comments(&self) -> Vec<&FlatComment> {
-        self.visible_indices()
-            .into_iter()
+        self.visible_indices_iter()
             .map(|i| &self.comments[i])
             .collect()
     }
 
     pub fn select_next(&mut self) {
-        let visible_len = self.visible_comments().len();
-        if visible_len > 0 {
-            self.selected = (self.selected + 1).min(visible_len - 1);
+        let len = self.visible_len();
+        if len > 0 {
+            self.selected = (self.selected + 1).min(len - 1);
         }
     }
 
@@ -182,16 +200,16 @@ impl CommentTreeState {
     }
 
     pub fn jump_bottom(&mut self) {
-        let visible_len = self.visible_comments().len();
-        if visible_len > 0 {
-            self.selected = visible_len - 1;
+        let len = self.visible_len();
+        if len > 0 {
+            self.selected = len - 1;
         }
     }
 
     pub fn page_down(&mut self, page_size: usize) {
-        let visible_len = self.visible_comments().len();
-        if visible_len > 0 {
-            self.selected = (self.selected + page_size).min(visible_len - 1);
+        let len = self.visible_len();
+        if len > 0 {
+            self.selected = (self.selected + page_size).min(len - 1);
         }
     }
 
@@ -202,14 +220,14 @@ impl CommentTreeState {
     /// Flips the collapse state of the currently selected comment.
     /// Collapsing hides the subtree on the next `visible_indices` call.
     pub fn toggle_collapse(&mut self) {
-        let visible = self.visible_comments();
-        if let Some(comment) = visible.get(self.selected) {
-            let id = comment.item.id;
-            if self.collapsed.contains(&id) {
-                self.collapsed.remove(&id);
-            } else {
-                self.collapsed.insert(id);
-            }
+        let Some(idx) = self.visible_indices_iter().nth(self.selected) else {
+            return;
+        };
+        let id = self.comments[idx].item.id;
+        // Single-lookup toggle: `HashSet::remove` returns whether the key
+        // was present, so we can skip the explicit `contains` probe.
+        if !self.collapsed.remove(&id) {
+            self.collapsed.insert(id);
         }
     }
 
