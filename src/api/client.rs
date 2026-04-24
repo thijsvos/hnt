@@ -5,7 +5,7 @@
 //! Item fetches are cached up to `CACHE_CAPACITY` entries and fan out
 //! with `CONCURRENT_REQUESTS` in flight.
 
-use super::types::{FeedKind, Item, SearchResponse};
+use super::types::{CommentWithDepth, FeedKind, Item, SearchResponse};
 use anyhow::Result;
 use futures::stream::{self, StreamExt};
 use lru::LruCache;
@@ -162,7 +162,7 @@ impl HnClient {
         Ok(resp
             .hits
             .into_iter()
-            .map(Item::from)
+            .filter_map(|h| Item::try_from(h).ok())
             .filter(|item| {
                 item.url
                     .as_deref()
@@ -189,20 +189,24 @@ impl HnClient {
             ALGOLIA_URL, encoded_query, hits_per_page, page
         );
         let resp: SearchResponse = self.client.get(&url).send().await?.json().await?;
-        let stories = resp.hits.into_iter().map(Item::from).collect();
+        let stories = resp
+            .hits
+            .into_iter()
+            .filter_map(|h| Item::try_from(h).ok())
+            .collect();
         Ok((stories, resp.nb_pages, resp.nb_hits))
     }
 
-    /// Walks a comment subtree depth-first, appending `(Item, depth)` into
-    /// `result` for every live descendant up to `max_depth`. Dead/deleted
-    /// comments are skipped. Returns a boxed future so the recursion can
-    /// cross `async` boundaries.
+    /// Walks a comment subtree depth-first, appending [`CommentWithDepth`]
+    /// records into `result` for every live descendant up to `max_depth`.
+    /// Dead/deleted comments are skipped. Returns a boxed future so the
+    /// recursion can cross `async` boundaries.
     pub fn fetch_children_recursive<'a>(
         &'a self,
         ids: &'a [u64],
         depth: usize,
         max_depth: usize,
-        result: &'a mut Vec<(Item, usize)>,
+        result: &'a mut Vec<CommentWithDepth>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             if depth > max_depth || ids.is_empty() {
@@ -216,7 +220,7 @@ impl HnClient {
                     continue;
                 }
                 let kids = item.kids.clone().unwrap_or_default();
-                result.push((item, depth));
+                result.push(CommentWithDepth { item, depth });
 
                 if !kids.is_empty() {
                     self.fetch_children_recursive(&kids, depth + 1, max_depth, result)

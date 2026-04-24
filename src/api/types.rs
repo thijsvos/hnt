@@ -35,7 +35,7 @@ pub struct Item {
     #[serde(default)]
     pub descendants: Option<i64>,
     #[serde(rename = "type", default)]
-    pub item_type: Option<String>,
+    pub item_type: Option<ItemType>,
     #[serde(default)]
     pub dead: Option<bool>,
     #[serde(default)]
@@ -59,11 +59,10 @@ impl Item {
     /// (`Ask HN:`, `Show HN:`, `Tell HN:`, `Launch HN:`). Returns `None`
     /// for plain stories. `item_type` takes priority over title prefix.
     pub fn badge(&self) -> Option<StoryBadge> {
-        if self.item_type.as_deref() == Some("job") {
-            return Some(StoryBadge::Job);
-        }
-        if self.item_type.as_deref() == Some("poll") {
-            return Some(StoryBadge::Poll);
+        match self.item_type {
+            Some(ItemType::Job) => return Some(StoryBadge::Job),
+            Some(ItemType::Poll) => return Some(StoryBadge::Poll),
+            _ => {}
         }
         let title = self.title.as_deref()?;
         if title.starts_with("Ask HN:") {
@@ -100,6 +99,32 @@ impl Item {
     }
 }
 
+/// A comment paired with its depth in the tree — the transport form for
+/// async fetches into [`crate::state::comment_state::CommentTreeState`].
+/// `depth == 0` is a root comment; children have strictly greater depth
+/// and appear contiguously after their parent in pre-order.
+#[derive(Debug, Clone)]
+pub struct CommentWithDepth {
+    pub item: Item,
+    pub depth: usize,
+}
+
+/// Firebase `type` field — tags an [`Item`] as story / comment / job /
+/// poll / poll option. Unknown future strings deserialize to
+/// [`ItemType::Unknown`] via `#[serde(other)]` so wire-format evolution
+/// doesn't crash the app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ItemType {
+    Story,
+    Comment,
+    Job,
+    Poll,
+    Pollopt,
+    #[serde(other)]
+    Unknown,
+}
+
 /// A classification label shown next to a story title. See [`Item::badge`]
 /// for how values are derived.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,7 +154,11 @@ impl StoryBadge {
 // --- Algolia Search types ---
 
 /// One result entry returned by the Algolia HN search endpoint. Shape
-/// differs from the Firebase [`Item`]; convert via [`From`].
+/// differs from the Firebase [`Item`]; convert via [`TryFrom`] — which
+/// fails when Algolia's string `objectID` can't be parsed as `u64`
+/// (effectively never in practice, but letting callers filter rather
+/// than relying on an `id=0` sentinel keeps the rest of the app free
+/// of "is this id real" guards).
 #[derive(Debug, Deserialize)]
 pub struct SearchHit {
     #[serde(rename = "objectID")]
@@ -153,10 +182,12 @@ pub struct SearchResponse {
     pub nb_hits: usize,
 }
 
-impl From<SearchHit> for Item {
-    fn from(hit: SearchHit) -> Self {
-        Item {
-            id: hit.object_id.parse::<u64>().unwrap_or(0),
+impl TryFrom<SearchHit> for Item {
+    type Error = std::num::ParseIntError;
+
+    fn try_from(hit: SearchHit) -> Result<Self, Self::Error> {
+        Ok(Item {
+            id: hit.object_id.parse::<u64>()?,
             title: hit.title,
             url: hit.url,
             text: hit.story_text,
@@ -165,10 +196,10 @@ impl From<SearchHit> for Item {
             time: hit.created_at_i,
             kids: None,
             descendants: hit.num_comments,
-            item_type: Some("story".to_string()),
+            item_type: Some(ItemType::Story),
             dead: None,
             deleted: None,
-        }
+        })
     }
 }
 
@@ -354,14 +385,14 @@ mod tests {
     #[test]
     fn badge_job() {
         let mut item = make_item();
-        item.item_type = Some("job".into());
+        item.item_type = Some(ItemType::Job);
         assert_eq!(item.badge(), Some(StoryBadge::Job));
     }
 
     #[test]
     fn badge_poll() {
         let mut item = make_item();
-        item.item_type = Some("poll".into());
+        item.item_type = Some(ItemType::Poll);
         assert_eq!(item.badge(), Some(StoryBadge::Poll));
     }
 
@@ -409,7 +440,7 @@ mod tests {
     #[test]
     fn badge_job_takes_priority_over_title() {
         let mut item = make_item();
-        item.item_type = Some("job".into());
+        item.item_type = Some(ItemType::Job);
         item.title = Some("Ask HN: Something".into());
         assert_eq!(item.badge(), Some(StoryBadge::Job));
     }
@@ -498,7 +529,7 @@ mod tests {
         assert_eq!(format!("{}", FeedKind::Jobs), "Jobs");
     }
 
-    // --- From<SearchHit> for Item ---
+    // --- TryFrom<SearchHit> for Item ---
 
     #[test]
     fn search_hit_to_item() {
@@ -512,18 +543,18 @@ mod tests {
             created_at_i: Some(1000),
             story_text: Some("body".into()),
         };
-        let item = Item::from(hit);
+        let item = Item::try_from(hit).expect("valid numeric object_id");
         assert_eq!(item.id, 12345);
         assert_eq!(item.title.as_deref(), Some("Test"));
         assert_eq!(item.by.as_deref(), Some("user"));
         assert_eq!(item.score, Some(42));
         assert_eq!(item.descendants, Some(10));
         assert_eq!(item.text.as_deref(), Some("body"));
-        assert_eq!(item.item_type.as_deref(), Some("story"));
+        assert_eq!(item.item_type, Some(ItemType::Story));
     }
 
     #[test]
-    fn search_hit_invalid_object_id() {
+    fn search_hit_invalid_object_id_errors() {
         let hit = SearchHit {
             object_id: "not_a_number".into(),
             title: None,
@@ -534,7 +565,6 @@ mod tests {
             created_at_i: None,
             story_text: None,
         };
-        let item = Item::from(hit);
-        assert_eq!(item.id, 0);
+        assert!(Item::try_from(hit).is_err());
     }
 }

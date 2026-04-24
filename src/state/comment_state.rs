@@ -6,7 +6,9 @@
 //! rules by skipping subtrees. [`CommentTreeState::insert_children`]
 //! splices a root's children in-place as async fetches complete.
 
-use crate::api::types::Item;
+#[cfg(test)]
+use crate::api::types::ItemType;
+use crate::api::types::{CommentWithDepth, Item};
 use std::collections::HashSet;
 
 /// One comment in the flattened, depth-tagged comment tree.
@@ -105,18 +107,18 @@ impl CommentTreeState {
     }
 
     /// Replaces the flat list and resets selection/scroll to the top.
-    /// Each tuple is `(item, depth)` in pre-order.
-    pub fn set_comments(&mut self, items: Vec<(Item, usize)>) {
+    /// `items` must be in pre-order (parents before their descendants).
+    pub fn set_comments(&mut self, items: Vec<CommentWithDepth>) {
         self.comments = items
             .into_iter()
-            .map(|(item, depth)| FlatComment::new(item, depth))
+            .map(|c| FlatComment::new(c.item, c.depth))
             .collect();
         self.scroll = 0;
         self.selected = 0;
     }
 
     /// Insert child comments right after their parent in the flattened list.
-    pub fn insert_children(&mut self, parent_id: u64, children: Vec<(Item, usize)>) {
+    pub fn insert_children(&mut self, parent_id: u64, children: Vec<CommentWithDepth>) {
         let insert_pos = self
             .comments
             .iter()
@@ -126,7 +128,7 @@ impl CommentTreeState {
         if let Some(pos) = insert_pos {
             let new_comments: Vec<FlatComment> = children
                 .into_iter()
-                .map(|(item, depth)| FlatComment::new(item, depth))
+                .map(|c| FlatComment::new(c.item, c.depth))
                 .collect();
             // Splice them in after the parent
             self.comments.splice(pos..pos, new_comments);
@@ -238,19 +240,31 @@ mod tests {
             time: None,
             kids: None,
             descendants: None,
-            item_type: Some("comment".into()),
+            item_type: Some(ItemType::Comment),
             dead: None,
             deleted: None,
         }
     }
 
     /// Build a simple tree: root(1) -> child(2, depth 1) -> grandchild(3, depth 2), sibling(4, depth 0)
-    fn sample_tree() -> Vec<(Item, usize)> {
+    fn sample_tree() -> Vec<CommentWithDepth> {
         vec![
-            (make_item(1), 0),
-            (make_item(2), 1),
-            (make_item(3), 2),
-            (make_item(4), 0),
+            CommentWithDepth {
+                item: make_item(1),
+                depth: 0,
+            },
+            CommentWithDepth {
+                item: make_item(2),
+                depth: 1,
+            },
+            CommentWithDepth {
+                item: make_item(3),
+                depth: 2,
+            },
+            CommentWithDepth {
+                item: make_item(4),
+                depth: 0,
+            },
         ]
     }
 
@@ -274,11 +288,18 @@ mod tests {
         assert_eq!(state.selected, 0);
     }
 
+    fn cwd(id: u64, depth: usize) -> CommentWithDepth {
+        CommentWithDepth {
+            item: make_item(id),
+            depth,
+        }
+    }
+
     #[test]
     fn insert_children_after_parent() {
         let mut state = CommentTreeState::new();
-        state.set_comments(vec![(make_item(1), 0), (make_item(4), 0)]);
-        state.insert_children(1, vec![(make_item(2), 1), (make_item(3), 1)]);
+        state.set_comments(vec![cwd(1, 0), cwd(4, 0)]);
+        state.insert_children(1, vec![cwd(2, 1), cwd(3, 1)]);
         assert_eq!(state.comments.len(), 4);
         assert_eq!(state.comments[1].item.id, 2);
         assert_eq!(state.comments[2].item.id, 3);
@@ -288,8 +309,8 @@ mod tests {
     #[test]
     fn insert_children_missing_parent_noop() {
         let mut state = CommentTreeState::new();
-        state.set_comments(vec![(make_item(1), 0)]);
-        state.insert_children(999, vec![(make_item(2), 1)]);
+        state.set_comments(vec![cwd(1, 0)]);
+        state.insert_children(999, vec![cwd(2, 1)]);
         assert_eq!(state.comments.len(), 1);
     }
 
@@ -519,7 +540,7 @@ mod tests {
         assert_eq!(state.pending_root_ids.len(), 2);
 
         // CommentsAppended for root 1 → children arrive, remove from pending
-        state.insert_children(1, vec![(make_item(10), 1)]);
+        state.insert_children(1, vec![cwd(10, 1)]);
         state.pending_root_ids.remove(&1);
         assert!(!state.pending_root_ids.contains(&1));
         assert!(state.pending_root_ids.contains(&4));

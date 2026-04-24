@@ -7,6 +7,8 @@
 //! presses `h`.
 
 use crate::api::types::Item;
+#[cfg(test)]
+use crate::api::types::ItemType;
 
 /// State backing the prior-discussions overlay.
 ///
@@ -81,7 +83,7 @@ mod tests {
             time: Some(1000),
             kids: None,
             descendants: Some(10),
-            item_type: Some("story".into()),
+            item_type: Some(ItemType::Story),
             dead: None,
             deleted: None,
         }
