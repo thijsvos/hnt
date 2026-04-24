@@ -11,7 +11,7 @@ use futures::stream::{self, StreamExt};
 use lru::LruCache;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 const BASE_URL: &str = "https://hacker-news.firebaseio.com/v0";
 const ALGOLIA_URL: &str = "https://hn.algolia.com/api/v1/search";
@@ -40,10 +40,18 @@ impl HnClient {
         }
     }
 
+    /// Locks the item cache, recovering from a poisoned mutex by taking
+    /// the inner guard. Poison can happen if a spawned task panics while
+    /// holding the lock; we'd rather keep serving stale cached items than
+    /// crash the TUI.
+    fn cache(&self) -> MutexGuard<'_, LruCache<u64, Item>> {
+        self.cache.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Drops every cached item. Called on feed switch and refresh to avoid
     /// serving stale data.
     pub fn clear_cache(&self) {
-        self.cache.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.cache().clear();
     }
 
     /// Fetches the list of story IDs for a given feed.
@@ -55,12 +63,9 @@ impl HnClient {
 
     /// Fetches a single item by ID, consulting the LRU cache first.
     pub async fn fetch_item(&self, id: u64) -> Result<Option<Item>> {
-        // Check cache first
-        {
-            let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(item) = cache.get(&id) {
-                return Ok(Some(item.clone()));
-            }
+        // Check cache first — release the lock before the network call.
+        if let Some(item) = self.cache().get(&id).cloned() {
+            return Ok(Some(item));
         }
 
         let url = format!("{}/item/{}.json", BASE_URL, id);
@@ -68,8 +73,7 @@ impl HnClient {
         let item: Option<Item> = resp.json().await?;
 
         if let Some(ref item) = item {
-            let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-            cache.put(id, item.clone());
+            self.cache().put(id, item.clone());
         }
 
         Ok(item)

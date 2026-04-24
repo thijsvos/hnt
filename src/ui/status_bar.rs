@@ -16,17 +16,21 @@ use ratatui::{
 /// Bottom status bar. Display mode depends on `input_mode` and
 /// `search_query`: a `/` prompt during input, a search-results banner
 /// while search results are shown, or the normal feed/hint line.
-pub struct StatusBar {
+///
+/// All string fields borrow from [`crate::app::App`]. The widget is
+/// rebuilt per-frame and consumed immediately, so ownership is
+/// unnecessary — cloning the same strings every frame was wasted work.
+pub struct StatusBar<'a> {
     pub feed: FeedKind,
-    pub position: String,
-    pub error: Option<String>,
+    pub position: &'a str,
+    pub error: Option<&'a str>,
     pub focus_pane: &'static str,
     pub input_mode: InputMode,
-    pub search_input: Option<String>,
-    pub search_query: Option<String>,
+    pub search_input: Option<&'a str>,
+    pub search_query: Option<&'a str>,
 }
 
-impl Widget for StatusBar {
+impl<'a> Widget for StatusBar<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // Fill background
         for x in area.left()..area.right() {
@@ -37,7 +41,7 @@ impl Widget for StatusBar {
 
         if self.input_mode == InputMode::SearchInput {
             // Search input mode
-            let input = self.search_input.unwrap_or_default();
+            let input = self.search_input.unwrap_or("");
             spans.push(Span::styled(
                 " / ",
                 theme::accent_style().bg(theme::SURFACE),
@@ -50,7 +54,7 @@ impl Widget for StatusBar {
                 " (Enter:search  Esc:cancel)",
                 theme::dim_style(),
             ));
-        } else if let Some(ref query) = self.search_query {
+        } else if let Some(query) = self.search_query {
             // Search results mode
             spans.push(Span::styled(
                 format!(" Search: \"{}\" ", query),
@@ -58,7 +62,7 @@ impl Widget for StatusBar {
             ));
             spans.push(Span::styled(" ", theme::status_style()));
 
-            if let Some(err) = &self.error {
+            if let Some(err) = self.error {
                 spans.push(Span::styled(
                     format!("Error: {} ", err),
                     ratatui::style::Style::default()
@@ -79,7 +83,7 @@ impl Widget for StatusBar {
             ));
             spans.push(Span::styled(" ", theme::status_style()));
 
-            if let Some(err) = &self.error {
+            if let Some(err) = self.error {
                 spans.push(Span::styled(
                     format!("Error: {} ", err),
                     ratatui::style::Style::default()
