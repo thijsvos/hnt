@@ -8,7 +8,7 @@
 
 #[cfg(test)]
 use crate::api::types::ItemType;
-use crate::api::types::{CommentWithDepth, Item};
+use crate::api::types::{CommentId, CommentWithDepth, Item};
 use std::collections::HashSet;
 
 /// One comment in the flattened, depth-tagged comment tree.
@@ -61,11 +61,11 @@ pub struct CommentTreeState {
     pub selected: usize,
     /// Collapsed-subtree comment IDs; their descendants are hidden from
     /// `visible_comments()`.
-    pub collapsed: HashSet<u64>,
+    pub collapsed: HashSet<CommentId>,
     pub loading: bool,
     pub story: Option<Item>,
     /// Root-comment IDs whose subtrees are still being fetched.
-    pub pending_root_ids: HashSet<u64>,
+    pub pending_root_ids: HashSet<CommentId>,
     /// Maps screen row (relative to inner area top) → visible comment index.
     /// Populated during render for mouse click handling.
     pub row_map: Vec<Option<usize>>,
@@ -118,11 +118,11 @@ impl CommentTreeState {
     }
 
     /// Insert child comments right after their parent in the flattened list.
-    pub fn insert_children(&mut self, parent_id: u64, children: Vec<CommentWithDepth>) {
+    pub fn insert_children(&mut self, parent_id: CommentId, children: Vec<CommentWithDepth>) {
         let insert_pos = self
             .comments
             .iter()
-            .position(|c| c.item.id == parent_id)
+            .position(|c| c.item.id == parent_id.0)
             .map(|i| i + 1);
 
         if let Some(pos) = insert_pos {
@@ -151,7 +151,7 @@ impl CommentTreeState {
                     }
                     skip_depth = None;
                 }
-                if self.collapsed.contains(&comment.item.id) {
+                if self.collapsed.contains(&CommentId(comment.item.id)) {
                     skip_depth = Some(comment.depth);
                 }
                 Some(i)
@@ -223,7 +223,7 @@ impl CommentTreeState {
         let Some(idx) = self.visible_indices_iter().nth(self.selected) else {
             return;
         };
-        let id = self.comments[idx].item.id;
+        let id = CommentId(self.comments[idx].item.id);
         // Single-lookup toggle: `HashSet::remove` returns whether the key
         // was present, so we can skip the explicit `contains` probe.
         if !self.collapsed.remove(&id) {
@@ -313,11 +313,15 @@ mod tests {
         }
     }
 
+    fn cid(n: u64) -> CommentId {
+        CommentId(n)
+    }
+
     #[test]
     fn insert_children_after_parent() {
         let mut state = CommentTreeState::new();
         state.set_comments(vec![cwd(1, 0), cwd(4, 0)]);
-        state.insert_children(1, vec![cwd(2, 1), cwd(3, 1)]);
+        state.insert_children(cid(1), vec![cwd(2, 1), cwd(3, 1)]);
         assert_eq!(state.comments.len(), 4);
         assert_eq!(state.comments[1].item.id, 2);
         assert_eq!(state.comments[2].item.id, 3);
@@ -328,7 +332,7 @@ mod tests {
     fn insert_children_missing_parent_noop() {
         let mut state = CommentTreeState::new();
         state.set_comments(vec![cwd(1, 0)]);
-        state.insert_children(999, vec![cwd(2, 1)]);
+        state.insert_children(cid(999), vec![cwd(2, 1)]);
         assert_eq!(state.comments.len(), 1);
     }
 
@@ -343,7 +347,7 @@ mod tests {
     fn visible_comments_collapse_root_hides_children() {
         let mut state = CommentTreeState::new();
         state.set_comments(sample_tree());
-        state.collapsed.insert(1); // collapse root comment
+        state.collapsed.insert(cid(1)); // collapse root comment
         let visible = state.visible_comments();
         let ids: Vec<u64> = visible.iter().map(|c| c.item.id).collect();
         // Root 1 visible (but collapsed), children 2,3 hidden, sibling 4 visible
@@ -354,7 +358,7 @@ mod tests {
     fn visible_comments_collapse_mid_level() {
         let mut state = CommentTreeState::new();
         state.set_comments(sample_tree());
-        state.collapsed.insert(2); // collapse child at depth 1
+        state.collapsed.insert(cid(2)); // collapse child at depth 1
         let visible = state.visible_comments();
         let ids: Vec<u64> = visible.iter().map(|c| c.item.id).collect();
         // 1 visible, 2 visible (collapsed), 3 hidden (child of 2), 4 visible
@@ -448,7 +452,7 @@ mod tests {
     fn select_next_clamps_at_visible_end_when_collapsed() {
         let mut state = CommentTreeState::new();
         state.set_comments(sample_tree());
-        state.collapsed.insert(1); // visible: [1, 4]
+        state.collapsed.insert(cid(1)); // visible: [1, 4] still works below
         state.select_next();
         assert_eq!(state.selected, 1);
         state.select_next();
@@ -459,7 +463,7 @@ mod tests {
     fn jump_bottom_respects_collapse() {
         let mut state = CommentTreeState::new();
         state.set_comments(sample_tree());
-        state.collapsed.insert(1); // visible: [1, 4]
+        state.collapsed.insert(cid(1)); // visible: [1, 4] still works below
         state.jump_bottom();
         assert_eq!(state.selected, 1);
     }
@@ -500,7 +504,7 @@ mod tests {
     fn page_down_respects_collapse() {
         let mut state = CommentTreeState::new();
         state.set_comments(sample_tree());
-        state.collapsed.insert(1); // visible: [1, 4]
+        state.collapsed.insert(cid(1)); // visible: [1, 4] still works below
         state.page_down(5);
         assert_eq!(state.selected, 1);
     }
@@ -510,16 +514,16 @@ mod tests {
         let mut state = CommentTreeState::new();
         state.set_comments(sample_tree());
         state.toggle_collapse();
-        assert!(state.collapsed.contains(&1));
+        assert!(state.collapsed.contains(&cid(1)));
     }
 
     #[test]
     fn toggle_collapse_removes_from_set() {
         let mut state = CommentTreeState::new();
         state.set_comments(sample_tree());
-        state.collapsed.insert(1);
+        state.collapsed.insert(cid(1));
         state.toggle_collapse();
-        assert!(!state.collapsed.contains(&1));
+        assert!(!state.collapsed.contains(&cid(1)));
     }
 
     #[test]
@@ -533,11 +537,11 @@ mod tests {
     fn reset_clears_all() {
         let mut state = CommentTreeState::new();
         state.set_comments(sample_tree());
-        state.collapsed.insert(1);
+        state.collapsed.insert(cid(1));
         state.selected = 2;
         state.loading = true;
         state.story = Some(make_item(99));
-        state.pending_root_ids.insert(1);
+        state.pending_root_ids.insert(cid(1));
         state.reset();
         assert!(state.comments.is_empty());
         assert_eq!(state.scroll, 0);
@@ -553,15 +557,15 @@ mod tests {
         let mut state = CommentTreeState::new();
         state.set_comments(sample_tree());
         // Populate — simulating app.rs inserting after CommentsLoaded
-        state.pending_root_ids.insert(1);
-        state.pending_root_ids.insert(4);
+        state.pending_root_ids.insert(cid(1));
+        state.pending_root_ids.insert(cid(4));
         assert_eq!(state.pending_root_ids.len(), 2);
 
         // CommentsAppended for root 1 → children arrive, remove from pending
-        state.insert_children(1, vec![cwd(10, 1)]);
-        state.pending_root_ids.remove(&1);
-        assert!(!state.pending_root_ids.contains(&1));
-        assert!(state.pending_root_ids.contains(&4));
+        state.insert_children(cid(1), vec![cwd(10, 1)]);
+        state.pending_root_ids.remove(&cid(1));
+        assert!(!state.pending_root_ids.contains(&cid(1)));
+        assert!(state.pending_root_ids.contains(&cid(4)));
 
         // CommentsDone → clear remaining
         state.pending_root_ids.clear();

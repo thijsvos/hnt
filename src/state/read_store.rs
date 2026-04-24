@@ -9,6 +9,7 @@
 //! the path or read the file leave the store in-memory only — the feature
 //! still works within the session but is not persisted across restarts.
 
+use crate::api::types::StoryId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -36,8 +37,12 @@ pub struct ReadEntry {
 /// Constructed via [`ReadStore::load`] at startup. Mark a story as visited
 /// with [`ReadStore::mark`] and flush with [`ReadStore::save`]. Reads
 /// ([`ReadStore::is_read`], [`ReadStore::new_comments_since`]) are cheap.
+///
+/// Keyed by [`StoryId`] so the compiler catches attempts to mix in
+/// comment IDs. The JSON on disk still uses stringified-u64 keys —
+/// conversion happens at the serde boundary.
 pub struct ReadStore {
-    entries: HashMap<u64, ReadEntry>,
+    entries: HashMap<StoryId, ReadEntry>,
     path: Option<PathBuf>,
     dirty: bool,
 }
@@ -81,7 +86,7 @@ impl ReadStore {
             .map(|disk| {
                 disk.entries
                     .into_iter()
-                    .filter_map(|(k, v)| k.parse::<u64>().ok().map(|id| (id, v)))
+                    .filter_map(|(k, v)| k.parse::<u64>().ok().map(|id| (StoryId(id), v)))
                     .collect()
             })
             .unwrap_or_default();
@@ -109,7 +114,7 @@ impl ReadStore {
             entries: self
                 .entries
                 .iter()
-                .map(|(&id, entry)| (id.to_string(), *entry))
+                .map(|(&id, entry)| (id.0.to_string(), *entry))
                 .collect(),
         };
         let Ok(json) = serde_json::to_string(&disk) else {
@@ -127,13 +132,13 @@ impl ReadStore {
     /// Records or refreshes the entry for `id` with the current wall-clock
     /// timestamp and comment count. Evicts oldest entries if the store
     /// would overflow [`MAX_ENTRIES`].
-    pub fn mark(&mut self, id: u64, current_comment_count: i64) {
+    pub fn mark(&mut self, id: StoryId, current_comment_count: i64) {
         self.mark_at(id, current_comment_count, chrono::Utc::now().timestamp());
     }
 
     /// Variant of [`ReadStore::mark`] that uses an explicit timestamp —
     /// used by tests to keep behavior deterministic.
-    pub fn mark_at(&mut self, id: u64, current_comment_count: i64, now: i64) {
+    pub fn mark_at(&mut self, id: StoryId, current_comment_count: i64, now: i64) {
         self.entries.insert(
             id,
             ReadEntry {
@@ -148,20 +153,20 @@ impl ReadStore {
     }
 
     /// Returns whether `id` has ever been visited.
-    pub fn is_read(&self, id: u64) -> bool {
+    pub fn is_read(&self, id: StoryId) -> bool {
         self.entries.contains_key(&id)
     }
 
     /// Persisted entry for `id`, if any.
     #[cfg(test)]
-    pub fn entry(&self, id: u64) -> Option<&ReadEntry> {
+    pub fn entry(&self, id: StoryId) -> Option<&ReadEntry> {
         self.entries.get(&id)
     }
 
     /// New comments since the last visit, if any. Returns `Some(n)` when
     /// `n > 0`; `None` when the story was never visited or has no new
     /// comments. A shrinking count (rare — deletions) is clamped to `None`.
-    pub fn new_comments_since(&self, id: u64, current_count: i64) -> Option<i64> {
+    pub fn new_comments_since(&self, id: StoryId, current_count: i64) -> Option<i64> {
         let entry = self.entries.get(&id)?;
         let delta = current_count - entry.last_comment_count;
         if delta > 0 {
@@ -174,7 +179,7 @@ impl ReadStore {
     /// Drops entries with the lowest `last_seen_at` until the store is
     /// back within [`MAX_ENTRIES`].
     fn evict_oldest(&mut self) {
-        let mut ages: Vec<(i64, u64)> = self
+        let mut ages: Vec<(i64, StoryId)> = self
             .entries
             .iter()
             .map(|(&id, e)| (e.last_seen_at, id))
@@ -233,54 +238,58 @@ mod tests {
         ReadStore::load_from(p)
     }
 
+    fn sid(n: u64) -> StoryId {
+        StoryId(n)
+    }
+
     #[test]
     fn empty_store_has_no_entries() {
         let s = ReadStore::empty();
-        assert!(!s.is_read(42));
-        assert!(s.new_comments_since(42, 10).is_none());
+        assert!(!s.is_read(sid(42)));
+        assert!(s.new_comments_since(sid(42), 10).is_none());
     }
 
     #[test]
     fn mark_then_is_read() {
         let mut s = fresh_store("mark_then_is_read");
-        s.mark_at(42, 10, 1_700_000_000);
-        assert!(s.is_read(42));
-        assert!(!s.is_read(99));
+        s.mark_at(sid(42), 10, 1_700_000_000);
+        assert!(s.is_read(sid(42)));
+        assert!(!s.is_read(sid(99)));
     }
 
     #[test]
     fn new_comments_since_returns_positive_delta() {
         let mut s = fresh_store("new_comments_delta");
-        s.mark_at(42, 10, 1_700_000_000);
-        assert_eq!(s.new_comments_since(42, 15), Some(5));
+        s.mark_at(sid(42), 10, 1_700_000_000);
+        assert_eq!(s.new_comments_since(sid(42), 15), Some(5));
     }
 
     #[test]
     fn new_comments_since_returns_none_when_unchanged() {
         let mut s = fresh_store("new_comments_unchanged");
-        s.mark_at(42, 10, 1_700_000_000);
-        assert_eq!(s.new_comments_since(42, 10), None);
+        s.mark_at(sid(42), 10, 1_700_000_000);
+        assert_eq!(s.new_comments_since(sid(42), 10), None);
     }
 
     #[test]
     fn new_comments_since_returns_none_when_shrunk() {
         let mut s = fresh_store("new_comments_shrunk");
-        s.mark_at(42, 10, 1_700_000_000);
-        assert_eq!(s.new_comments_since(42, 5), None);
+        s.mark_at(sid(42), 10, 1_700_000_000);
+        assert_eq!(s.new_comments_since(sid(42), 5), None);
     }
 
     #[test]
     fn new_comments_since_none_for_unknown_id() {
         let s = ReadStore::empty();
-        assert_eq!(s.new_comments_since(99, 10), None);
+        assert_eq!(s.new_comments_since(sid(99), 10), None);
     }
 
     #[test]
     fn mark_updates_existing_entry_in_place() {
         let mut s = fresh_store("mark_updates");
-        s.mark_at(42, 10, 1_700_000_000);
-        s.mark_at(42, 25, 1_700_000_100);
-        let e = s.entry(42).unwrap();
+        s.mark_at(sid(42), 10, 1_700_000_000);
+        s.mark_at(sid(42), 25, 1_700_000_100);
+        let e = s.entry(sid(42)).unwrap();
         assert_eq!(e.last_seen_at, 1_700_000_100);
         assert_eq!(e.last_comment_count, 25);
         assert_eq!(s.len(), 1);
@@ -292,15 +301,15 @@ mod tests {
         let _ = std::fs::remove_file(&p);
         {
             let mut s = ReadStore::load_from(p.clone());
-            s.mark_at(1, 10, 1_700_000_000);
-            s.mark_at(2, 20, 1_700_000_100);
+            s.mark_at(sid(1), 10, 1_700_000_000);
+            s.mark_at(sid(2), 20, 1_700_000_100);
             s.save();
         }
         let s2 = ReadStore::load_from(p.clone());
-        assert!(s2.is_read(1));
-        assert!(s2.is_read(2));
-        assert_eq!(s2.entry(1).unwrap().last_comment_count, 10);
-        assert_eq!(s2.entry(2).unwrap().last_comment_count, 20);
+        assert!(s2.is_read(sid(1)));
+        assert!(s2.is_read(sid(2)));
+        assert_eq!(s2.entry(sid(1)).unwrap().last_comment_count, 10);
+        assert_eq!(s2.entry(sid(2)).unwrap().last_comment_count, 20);
         let _ = std::fs::remove_file(&p);
     }
 
@@ -325,21 +334,24 @@ mod tests {
     #[test]
     fn in_memory_only_store_silently_drops_save() {
         let mut s = ReadStore::empty();
-        s.mark_at(1, 10, 1000);
+        s.mark_at(sid(1), 10, 1000);
         s.save();
-        assert!(s.is_read(1));
+        assert!(s.is_read(sid(1)));
     }
 
     #[test]
     fn eviction_bounds_size_at_max_and_removes_oldest() {
         let mut s = ReadStore::empty();
         for i in 0..(MAX_ENTRIES as u64 + 5) {
-            s.mark_at(i, 0, i as i64);
+            s.mark_at(sid(i), 0, i as i64);
         }
         assert_eq!(s.len(), MAX_ENTRIES);
         for oldest in 0..5u64 {
-            assert!(!s.is_read(oldest), "oldest id {oldest} should be evicted");
+            assert!(
+                !s.is_read(sid(oldest)),
+                "oldest id {oldest} should be evicted"
+            );
         }
-        assert!(s.is_read(MAX_ENTRIES as u64 + 4));
+        assert!(s.is_read(sid(MAX_ENTRIES as u64 + 4)));
     }
 }

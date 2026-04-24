@@ -6,9 +6,9 @@
 //! here and displayed via the prior-discussions overlay when the user
 //! presses `h`.
 
-use crate::api::types::Item;
 #[cfg(test)]
 use crate::api::types::ItemType;
+use crate::api::types::{Item, StoryId};
 
 /// State backing the prior-discussions overlay.
 ///
@@ -19,7 +19,7 @@ use crate::api::types::ItemType;
 pub struct PriorDiscussionsState {
     /// Story whose URL was queried. Checked against the currently selected
     /// story so stale results from a prior selection are dropped.
-    pub story_id: u64,
+    pub story_id: StoryId,
     /// Prior HN submissions of `story_id`'s URL, in Algolia default order
     /// (most recent first). May be empty when the URL has no prior submissions.
     pub submissions: Vec<Item>,
@@ -29,7 +29,7 @@ pub struct PriorDiscussionsState {
 
 impl PriorDiscussionsState {
     /// Starts a fresh overlay positioned at the first entry.
-    pub fn new(story_id: u64, submissions: Vec<Item>) -> Self {
+    pub fn new(story_id: StoryId, submissions: Vec<Item>) -> Self {
         Self {
             story_id,
             submissions,
@@ -91,15 +91,15 @@ mod tests {
 
     #[test]
     fn new_defaults_selected_to_zero() {
-        let s = PriorDiscussionsState::new(1, vec![item(1), item(2)]);
+        let s = PriorDiscussionsState::new(StoryId(1), vec![item(1), item(2)]);
         assert_eq!(s.selected, 0);
-        assert_eq!(s.story_id, 1);
+        assert_eq!(s.story_id, StoryId(1));
         assert_eq!(s.submissions.len(), 2);
     }
 
     #[test]
     fn select_next_clamps_at_end() {
-        let mut s = PriorDiscussionsState::new(1, vec![item(1), item(2)]);
+        let mut s = PriorDiscussionsState::new(StoryId(1), vec![item(1), item(2)]);
         s.select_next();
         s.select_next();
         s.select_next();
@@ -108,14 +108,14 @@ mod tests {
 
     #[test]
     fn select_prev_clamps_at_zero() {
-        let mut s = PriorDiscussionsState::new(1, vec![item(1), item(2)]);
+        let mut s = PriorDiscussionsState::new(StoryId(1), vec![item(1), item(2)]);
         s.select_prev();
         assert_eq!(s.selected, 0);
     }
 
     #[test]
     fn empty_submissions_nav_is_noop() {
-        let mut s = PriorDiscussionsState::new(1, Vec::new());
+        let mut s = PriorDiscussionsState::new(StoryId(1), Vec::new());
         s.select_next();
         s.jump_bottom();
         assert_eq!(s.selected, 0);
@@ -124,14 +124,14 @@ mod tests {
 
     #[test]
     fn jump_bottom_selects_last() {
-        let mut s = PriorDiscussionsState::new(1, vec![item(1), item(2), item(3)]);
+        let mut s = PriorDiscussionsState::new(StoryId(1), vec![item(1), item(2), item(3)]);
         s.jump_bottom();
         assert_eq!(s.selected, 2);
     }
 
     #[test]
     fn selected_submission_returns_current() {
-        let mut s = PriorDiscussionsState::new(1, vec![item(10), item(20)]);
+        let mut s = PriorDiscussionsState::new(StoryId(1), vec![item(10), item(20)]);
         assert_eq!(s.selected_submission().unwrap().id, 10);
         s.select_next();
         assert_eq!(s.selected_submission().unwrap().id, 20);

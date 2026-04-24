@@ -72,7 +72,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         .comment_state
         .story
         .as_ref()
-        .and_then(|s| app.prior_results.get(&s.id))
+        .and_then(|s| app.prior_results.get(&crate::api::types::StoryId(s.id)))
         .map(|v| v.len())
         .unwrap_or(0);
     frame.render_widget(

@@ -92,6 +92,18 @@ pub struct CommentWithDepth {
     pub depth: usize,
 }
 
+/// Newtype wrapper for a story's HN item ID. Distinct from [`CommentId`]
+/// at the type level so story-keyed maps (`prior_results`, `read_store`
+/// entries, in-flight query tracking) can't accidentally hold comment
+/// IDs, or vice versa. `Item::id` stays as `u64` for serde simplicity —
+/// the newtypes apply where different ID kinds share scope.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct StoryId(pub u64);
+
+/// Newtype wrapper for a comment's HN item ID. See [`StoryId`].
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CommentId(pub u64);
+
 /// Firebase `type` field — tags an [`Item`] as story / comment / job /
 /// poll / poll option. Unknown future strings deserialize to
 /// [`ItemType::Unknown`] via `#[serde(other)]` so wire-format evolution
