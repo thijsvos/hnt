@@ -340,7 +340,7 @@ fn measure_comments(
     for (vi, &idx) in visible_indices.iter().enumerate() {
         let mut lines = Vec::new();
         let depth = all_comments[idx].depth;
-        let indent = "  ".repeat(depth);
+        let indent = indent_for(depth);
         let bar = "│ ";
         let text_width = width.saturating_sub(indent.len() + bar.len() + 2);
         let is_collapsed = collapsed.contains(&all_comments[idx].item.id);
@@ -442,4 +442,24 @@ fn count_hidden_children(all: &[FlatComment], parent_idx: usize) -> usize {
         .iter()
         .take_while(|c| c.depth > parent_depth)
         .count()
+}
+
+/// Precomputed indentation strings for comment depths 0..=MAX_COMMENT_DEPTH.
+/// Avoids a `"  ".repeat(depth)` allocation per visible comment per frame.
+const INDENTS: [&str; 11] = [
+    "",
+    "  ",
+    "    ",
+    "      ",
+    "        ",
+    "          ",
+    "            ",
+    "              ",
+    "                ",
+    "                  ",
+    "                    ",
+];
+
+fn indent_for(depth: usize) -> &'static str {
+    INDENTS[depth.min(INDENTS.len() - 1)]
 }

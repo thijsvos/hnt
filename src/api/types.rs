@@ -65,37 +65,20 @@ impl Item {
             _ => {}
         }
         let title = self.title.as_deref()?;
-        if title.starts_with("Ask HN:") {
-            return Some(StoryBadge::Ask);
-        }
-        if title.starts_with("Show HN:") {
-            return Some(StoryBadge::Show);
-        }
-        if title.starts_with("Tell HN:") {
-            return Some(StoryBadge::Tell);
-        }
-        if title.starts_with("Launch HN:") {
-            return Some(StoryBadge::Launch);
-        }
-        None
+        BADGE_PREFIXES
+            .iter()
+            .find(|(prefix, _)| title.starts_with(prefix))
+            .map(|(_, badge)| *badge)
     }
 
     /// Title with badge prefix stripped (e.g. `"Ask HN: Foo"` → `"Foo"`).
     pub fn display_title(&self) -> &str {
         let title = self.title.as_deref().unwrap_or("[no title]");
-        if let Some(rest) = title.strip_prefix("Ask HN:") {
-            return rest.trim_start();
-        }
-        if let Some(rest) = title.strip_prefix("Show HN:") {
-            return rest.trim_start();
-        }
-        if let Some(rest) = title.strip_prefix("Tell HN:") {
-            return rest.trim_start();
-        }
-        if let Some(rest) = title.strip_prefix("Launch HN:") {
-            return rest.trim_start();
-        }
-        title
+        BADGE_PREFIXES
+            .iter()
+            .find_map(|(prefix, _)| title.strip_prefix(prefix))
+            .map(str::trim_start)
+            .unwrap_or(title)
     }
 }
 
@@ -136,6 +119,16 @@ pub enum StoryBadge {
     Job,
     Poll,
 }
+
+/// Title-prefix → badge mapping used by both [`Item::badge`] and
+/// [`Item::display_title`]. Adding a new "X HN:" prefix is a one-line
+/// change here — both lookup sites pick it up automatically.
+const BADGE_PREFIXES: &[(&str, StoryBadge)] = &[
+    ("Ask HN:", StoryBadge::Ask),
+    ("Show HN:", StoryBadge::Show),
+    ("Tell HN:", StoryBadge::Tell),
+    ("Launch HN:", StoryBadge::Launch),
+];
 
 impl StoryBadge {
     /// Human-readable label (e.g. `"Ask HN"`, `"Show HN"`) used in the UI.
