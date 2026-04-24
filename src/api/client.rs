@@ -136,6 +136,40 @@ impl HnClient {
         Ok((items, all_ids))
     }
 
+    /// Finds prior HN submissions of the same URL.
+    ///
+    /// Queries Algolia with a scheme-stripped form of the URL (which gets
+    /// tokenized against the indexed `url` field), then filters client-side
+    /// to exact URL matches after normalization (lowercased host, stripped
+    /// `www.` and trailing slash, scheme-insensitive). Returns up to 50
+    /// matches, most-recent first by Algolia default.
+    ///
+    /// Empty result is not an error — a novel URL legitimately has no prior
+    /// submissions.
+    pub async fn search_by_url(&self, url: &str) -> Result<Vec<Item>> {
+        let target = normalize_url(url);
+        if target.is_empty() {
+            return Ok(Vec::new());
+        }
+        let encoded = url_encode(&target);
+        let api = format!(
+            "{}?query={}&tags=story&hitsPerPage=50",
+            ALGOLIA_URL, encoded
+        );
+        let resp: SearchResponse = self.client.get(&api).send().await?.json().await?;
+        Ok(resp
+            .hits
+            .into_iter()
+            .map(Item::from)
+            .filter(|item| {
+                item.url
+                    .as_deref()
+                    .map(normalize_url)
+                    .is_some_and(|n| n == target)
+            })
+            .collect())
+    }
+
     /// Searches stories via the HN Algolia API.
     ///
     /// Returns `(stories, total_pages, total_hits)`. `page` is 0-indexed.
@@ -191,6 +225,29 @@ impl HnClient {
     }
 }
 
+/// Normalizes a URL for cross-submission comparison.
+///
+/// Lowercases the host, strips a leading `www.`, drops the scheme, strips
+/// a trailing slash, and drops the fragment. Preserves the query string
+/// because different query strings usually represent different resources.
+/// Returns the original input unchanged if it doesn't parse as a URL.
+fn normalize_url(u: &str) -> String {
+    let Ok(parsed) = url::Url::parse(u) else {
+        return u.to_string();
+    };
+    let Some(host) = parsed.host_str() else {
+        return u.to_string();
+    };
+    let host_lower = host.to_lowercase();
+    let host = host_lower.strip_prefix("www.").unwrap_or(&host_lower);
+    let path = parsed.path().trim_end_matches('/');
+    let query = parsed
+        .query()
+        .map(|q| format!("?{}", q))
+        .unwrap_or_default();
+    format!("{}{}{}", host, path, query)
+}
+
 /// Percent-encodes a query-string value. Preserves unreserved characters
 /// (`A-Z a-z 0-9 -_.~`), encodes space as `+`, and percent-encodes every
 /// other byte.
@@ -215,6 +272,77 @@ fn url_encode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- normalize_url ---
+
+    #[test]
+    fn normalize_url_strips_scheme() {
+        assert_eq!(
+            normalize_url("https://example.com/path"),
+            "example.com/path"
+        );
+        assert_eq!(normalize_url("http://example.com/path"), "example.com/path");
+    }
+
+    #[test]
+    fn normalize_url_strips_www() {
+        assert_eq!(
+            normalize_url("https://www.example.com/path"),
+            "example.com/path"
+        );
+    }
+
+    #[test]
+    fn normalize_url_strips_trailing_slash() {
+        assert_eq!(normalize_url("https://example.com/foo/"), "example.com/foo");
+        assert_eq!(normalize_url("https://example.com/"), "example.com");
+    }
+
+    #[test]
+    fn normalize_url_lowercases_host_preserves_path_case() {
+        assert_eq!(
+            normalize_url("https://EXAMPLE.com/Rust-1.0.html"),
+            "example.com/Rust-1.0.html"
+        );
+    }
+
+    #[test]
+    fn normalize_url_preserves_query() {
+        assert_eq!(
+            normalize_url("https://example.com/search?q=foo"),
+            "example.com/search?q=foo"
+        );
+    }
+
+    #[test]
+    fn normalize_url_drops_fragment() {
+        assert_eq!(
+            normalize_url("https://example.com/foo#section"),
+            "example.com/foo"
+        );
+    }
+
+    #[test]
+    fn normalize_url_invalid_returns_input() {
+        assert_eq!(normalize_url("not a url"), "not a url");
+    }
+
+    #[test]
+    fn normalize_url_http_and_https_collapse() {
+        assert_eq!(
+            normalize_url("http://example.com/foo"),
+            normalize_url("https://www.example.com/foo/")
+        );
+    }
+
+    #[test]
+    fn normalize_url_empty_host_returns_input() {
+        // file:// URLs have no host — treat as unnormalizable to avoid
+        // false-positive cross-submission matches.
+        assert_eq!(normalize_url("file:///tmp/foo"), "file:///tmp/foo");
+    }
+
+    // --- url_encode ---
 
     #[test]
     fn url_encode_space() {

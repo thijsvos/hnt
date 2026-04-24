@@ -9,6 +9,7 @@ pub mod article_reader;
 pub mod comment_tree;
 pub mod header;
 pub mod layout;
+pub mod prior_overlay;
 pub mod spinner;
 pub mod status_bar;
 pub mod story_list;
@@ -61,12 +62,20 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let visible_indices = app.comment_state.visible_indices();
 
     // Comment tree
+    let prior_count = app
+        .comment_state
+        .story
+        .as_ref()
+        .and_then(|s| app.prior_results.get(&s.id))
+        .map(|v| v.len())
+        .unwrap_or(0);
     frame.render_widget(
         comment_tree::CommentTree {
             state: &mut app.comment_state,
             visible: &visible_indices,
             focused: app.focus == crate::app::Pane::Comments,
             tick: app.tick_count,
+            prior_count,
         },
         layout.comments,
     );
@@ -125,11 +134,20 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     if let Some(ref reader_state) = app.reader_state {
         article_reader::render_article_overlay(frame, area, reader_state);
     }
+
+    // Prior-discussions overlay (takes precedence over comment pane focus but
+    // sits below the article reader — a user who has the reader open is busy
+    // with the article).
+    if app.reader_state.is_none() {
+        if let Some(ref prior_state) = app.prior_state {
+            prior_overlay::render_prior_overlay(frame, area, prior_state);
+        }
+    }
 }
 
 fn render_help_overlay(frame: &mut Frame, area: Rect) {
     let width = 50u16.min(area.width.saturating_sub(4));
-    let height = 21u16.min(area.height.saturating_sub(4));
+    let height = 22u16.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let popup_area = Rect::new(x, y, width, height);
@@ -154,6 +172,10 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  p            ", theme::accent_style()),
             Span::styled("Read article inline", theme::base_style()),
+        ]),
+        Line::from(vec![
+            Span::styled("  h            ", theme::accent_style()),
+            Span::styled("Show prior HN submissions of this URL", theme::base_style()),
         ]),
         Line::from(vec![
             Span::styled("  Tab          ", theme::accent_style()),
