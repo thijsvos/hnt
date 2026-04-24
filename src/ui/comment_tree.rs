@@ -6,6 +6,7 @@
 //! populates `CommentTreeState::row_map` so mouse clicks can map rows
 //! back to comment indices.
 
+use crate::api::types::CommentId;
 use crate::state::comment_state::{CommentTreeState, FlatComment};
 use crate::ui::spinner;
 use crate::ui::story_list::format_time_ago;
@@ -329,10 +330,10 @@ impl<'a> Widget for CommentTree<'a> {
 /// fetching children get a spinner glyph.
 fn measure_comments(
     visible_indices: &[usize],
-    collapsed: &std::collections::HashSet<u64>,
+    collapsed: &std::collections::HashSet<CommentId>,
     all_comments: &mut [FlatComment],
     width: usize,
-    pending_root_ids: &std::collections::HashSet<u64>,
+    pending_root_ids: &std::collections::HashSet<CommentId>,
     spinner_frame: &str,
 ) -> Vec<MeasuredComment> {
     let mut result = Vec::new();
@@ -343,7 +344,7 @@ fn measure_comments(
         let indent = indent_for(depth);
         let bar = "│ ";
         let text_width = width.saturating_sub(indent.len() + bar.len() + 2);
-        let is_collapsed = collapsed.contains(&all_comments[idx].item.id);
+        let is_collapsed = collapsed.contains(&CommentId(all_comments[idx].item.id));
 
         // Populate/refresh the plain-text cache for this comment under a
         // short-lived mutable borrow, then read everything else immutably.
@@ -378,7 +379,7 @@ fn measure_comments(
             format!("{}{}", indent, bar),
             ratatui::style::Style::default().fg(depth_color),
         )];
-        if comment.depth == 0 && pending_root_ids.contains(&comment.item.id) {
+        if comment.depth == 0 && pending_root_ids.contains(&CommentId(comment.item.id)) {
             header_spans.push(Span::styled(
                 format!("{} ", spinner_frame),
                 ratatui::style::Style::default().fg(theme::HN_ORANGE),

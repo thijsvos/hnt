@@ -7,7 +7,7 @@
 //! [`App::process_messages`] drains pending async results each frame.
 
 use crate::api::client::HnClient;
-use crate::api::types::{CommentWithDepth, FeedKind, Item};
+use crate::api::types::{CommentId, CommentWithDepth, FeedKind, Item, StoryId};
 use crate::article::{fetch_and_extract_article, html_to_styled_lines};
 use crate::keys::{Action, InputMode};
 use crate::state::comment_state::CommentTreeState;
@@ -62,11 +62,11 @@ pub enum AppMessage {
     CommentsLoaded {
         story: Box<Item>,
         comments: Vec<CommentWithDepth>,
-        pending_roots: HashSet<u64>,
+        pending_roots: HashSet<CommentId>,
     },
     /// Progressive update — append more child comments into the tree.
     CommentsAppended {
-        parent_id: u64,
+        parent_id: CommentId,
         children: Vec<CommentWithDepth>,
     },
     /// All outstanding comment fetches finished; clear any "loading"
@@ -89,7 +89,7 @@ pub enum AppMessage {
     /// by Algolia. `story_id` identifies the originating query so stale
     /// results (user has since deselected the story) can be dropped.
     PriorDiscussionsLoaded {
-        story_id: u64,
+        story_id: StoryId,
         submissions: Vec<Item>,
     },
 }
@@ -122,9 +122,9 @@ pub struct App {
     /// Prior-submissions query results, keyed by the story ID that was
     /// queried. Keeps each result around for the rest of the session so
     /// reopening the [`PriorDiscussionsState`] overlay doesn't trigger a refetch.
-    pub prior_results: HashMap<u64, Vec<Item>>,
+    pub prior_results: HashMap<StoryId, Vec<Item>>,
     /// Story IDs whose URL queries are in flight. Prevents duplicate spawns.
-    prior_in_flight: HashSet<u64>,
+    prior_in_flight: HashSet<StoryId>,
 
     /// Persisted read-state — records which stories have been opened and
     /// how many comments each had at the time. Rendered by
@@ -495,7 +495,7 @@ impl App {
         let Some(story) = self.comment_state.story.as_ref() else {
             return;
         };
-        let story_id = story.id;
+        let story_id = StoryId(story.id);
         if let Some(submissions) = self.prior_results.get(&story_id) {
             self.prior_state = Some(PriorDiscussionsState::new(story_id, submissions.clone()));
         } else if let Some(url) = story.url.clone() {
@@ -517,7 +517,8 @@ impl App {
         else {
             return;
         };
-        self.read_store.mark(item.id, item.descendants.unwrap_or(0));
+        self.read_store
+            .mark(StoryId(item.id), item.descendants.unwrap_or(0));
         self.prior_state = None;
         self.focus = Pane::Comments;
         self.comment_state.loading = true;
@@ -548,10 +549,10 @@ impl App {
                 .filter(|item| !item.is_dead_or_deleted())
                 .map(|item| CommentWithDepth { item, depth: 0 })
                 .collect();
-            let pending_roots: HashSet<u64> = root_comments
+            let pending_roots: HashSet<CommentId> = root_comments
                 .iter()
                 .filter(|c| c.item.kids.as_ref().is_some_and(|k| !k.is_empty()))
-                .map(|c| c.item.id)
+                .map(|c| CommentId(c.item.id))
                 .collect();
             let _ = tx.send(AppMessage::CommentsLoaded {
                 story: Box::new(story.clone()),
@@ -563,7 +564,7 @@ impl App {
                 if child_ids.is_empty() {
                     continue;
                 }
-                let parent_id = c.item.id;
+                let parent_id = CommentId(c.item.id);
                 let mut children = Vec::new();
                 client
                     .fetch_children_recursive(&child_ids, 1, MAX_COMMENT_DEPTH, &mut children)
@@ -716,7 +717,7 @@ impl App {
     /// given URL. No-ops if the story's URL has already been queried or a
     /// query is already in flight. Failures silently no-op — prior-discussions
     /// is optional UX, not critical-path.
-    fn spawn_prior_discussions(&mut self, story_id: u64, url: &str) {
+    fn spawn_prior_discussions(&mut self, story_id: StoryId, url: &str) {
         if self.prior_results.contains_key(&story_id) || self.prior_in_flight.contains(&story_id) {
             return;
         }
@@ -727,7 +728,7 @@ impl App {
         let url = url.to_string();
         tokio::spawn(async move {
             let submissions = match client.search_by_url(&url).await {
-                Ok(items) => items.into_iter().filter(|i| i.id != story_id).collect(),
+                Ok(items) => items.into_iter().filter(|i| i.id != story_id.0).collect(),
                 Err(_) => Vec::new(),
             };
             let _ = tx.send(AppMessage::PriorDiscussionsLoaded {
@@ -745,14 +746,14 @@ impl App {
     fn load_selected_comments(&mut self) {
         if let Some(story) = self.story_state.selected_story().cloned() {
             self.read_store
-                .mark(story.id, story.descendants.unwrap_or(0));
+                .mark(StoryId(story.id), story.descendants.unwrap_or(0));
             self.comment_state.loading = true;
             self.focus = Pane::Comments;
 
             // Fire a background prior-submissions query for this story's URL
             // so the `h` overlay has data ready when the user asks for it.
             if let Some(url) = story.url.as_deref() {
-                self.spawn_prior_discussions(story.id, url);
+                self.spawn_prior_discussions(StoryId(story.id), url);
             }
 
             let client = self.client.clone();
@@ -783,10 +784,10 @@ impl App {
                     .map(|item| CommentWithDepth { item, depth: 0 })
                     .collect();
 
-                let pending_roots: HashSet<u64> = root_comments
+                let pending_roots: HashSet<CommentId> = root_comments
                     .iter()
                     .filter(|c| c.item.kids.as_ref().is_some_and(|k| !k.is_empty()))
-                    .map(|c| c.item.id)
+                    .map(|c| CommentId(c.item.id))
                     .collect();
 
                 let _ = tx.send(AppMessage::CommentsLoaded {
@@ -801,7 +802,7 @@ impl App {
                     if child_ids.is_empty() {
                         continue;
                     }
-                    let parent_id = c.item.id;
+                    let parent_id = CommentId(c.item.id);
                     let mut children = Vec::new();
                     client
                         .fetch_children_recursive(&child_ids, 1, MAX_COMMENT_DEPTH, &mut children)

@@ -5,7 +5,7 @@
 //! [`format_time_ago`], used by the comment-tree widget for author
 //! timestamps.
 
-use crate::api::types::Item;
+use crate::api::types::{Item, StoryId};
 use crate::state::read_store::ReadStore;
 use crate::ui::theme;
 use ratatui::{
@@ -94,10 +94,11 @@ impl<'a> Widget for StoryList<'a> {
         {
             let y = inner.top() + (i - scroll) as u16;
             let is_selected = i == self.selected;
-            let is_read = self.read_store.is_read(story.id);
+            let sid = StoryId(story.id);
+            let is_read = self.read_store.is_read(sid);
             let new_comments = self
                 .read_store
-                .new_comments_since(story.id, story.descendants.unwrap_or(0));
+                .new_comments_since(sid, story.descendants.unwrap_or(0));
 
             let title = story.display_title();
             let badge = story.badge();
