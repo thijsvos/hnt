@@ -114,19 +114,15 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     frame.render_widget(
         status_bar::StatusBar {
             feed: app.current_feed,
-            position,
-            error: app.error.clone(),
+            position: &position,
+            error: app.error.as_deref(),
             focus_pane: match app.focus {
                 crate::app::Pane::Stories => "Stories",
                 crate::app::Pane::Comments => "Comments",
             },
             input_mode: app.input_mode,
-            search_input: app.search_state.as_ref().map(|ss| ss.input.clone()),
-            search_query: if search_active {
-                search_query.map(|s| s.to_string())
-            } else {
-                None
-            },
+            search_input: app.search_state.as_ref().map(|ss| ss.input.as_str()),
+            search_query: if search_active { search_query } else { None },
         },
         layout.status,
     );
