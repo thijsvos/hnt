@@ -148,6 +148,8 @@ fn render_content(frame: &mut Frame, area: Rect, reader: &ReaderState) {
     let visible_height = inner.height as usize;
     let scroll = reader.scroll;
 
+    // Borrow fragment text instead of cloning — Span<'_> holds a Cow<str>
+    // and happily borrows from `reader.lines` for the frame's lifetime.
     let visible_lines = reader
         .lines
         .iter()
@@ -156,7 +158,7 @@ fn render_content(frame: &mut Frame, area: Rect, reader: &ReaderState) {
         .map(|fragments| {
             let spans: Vec<Span> = fragments
                 .iter()
-                .map(|f| Span::styled(f.text.clone(), f.style))
+                .map(|f| Span::styled(f.text.as_str(), f.style))
                 .collect();
             Line::from(spans)
         })

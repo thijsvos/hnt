@@ -361,7 +361,7 @@ fn measure_comments(
         let collapse_indicator = if is_collapsed { " [+]" } else { "" };
 
         let child_count = if is_collapsed {
-            let count = count_hidden_children(all_comments, comment);
+            let count = count_hidden_children(all_comments, idx);
             if count > 0 {
                 format!(" ({} hidden)", count)
             } else {
@@ -431,22 +431,15 @@ fn measure_comments(
     result
 }
 
-/// Counts descendants of `parent` in the flat list — the contiguous run
-/// of comments with strictly greater depth that follow it.
-fn count_hidden_children(all: &[FlatComment], parent: &FlatComment) -> usize {
-    let parent_idx = all.iter().position(|c| c.item.id == parent.item.id);
-    match parent_idx {
-        Some(idx) => {
-            let mut count = 0;
-            for c in &all[idx + 1..] {
-                if c.depth > parent.depth {
-                    count += 1;
-                } else {
-                    break;
-                }
-            }
-            count
-        }
-        None => 0,
-    }
+/// Counts descendants of `all[parent_idx]` in the flat list — the
+/// contiguous run of comments with strictly greater depth that follow it.
+/// The caller already has the index from its own iteration, so we take
+/// it directly instead of re-scanning for it (which was quadratic when
+/// many siblings were collapsed).
+fn count_hidden_children(all: &[FlatComment], parent_idx: usize) -> usize {
+    let parent_depth = all[parent_idx].depth;
+    all[parent_idx + 1..]
+        .iter()
+        .take_while(|c| c.depth > parent_depth)
+        .count()
 }
