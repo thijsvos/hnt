@@ -24,6 +24,11 @@ use ratatui::{
     Frame,
 };
 
+/// Composes one ratatui frame from [`App`] state: header, story list,
+/// comment tree (with optional `· N prior (h)` badge), status bar, and
+/// the help, article-reader, and prior-discussions overlays when active.
+/// The article reader takes precedence over the prior-discussions overlay
+/// when both are somehow open.
 pub fn render(app: &mut App, frame: &mut Frame) {
     let area = frame.area();
 
@@ -145,6 +150,8 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     }
 }
 
+/// Draws the centered modal help overlay listing every keybinding.
+/// Bounded to at most 50×22 cells; auto-shrinks on small terminals.
 fn render_help_overlay(frame: &mut Frame, area: Rect) {
     let width = 50u16.min(area.width.saturating_sub(4));
     let height = 22u16.min(area.height.saturating_sub(4));

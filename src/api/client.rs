@@ -140,7 +140,7 @@ impl HnClient {
     ///
     /// Queries Algolia with a scheme-stripped form of the URL (which gets
     /// tokenized against the indexed `url` field), then filters client-side
-    /// to exact URL matches after normalization (lowercased host, stripped
+    /// to exact URL matches using [`normalize_url`] (lowercased host, stripped
     /// `www.` and trailing slash, scheme-insensitive). Returns up to 50
     /// matches, most-recent first by Algolia default.
     ///

@@ -48,7 +48,7 @@ pub enum Action {
 /// [`Action::None`] so `main.rs` can handle raw characters); a visible
 /// help overlay consumes any key as [`Action::ToggleHelp`]; a visible
 /// reader overlay uses its own reduced keymap; a visible
-/// prior-discussions overlay uses a reduced keymap of its own; otherwise
+/// prior-discussions overlay likewise uses a reduced keymap; otherwise
 /// the standard navigation keymap applies.
 pub fn map_key(
     key: KeyEvent,
