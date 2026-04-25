@@ -23,6 +23,7 @@ Browse stories, read threaded comments, and open links — all from your termina
 - **Quickjump link hints** — In reader mode, press `f` and every hyperlink gets a 1- or 2-character home-row label. Type the label to open it (`f` browser, `F` HNT reader, `y` copy URL via OSC 52 — works through SSH)
 - **Prior discussions** — Press `h` to see past HN submissions of the same URL with their scores and dates
 - **Read-state tracking** — Visited stories render dimmed; stories with new comments since your last visit get a `+N` badge. Persisted to `$XDG_DATA_HOME/hnt/read.json`
+- **What's New filter** — In the comments pane, press `n` to cycle through "all → new since last visit → recent 24h → all". Shows only comments newer than the threshold, with their parent comments preserved so the thread still reads in context. Turns the `+N` badge into something you can act on without scrolling through 500 comments to find the new ones.
 - **Open in browser** — Press `o` to open the story URL
 - **Progressive loading** — Root comments appear instantly, children load in the background
 - **Lazy pagination** — Stories load automatically as you scroll
@@ -75,6 +76,7 @@ cargo build --release
 | `Tab` | Switch pane focus |
 | `1`-`6` | Switch feed (Top/New/Best/Ask/Show/Jobs) |
 | `r` | Refresh |
+| `n` | Cycle "What's New" filter (comments pane) |
 | `g` / `G` | Jump to top / bottom |
 | `Ctrl+d` / `Ctrl+u` | Page down / up |
 | `q` | Quit |

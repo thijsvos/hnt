@@ -7,7 +7,7 @@
 //! back to comment indices.
 
 use crate::api::types::CommentId;
-use crate::state::comment_state::{CommentTreeState, FlatComment};
+use crate::state::comment_state::{CommentFilter, CommentTreeState, FlatComment};
 use crate::ui::spinner;
 use crate::ui::story_list::format_time_ago;
 use crate::ui::theme;
@@ -76,6 +76,16 @@ impl<'a> Widget for CommentTree<'a> {
                 format!("· {} prior (h) ", self.prior_count),
                 theme::dim_style(),
             ));
+        }
+        match self.state.filter {
+            CommentFilter::All => {}
+            CommentFilter::NewSince(_) => title_spans.push(Span::styled(
+                "· New since last visit (n) ",
+                theme::accent_style(),
+            )),
+            CommentFilter::Recent(_) => {
+                title_spans.push(Span::styled("· Recent 24h (n) ", theme::accent_style()));
+            }
         }
 
         let block = Block::default()
