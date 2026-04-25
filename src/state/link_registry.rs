@@ -87,22 +87,11 @@ impl LinkRegistry {
 
     /// Looks up `prefix` against every link's label. See [`MatchResult`].
     pub fn match_prefix(&self, prefix: &str) -> MatchResult<'_> {
-        let mut found: Option<&LinkRef> = None;
-        let mut count = 0usize;
-        for link in &self.links {
-            if link.label.starts_with(prefix) {
-                count += 1;
-                if count == 1 {
-                    found = Some(link);
-                } else {
-                    return MatchResult::Multiple;
-                }
-            }
-        }
-        match (count, found) {
-            (0, _) => MatchResult::None,
-            (1, Some(link)) => MatchResult::Unique(link),
-            _ => MatchResult::None,
+        let mut iter = self.links.iter().filter(|l| l.label.starts_with(prefix));
+        match (iter.next(), iter.next()) {
+            (None, _) => MatchResult::None,
+            (Some(link), None) => MatchResult::Unique(link),
+            (Some(_), Some(_)) => MatchResult::Multiple,
         }
     }
 }
