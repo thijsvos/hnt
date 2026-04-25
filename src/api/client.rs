@@ -60,9 +60,15 @@ impl HnClient {
         self.cache().clear();
     }
 
-    /// Fetches the list of story IDs for a given feed.
+    /// Fetches the list of story IDs for a given feed. Returns an empty
+    /// list for virtual feeds (those whose [`FeedKind::endpoint`] is
+    /// `None`) — the caller is responsible for sourcing those IDs from
+    /// local state instead.
     pub async fn fetch_story_ids(&self, feed: FeedKind) -> Result<Vec<u64>> {
-        let url = format!("{}/{}.json", BASE_URL, feed.endpoint());
+        let Some(endpoint) = feed.endpoint() else {
+            return Ok(Vec::new());
+        };
+        let url = format!("{}/{}.json", BASE_URL, endpoint);
         let ids: Vec<u64> = self.client.get(&url).send().await?.json().await?;
         Ok(ids)
     }

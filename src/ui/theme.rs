@@ -109,6 +109,17 @@ pub const fn hint_dim_style() -> Style {
     Style::new().fg(DIM).bg(SURFACE)
 }
 
+/// Bold HN-orange "pin" glyph for stories present in
+/// [`crate::state::pin_store::PinStore`]. Matches the brand-accent
+/// palette used for badges and active tabs so the marker reads as
+/// "important to you" rather than as another classification badge.
+pub const fn pinned_style() -> Style {
+    Style::new()
+        .fg(HN_ORANGE)
+        .bg(BG)
+        .add_modifier(Modifier::BOLD)
+}
+
 /// Bold badge color on the surface background — one color per
 /// [`StoryBadge`](crate::api::types::StoryBadge) variant.
 pub const fn badge_style(badge: crate::api::types::StoryBadge) -> Style {

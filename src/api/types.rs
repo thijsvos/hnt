@@ -218,8 +218,14 @@ fn url_domain(raw: &str) -> Option<String> {
     Some(host.strip_prefix("www.").unwrap_or(host).to_string())
 }
 
-/// The six Hacker News feeds the app can display; mirrors the Firebase
-/// endpoints exposed via [`FeedKind::endpoint`].
+/// The Hacker News feeds the app can display.
+///
+/// The first six mirror Firebase endpoints (Top/New/Best/Ask/Show/Jobs) —
+/// see [`FeedKind::endpoint`]. [`FeedKind::Pinned`] is a virtual feed
+/// backed by the local [`crate::state::pin_store::PinStore`] rather than
+/// a remote endpoint, so its [`endpoint`](FeedKind::endpoint) returns
+/// `None` and callers must branch to load IDs from the pin store instead
+/// of issuing a Firebase request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FeedKind {
@@ -229,29 +235,38 @@ pub enum FeedKind {
     Ask,
     Show,
     Jobs,
+    /// Locally-curated stories saved by the user (`b` to toggle). Aggregated
+    /// by [`crate::state::pin_store::PinStore`], not fetched over HTTP.
+    Pinned,
 }
 
 impl FeedKind {
-    /// Every [`FeedKind`] in display order — indexed by the 1–6 number keys
-    /// and iterated to build the header tab bar.
-    pub const ALL: [FeedKind; 6] = [
+    /// Every [`FeedKind`] in display order — indexed by the 1–7 number keys
+    /// and iterated to build the header tab bar. The trailing `Pinned`
+    /// entry is the local virtual feed.
+    pub const ALL: [FeedKind; 7] = [
         FeedKind::Top,
         FeedKind::New,
         FeedKind::Best,
         FeedKind::Ask,
         FeedKind::Show,
         FeedKind::Jobs,
+        FeedKind::Pinned,
     ];
 
-    /// Firebase path segment (e.g. `"topstories"`) for this feed.
-    pub fn endpoint(&self) -> &'static str {
+    /// Firebase path segment (e.g. `"topstories"`) for this feed, or
+    /// `None` for virtual feeds backed by local state. Callers must
+    /// branch on `None` to source IDs from the appropriate store rather
+    /// than issuing a Firebase request.
+    pub fn endpoint(&self) -> Option<&'static str> {
         match self {
-            FeedKind::Top => "topstories",
-            FeedKind::New => "newstories",
-            FeedKind::Best => "beststories",
-            FeedKind::Ask => "askstories",
-            FeedKind::Show => "showstories",
-            FeedKind::Jobs => "jobstories",
+            FeedKind::Top => Some("topstories"),
+            FeedKind::New => Some("newstories"),
+            FeedKind::Best => Some("beststories"),
+            FeedKind::Ask => Some("askstories"),
+            FeedKind::Show => Some("showstories"),
+            FeedKind::Jobs => Some("jobstories"),
+            FeedKind::Pinned => None,
         }
     }
 }
@@ -265,6 +280,7 @@ impl fmt::Display for FeedKind {
             FeedKind::Ask => write!(f, "Ask"),
             FeedKind::Show => write!(f, "Show"),
             FeedKind::Jobs => write!(f, "Jobs"),
+            FeedKind::Pinned => write!(f, "Pinned"),
         }
     }
 }
@@ -518,12 +534,25 @@ mod tests {
 
     #[test]
     fn feed_kind_endpoints() {
-        assert_eq!(FeedKind::Top.endpoint(), "topstories");
-        assert_eq!(FeedKind::New.endpoint(), "newstories");
-        assert_eq!(FeedKind::Best.endpoint(), "beststories");
-        assert_eq!(FeedKind::Ask.endpoint(), "askstories");
-        assert_eq!(FeedKind::Show.endpoint(), "showstories");
-        assert_eq!(FeedKind::Jobs.endpoint(), "jobstories");
+        assert_eq!(FeedKind::Top.endpoint(), Some("topstories"));
+        assert_eq!(FeedKind::New.endpoint(), Some("newstories"));
+        assert_eq!(FeedKind::Best.endpoint(), Some("beststories"));
+        assert_eq!(FeedKind::Ask.endpoint(), Some("askstories"));
+        assert_eq!(FeedKind::Show.endpoint(), Some("showstories"));
+        assert_eq!(FeedKind::Jobs.endpoint(), Some("jobstories"));
+    }
+
+    #[test]
+    fn feed_kind_pinned_has_no_endpoint() {
+        // Pinned is a virtual feed backed by local state — callers must
+        // branch on None to source IDs from the pin store.
+        assert_eq!(FeedKind::Pinned.endpoint(), None);
+    }
+
+    #[test]
+    fn feed_kind_all_includes_pinned_last() {
+        assert_eq!(FeedKind::ALL.len(), 7);
+        assert_eq!(FeedKind::ALL[6], FeedKind::Pinned);
     }
 
     #[test]
@@ -534,6 +563,7 @@ mod tests {
         assert_eq!(format!("{}", FeedKind::Ask), "Ask");
         assert_eq!(format!("{}", FeedKind::Show), "Show");
         assert_eq!(format!("{}", FeedKind::Jobs), "Jobs");
+        assert_eq!(format!("{}", FeedKind::Pinned), "Pinned");
     }
 
     // --- TryFrom<SearchHit> for Item ---

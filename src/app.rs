@@ -14,6 +14,7 @@ use crate::keys::{Action, InputMode};
 use crate::state::comment_state::{CommentFilter, CommentTreeState};
 use crate::state::hint_state::{HintAction, HintContext, HintState};
 use crate::state::link_registry::{LinkRegistry, MatchResult};
+use crate::state::pin_store::PinStore;
 use crate::state::prior_state::PriorDiscussionsState;
 use crate::state::read_store::ReadStore;
 use crate::state::reader_state::{ReaderState, StyledFragment};
@@ -54,6 +55,19 @@ enum HintResolve {
     Cancel,
     /// Exactly one label matches — fire the action against this URL.
     Fire(String),
+}
+
+/// A reading-position the app is trying to restore for a pinned story.
+///
+/// Set on `CommentsLoaded` for pinned stories; cleared on a successful
+/// apply, on `CommentsDone`, or on the first user navigation in the
+/// comments pane (so resume never overrides intentional user motion).
+/// Selected indices that exceed the currently-visible length are kept
+/// pending and re-tried as `CommentsAppended` grows the tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingResume {
+    story_id: StoryId,
+    target_selected: usize,
 }
 
 /// Messages sent from async tasks back to the main loop.
@@ -159,6 +173,20 @@ pub struct App {
     /// flushed via [`App::persist`] on shutdown.
     pub read_store: ReadStore,
 
+    /// Persisted pinned-store — stories the user has explicitly pinned
+    /// via `b`, plus their reading-position snapshot. Backs the
+    /// [`FeedKind::Pinned`] virtual feed and the `★` badge in the story
+    /// list. Loaded from disk at startup and flushed via [`App::persist`]
+    /// on shutdown.
+    pub pin_store: PinStore,
+
+    /// In-progress resume application: when a pinned story is opened, this
+    /// holds the saved selected-comment target until the comments tree
+    /// has loaded enough rows to position the cursor there. Cleared on
+    /// successful apply, on `CommentsDone`, or on any user navigation in
+    /// the comments pane.
+    pending_pinned_resume: Option<PendingResume>,
+
     /// Quickjump hint-mode state — `Some` while the user is selecting a
     /// label, `None` otherwise. Created by [`Action::EnterHintMode`]
     /// and torn down by [`Action::ExitHintMode`] or a unique-match dispatch.
@@ -194,6 +222,8 @@ impl App {
             prior_results: HashMap::new(),
             prior_in_flight: HashSet::new(),
             read_store: ReadStore::load(),
+            pin_store: PinStore::load(),
+            pending_pinned_resume: None,
             hint_state: None,
             last_comment_click: None,
             client: HnClient::new(),
@@ -215,11 +245,63 @@ impl App {
         self.terminal_height = h;
     }
 
-    /// Flushes any in-memory persistent state (read-store) to disk. Call
-    /// once at shutdown after the main loop exits. Silently swallows I/O
-    /// errors — read-state is non-critical.
+    /// Flushes any in-memory persistent state (read-store, pin-store) to
+    /// disk. Call once at shutdown after the main loop exits. Silently
+    /// swallows I/O errors — both stores are non-critical. Snapshots
+    /// any in-flight pinned-story reading position before saving so a
+    /// quit-while-reading round-trips correctly.
     pub fn persist(&mut self) {
+        self.snapshot_pinned_resume_if_any();
         self.read_store.save();
+        self.pin_store.save();
+    }
+
+    /// If the currently-loaded story is pinned, capture its current
+    /// reading position (selected comment index, collapsed-subtree IDs)
+    /// into the pin store. Called before tearing down comment_state for
+    /// any reason (Back, SwitchFeed, Refresh, opening a different story,
+    /// quit) so the next reopen lands the user where they left off.
+    fn snapshot_pinned_resume_if_any(&mut self) {
+        let Some(story) = self.comment_state.story.as_ref() else {
+            return;
+        };
+        let id = StoryId(story.id);
+        if !self.pin_store.is_pinned(id) {
+            return;
+        }
+        let collapsed: Vec<u64> = self.comment_state.collapsed.iter().map(|c| c.0).collect();
+        self.pin_store
+            .update_resume(id, self.comment_state.selected, collapsed);
+    }
+
+    /// Best-effort apply of [`Self::pending_pinned_resume`]: if the saved
+    /// `target_selected` is within the currently-visible comment range,
+    /// place the cursor there and clear the pending state. Otherwise
+    /// leave it pending so the next [`AppMessage::CommentsAppended`] can
+    /// retry once more rows are loaded.
+    ///
+    /// Also clears pending if the loaded story has changed underneath us
+    /// (the user moved on while comments were still streaming in).
+    fn try_advance_resume(&mut self) {
+        let Some(target) = self.pending_pinned_resume else {
+            return;
+        };
+        let Some(ref story) = self.comment_state.story else {
+            self.pending_pinned_resume = None;
+            return;
+        };
+        if StoryId(story.id) != target.story_id {
+            self.pending_pinned_resume = None;
+            return;
+        }
+        let visible_len = self.comment_state.visible_len();
+        if visible_len == 0 {
+            return; // no rows yet — try again on the next batch
+        }
+        if target.target_selected < visible_len {
+            self.comment_state.selected = target.target_selected;
+            self.pending_pinned_resume = None;
+        }
     }
 
     /// Spawns a background fetch for the first page of the current feed.
@@ -286,11 +368,29 @@ impl App {
                     comments,
                     pending_roots,
                 } => {
+                    let story_id = StoryId(story.id);
                     self.comment_state.story = Some(*story);
                     self.comment_state.set_comments(comments);
                     self.comment_state.pending_root_ids = pending_roots;
-                    // Still loading children in background
                     self.error = None;
+
+                    // If this is a pinned story, restore collapse + queue the
+                    // selected-cursor target. Collapsed IDs apply immediately —
+                    // CommentId values that aren't in the loaded tree yet are
+                    // harmlessly retained. Selected restoration is best-effort:
+                    // if the saved index lies past currently-visible rows, we
+                    // wait for `CommentsAppended` to grow the tree.
+                    if let Some(entry) = self.pin_store.resume_for(story_id) {
+                        self.comment_state.collapsed =
+                            entry.collapsed.iter().map(|&id| CommentId(id)).collect();
+                        self.pending_pinned_resume = Some(PendingResume {
+                            story_id,
+                            target_selected: entry.selected,
+                        });
+                        self.try_advance_resume();
+                    } else {
+                        self.pending_pinned_resume = None;
+                    }
                 }
                 AppMessage::CommentsAppended {
                     parent_id,
@@ -298,10 +398,25 @@ impl App {
                 } => {
                     self.comment_state.insert_children(parent_id, children);
                     self.comment_state.pending_root_ids.remove(&parent_id);
+                    // The freshly-spliced rows may now have made the resume
+                    // target reachable.
+                    self.try_advance_resume();
                 }
                 AppMessage::CommentsDone => {
                     self.comment_state.loading = false;
                     self.comment_state.pending_root_ids.clear();
+                    // Final attempt — clamp to the now-complete tree.
+                    if let Some(target) = self.pending_pinned_resume.take() {
+                        if let Some(ref story) = self.comment_state.story {
+                            if StoryId(story.id) == target.story_id {
+                                let visible_len = self.comment_state.visible_len();
+                                if visible_len > 0 {
+                                    self.comment_state.selected =
+                                        target.target_selected.min(visible_len - 1);
+                                }
+                            }
+                        }
+                    }
                 }
                 AppMessage::ArticleLoaded { lines, links } => {
                     if let Some(ref mut reader) = self.reader_state {
@@ -395,6 +510,7 @@ impl App {
                 | Action::ToggleHelp
                 | Action::TogglePriorDiscussions
                 | Action::CycleCommentFilter
+                | Action::TogglePin
                 | Action::None => {}
                 Action::EnterHintMode(_) | Action::HintKey(_) | Action::ExitHintMode => {
                     unreachable!("hint actions handled above")
@@ -438,6 +554,7 @@ impl App {
                 | Action::ToggleHelp
                 | Action::TogglePriorDiscussions
                 | Action::CycleCommentFilter
+                | Action::TogglePin
                 | Action::PageDown
                 | Action::PageUp
                 | Action::None => {}
@@ -453,7 +570,9 @@ impl App {
             Action::Quit => self.running = false,
             Action::Back => {
                 if self.focus == Pane::Comments && self.comment_state.story.is_some() {
+                    self.snapshot_pinned_resume_if_any();
                     self.comment_state.reset();
+                    self.pending_pinned_resume = None;
                     self.focus = Pane::Stories;
                 } else if self.search_state.is_some() {
                     self.cancel_search();
@@ -466,15 +585,24 @@ impl App {
                     self.story_state.select_next();
                     self.check_lazy_load();
                 }
-                Pane::Comments => self.comment_state.select_next(),
+                Pane::Comments => {
+                    self.pending_pinned_resume = None;
+                    self.comment_state.select_next();
+                }
             },
             Action::MoveUp => match self.focus {
                 Pane::Stories => self.story_state.select_prev(),
-                Pane::Comments => self.comment_state.select_prev(),
+                Pane::Comments => {
+                    self.pending_pinned_resume = None;
+                    self.comment_state.select_prev();
+                }
             },
             Action::Select => match self.focus {
                 Pane::Stories => self.load_selected_comments(),
-                Pane::Comments => self.comment_state.toggle_collapse(),
+                Pane::Comments => {
+                    self.pending_pinned_resume = None;
+                    self.comment_state.toggle_collapse();
+                }
             },
             Action::OpenInBrowser => self.open_in_browser(),
             Action::OpenReader => self.open_article_reader(),
@@ -488,11 +616,13 @@ impl App {
                 if idx < FeedKind::ALL.len() {
                     let feed = FeedKind::ALL[idx];
                     if feed != self.current_feed || self.search_state.is_some() {
+                        self.snapshot_pinned_resume_if_any();
                         self.search_state = None;
                         self.input_mode = InputMode::Normal;
                         self.current_feed = feed;
                         self.story_state.reset();
                         self.comment_state.reset();
+                        self.pending_pinned_resume = None;
                         self.client.clear_cache();
                         self.focus = Pane::Stories;
                         self.spawn_load_stories(LoadMode::Replace);
@@ -503,13 +633,17 @@ impl App {
                 if let Some(ref ss) = self.search_state {
                     let query = ss.query.clone();
                     if !query.is_empty() {
+                        self.snapshot_pinned_resume_if_any();
                         self.story_state.reset();
                         self.comment_state.reset();
+                        self.pending_pinned_resume = None;
                         self.spawn_search(query, 0, LoadMode::Replace);
                     }
                 } else {
+                    self.snapshot_pinned_resume_if_any();
                     self.story_state.reset();
                     self.comment_state.reset();
+                    self.pending_pinned_resume = None;
                     self.client.clear_cache();
                     self.spawn_load_stories(LoadMode::Replace);
                 }
@@ -519,33 +653,74 @@ impl App {
             }
             Action::JumpTop => match self.focus {
                 Pane::Stories => self.story_state.jump_top(),
-                Pane::Comments => self.comment_state.jump_top(),
+                Pane::Comments => {
+                    self.pending_pinned_resume = None;
+                    self.comment_state.jump_top();
+                }
             },
             Action::JumpBottom => match self.focus {
                 Pane::Stories => {
                     self.story_state.jump_bottom();
                     self.check_lazy_load();
                 }
-                Pane::Comments => self.comment_state.jump_bottom(),
+                Pane::Comments => {
+                    self.pending_pinned_resume = None;
+                    self.comment_state.jump_bottom();
+                }
             },
             Action::PageDown => match self.focus {
                 Pane::Stories => {
                     self.story_state.page_down(SCROLL_PAGE);
                     self.check_lazy_load();
                 }
-                Pane::Comments => self.comment_state.page_down(SCROLL_PAGE),
+                Pane::Comments => {
+                    self.pending_pinned_resume = None;
+                    self.comment_state.page_down(SCROLL_PAGE);
+                }
             },
             Action::PageUp => match self.focus {
                 Pane::Stories => self.story_state.page_up(SCROLL_PAGE),
-                Pane::Comments => self.comment_state.page_up(SCROLL_PAGE),
+                Pane::Comments => {
+                    self.pending_pinned_resume = None;
+                    self.comment_state.page_up(SCROLL_PAGE);
+                }
             },
             Action::ToggleHelp => self.show_help = !self.show_help,
             Action::TogglePriorDiscussions => self.toggle_prior_discussions(),
             Action::CycleCommentFilter => self.cycle_comment_filter(),
+            Action::TogglePin => self.toggle_pin_focused_story(),
             Action::EnterHintMode(_) | Action::HintKey(_) | Action::ExitHintMode => {
                 unreachable!("hint actions handled above")
             }
             Action::None => {}
+        }
+    }
+
+    /// Pins or unpins the story under focus.
+    ///
+    /// In the stories pane, targets the highlighted row; in the comments
+    /// pane, targets the currently-loaded story. Unpinning a story whose
+    /// thread is currently loaded snapshots its position one last time —
+    /// so the resume metadata survives a brief pin/unpin/re-pin without
+    /// losing the user's place. Re-pinning preserves an existing entry's
+    /// `pinned_at` (see [`PinStore::pin`]).
+    fn toggle_pin_focused_story(&mut self) {
+        let target_id = match self.focus {
+            Pane::Stories => self.story_state.selected_story().map(|s| StoryId(s.id)),
+            Pane::Comments => self.comment_state.story.as_ref().map(|s| StoryId(s.id)),
+        };
+        let Some(id) = target_id else {
+            return;
+        };
+        if self.pin_store.is_pinned(id) {
+            self.snapshot_pinned_resume_if_any();
+            self.pin_store.unpin(id);
+        } else {
+            self.pin_store.pin(id);
+            // Capture the current reading position immediately so that a
+            // pin-then-quit (without further navigation) still records
+            // where the user was.
+            self.snapshot_pinned_resume_if_any();
         }
     }
 
@@ -610,6 +785,11 @@ impl App {
         else {
             return;
         };
+        // Snapshot the outgoing pinned story's reading position before
+        // we overwrite `comment_state` with the prior-submission load.
+        self.snapshot_pinned_resume_if_any();
+        self.pending_pinned_resume = None;
+
         self.read_store
             .mark(StoryId(item.id), item.descendants.unwrap_or(0));
         self.prior_state = None;
@@ -709,10 +889,12 @@ impl App {
 
     /// Exits search mode, clears the cache, and reloads the current feed.
     pub fn cancel_search(&mut self) {
+        self.snapshot_pinned_resume_if_any();
         self.search_state = None;
         self.input_mode = InputMode::Normal;
         self.story_state.reset();
         self.comment_state.reset();
+        self.pending_pinned_resume = None;
         self.client.clear_cache();
         self.spawn_load_stories(LoadMode::Replace);
     }
@@ -761,6 +943,10 @@ impl App {
     /// Kicks off an async feed-page load. [`LoadMode::Append`] reuses the
     /// cached ID list to compute a stable offset (so newly posted stories
     /// don't shift the page); [`LoadMode::Replace`] fetches a fresh ID list.
+    ///
+    /// Branches on [`FeedKind::endpoint`] to source IDs: feeds with a
+    /// remote endpoint hit Firebase; the [`FeedKind::Pinned`] virtual
+    /// feed reads from [`Self::pin_store`] directly.
     fn spawn_load_stories(&self, mode: LoadMode) {
         let client = self.client.clone();
         let tx = self.msg_tx.clone();
@@ -786,6 +972,24 @@ impl App {
                     Err(e) => {
                         let _ =
                             tx.send(AppMessage::Error(format!("Failed to load stories: {}", e)));
+                    }
+                }
+            });
+        } else if matches!(self.current_feed, FeedKind::Pinned) {
+            // Virtual feed: source IDs locally, then page through them with
+            // the same `fetch_items_page` path the remote feeds use.
+            let pinned_ids = self.pin_store.pinned_ids_newest_first();
+            tokio::spawn(async move {
+                match client.fetch_items_page(&pinned_ids, 0, page_size).await {
+                    Ok(stories) => {
+                        let _ = tx.send(AppMessage::StoriesLoaded {
+                            stories,
+                            all_ids: Some(pinned_ids),
+                            mode: LoadMode::Replace,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AppMessage::Error(format!("Failed to load pinned: {}", e)));
                     }
                 }
             });
@@ -845,6 +1049,12 @@ impl App {
     /// For search results (kids missing), fetches the full item first.
     fn load_selected_comments(&mut self) {
         if let Some(story) = self.story_state.selected_story().cloned() {
+            // Snapshot the outgoing pinned story's reading position before
+            // we overwrite `comment_state` with the new selection. No-op
+            // when the previous story wasn't pinned (or was the same one).
+            self.snapshot_pinned_resume_if_any();
+            self.pending_pinned_resume = None;
+
             self.read_store
                 .mark(StoryId(story.id), story.descendants.unwrap_or(0));
             self.comment_state.loading = true;
@@ -1097,6 +1307,10 @@ impl App {
             if let Some(vi) = visual_index {
                 let visible_len = self.comment_state.visible_len();
                 if vi < visible_len {
+                    // Mouse interaction in the comments pane is intentional
+                    // navigation — drop any pending resume target so we don't
+                    // jump the cursor away from where the user clicked.
+                    self.pending_pinned_resume = None;
                     // Check for double-click to toggle collapse
                     let now = std::time::Instant::now();
                     if let Some((last_time, last_vi)) = self.last_comment_click {
@@ -1296,9 +1510,11 @@ impl App {
                     self.story_state.select_prev();
                 }
                 (Pane::Comments, true) => {
+                    self.pending_pinned_resume = None;
                     self.comment_state.select_next();
                 }
                 (Pane::Comments, false) => {
+                    self.pending_pinned_resume = None;
                     self.comment_state.select_prev();
                 }
             }

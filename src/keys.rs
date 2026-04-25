@@ -49,6 +49,10 @@ pub enum Action {
     /// visit → Recent 24h → All. Falls through to All when the story has
     /// never been visited (no `last_seen_at` to anchor `NewSince` to).
     CycleCommentFilter,
+    /// Toggle the pinned state of the focused story (pin if not pinned,
+    /// unpin if pinned). Pinned stories surface in the
+    /// [`crate::api::types::FeedKind::Pinned`] virtual feed.
+    TogglePin,
     /// Quickjump: enter hint-label mode; the `HintAction` decides what
     /// fires on a unique label match (open in browser / open in reader /
     /// copy URL to clipboard via OSC 52).
@@ -132,9 +136,11 @@ pub fn map_key(
         KeyCode::Char('p') => Action::OpenReader,
         KeyCode::Char('h') => Action::TogglePriorDiscussions,
         KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => Action::SwitchPane,
-        KeyCode::Char(c @ '1'..='6') => Action::SwitchFeed(c as usize - '1' as usize),
+        // 1–7: Top, New, Best, Ask, Show, Jobs, Pinned (matches FeedKind::ALL order).
+        KeyCode::Char(c @ '1'..='7') => Action::SwitchFeed(c as usize - '1' as usize),
         KeyCode::Char('r') => Action::Refresh,
         KeyCode::Char('n') => Action::CycleCommentFilter,
+        KeyCode::Char('b') => Action::TogglePin,
         KeyCode::Char('g') => Action::JumpTop,
         KeyCode::Char('G') => Action::JumpBottom,
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::PageDown,
@@ -310,9 +316,53 @@ mod tests {
                 InputMode::Normal,
             )
         };
-        for (c, idx) in [('1', 0), ('2', 1), ('3', 2), ('4', 3), ('5', 4), ('6', 5)] {
+        for (c, idx) in [
+            ('1', 0),
+            ('2', 1),
+            ('3', 2),
+            ('4', 3),
+            ('5', 4),
+            ('6', 5),
+            ('7', 6), // Pinned virtual feed
+        ] {
             assert_eq!(n(c), Action::SwitchFeed(idx));
         }
+    }
+
+    #[test]
+    fn normal_b_toggles_pin() {
+        let n = |code| map_key(key(code), false, false, false, InputMode::Normal);
+        assert_eq!(n(KeyCode::Char('b')), Action::TogglePin);
+    }
+
+    #[test]
+    fn reader_overlay_does_not_consume_b() {
+        // Pin toggle is a story-level action; the reader overlay should
+        // not emit it (the reader's focused story is already known to the
+        // user — pinning belongs in the underlying pane).
+        let r = |code| map_key(key(code), false, true, false, InputMode::Normal);
+        assert_eq!(r(KeyCode::Char('b')), Action::None);
+    }
+
+    #[test]
+    fn prior_overlay_does_not_consume_b() {
+        let p = |code| map_key(key(code), false, false, true, InputMode::Normal);
+        assert_eq!(p(KeyCode::Char('b')), Action::None);
+    }
+
+    #[test]
+    fn search_input_does_not_emit_toggle_pin() {
+        // `b` must be a query character when typing a search.
+        assert_eq!(
+            map_key(
+                key(KeyCode::Char('b')),
+                false,
+                false,
+                false,
+                InputMode::SearchInput
+            ),
+            Action::None
+        );
     }
 
     #[test]
