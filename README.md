@@ -20,6 +20,7 @@ Browse stories, read threaded comments, and open links — all from your termina
 - **Vim-style navigation** — `j`/`k`, `g`/`G`, `Ctrl+d`/`Ctrl+u`
 - **Search** — Algolia-powered full-text search across stories
 - **Reader mode** — Read article content directly in the terminal
+- **Quickjump link hints** — In reader mode, press `f` and every hyperlink gets a 1- or 2-character home-row label. Type the label to open it (`f` browser, `F` HNT reader, `y` copy URL via OSC 52 — works through SSH)
 - **Prior discussions** — Press `h` to see past HN submissions of the same URL with their scores and dates
 - **Read-state tracking** — Visited stories render dimmed; stories with new comments since your last visit get a `+N` badge. Persisted to `$XDG_DATA_HOME/hnt/read.json`
 - **Open in browser** — Press `o` to open the story URL
@@ -68,6 +69,7 @@ cargo build --release
 | `Enter` | Select story / toggle collapse |
 | `o` | Open URL in browser |
 | `p` | Open reader mode |
+| `f` / `F` / `y` | (in reader) Quickjump label hints — open in browser / open in reader / copy to clipboard |
 | `h` | Show prior HN submissions of this URL |
 | `/` | Search stories |
 | `Tab` | Switch pane focus |

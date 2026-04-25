@@ -5,6 +5,7 @@
 //! and GitLab repo roots it short-circuits to the raw README. HN-native
 //! text posts (Ask HN, etc.) go through [`html_to_styled_lines`] directly.
 
+use crate::state::link_registry::LinkRegistry;
 use crate::state::reader_state::StyledFragment;
 use crate::ui::theme;
 use html2text::render::RichAnnotation;
@@ -193,11 +194,13 @@ fn markdown_to_styled_lines(text: &str, width: usize) -> Vec<Vec<StyledFragment>
 }
 
 /// Fetches article HTML, runs readability extraction, converts to styled
-/// lines.
+/// lines and a [`LinkRegistry`] of every hyperlink (for Quickjump hint
+/// mode). Markdown READMEs render without a link registry today — only
+/// the rich-HTML path produces hint targets.
 pub async fn fetch_and_extract_article(
     url: &str,
     width: usize,
-) -> Result<Vec<Vec<StyledFragment>>, String> {
+) -> Result<(Vec<Vec<StyledFragment>>, LinkRegistry), String> {
     let client = reqwest::Client::builder()
         .user_agent(concat!(
             "Mozilla/5.0 (compatible; hnt/",
@@ -211,10 +214,13 @@ pub async fn fetch_and_extract_article(
     // For GitHub/GitLab repo pages, try fetching the README directly
     if let Some((readme_text, is_markdown)) = try_fetch_readme(&client, url).await {
         return if is_markdown {
-            Ok(markdown_to_styled_lines(&readme_text, width))
+            Ok((
+                markdown_to_styled_lines(&readme_text, width),
+                LinkRegistry::new(),
+            ))
         } else {
             // RST / plain text — render as plain styled lines
-            Ok(readme_text
+            let lines = readme_text
                 .lines()
                 .map(|line| {
                     vec![StyledFragment {
@@ -222,7 +228,8 @@ pub async fn fetch_and_extract_article(
                         style: Style::default().fg(theme::TEXT),
                     }]
                 })
-                .collect())
+                .collect();
+            Ok((lines, LinkRegistry::new()))
         };
     }
 
@@ -279,12 +286,13 @@ pub async fn fetch_and_extract_article(
 }
 
 /// Runs readability extraction + html2text rich rendering
-/// (blocking/CPU-bound).
+/// (blocking/CPU-bound). Returns rendered lines and a [`LinkRegistry`]
+/// populated with every `<a href>` Quickjump should be able to label.
 fn extract_article_content(
     html_bytes: &[u8],
     url_str: &str,
     width: usize,
-) -> Result<Vec<Vec<StyledFragment>>, String> {
+) -> Result<(Vec<Vec<StyledFragment>>, LinkRegistry), String> {
     let parsed_url = url::Url::parse(url_str).map_err(|e| format!("Invalid URL: {}", e))?;
 
     // Try readability extraction first, fall back to full HTML if it produces no content
@@ -312,31 +320,53 @@ fn extract_article_content(
         }
     };
 
+    Ok(tagged_lines_to_styled_with_links(tagged_lines))
+}
+
+/// Walks html2text rich-tagged lines, producing per-line
+/// [`StyledFragment`] vectors and a parallel [`LinkRegistry`] that records
+/// where every hyperlink lives (line index + fragment index of the
+/// link-text fragment). The dim ` [https://...]` suffix is preserved as a
+/// secondary fragment so non-hint-mode rendering looks identical.
+fn tagged_lines_to_styled_with_links(
+    tagged_lines: Vec<html2text::render::TaggedLine<Vec<RichAnnotation>>>,
+) -> (Vec<Vec<StyledFragment>>, LinkRegistry) {
+    let mut links = LinkRegistry::new();
     let lines: Vec<Vec<StyledFragment>> = tagged_lines
         .into_iter()
-        .map(|tagged_line| {
-            let mut fragments = Vec::new();
+        .enumerate()
+        .map(|(line_idx, tagged_line)| {
+            let mut fragments: Vec<StyledFragment> = Vec::new();
             for ts in tagged_line.tagged_strings() {
                 let style = annotations_to_style(&ts.tag);
+                let url = ts.tag.iter().find_map(|ann| {
+                    if let RichAnnotation::Link(u) = ann {
+                        Some(u.clone())
+                    } else {
+                        None
+                    }
+                });
+                let fragment_idx = fragments.len();
+                let text_is_visible = !ts.s.trim().is_empty();
                 fragments.push(StyledFragment {
                     text: ts.s.clone(),
                     style,
                 });
-                // Append URL after link text
-                for ann in &ts.tag {
-                    if let RichAnnotation::Link(ref url) = ann {
-                        fragments.push(StyledFragment {
-                            text: format!(" [{}]", url),
-                            style: Style::default().fg(theme::DIM),
-                        });
+                if let Some(url) = url {
+                    if text_is_visible {
+                        links.push(url.clone(), line_idx, fragment_idx);
                     }
+                    fragments.push(StyledFragment {
+                        text: format!(" [{}]", url),
+                        style: Style::default().fg(theme::DIM),
+                    });
                 }
             }
             fragments
         })
         .collect();
-
-    Ok(lines)
+    links.assign_labels();
+    (lines, links)
 }
 
 /// Converts an html2text `RichAnnotation` set to a ratatui [`Style`].
@@ -370,32 +400,13 @@ fn annotations_to_style(annotations: &[RichAnnotation]) -> Style {
     style
 }
 
-/// Converts raw HTML bytes to styled lines using html2text rich rendering.
-pub fn html_to_styled_lines(html: &[u8], width: usize) -> Vec<Vec<StyledFragment>> {
+/// Converts raw HTML bytes to styled lines (via html2text rich rendering)
+/// and a [`LinkRegistry`] of the hyperlinks within. Used for HN-native
+/// text posts (Ask HN, Show HN, etc.) where the article body is inline
+/// HTML rather than fetched from a URL.
+pub fn html_to_styled_lines(html: &[u8], width: usize) -> (Vec<Vec<StyledFragment>>, LinkRegistry) {
     let tagged_lines = html2text::from_read_rich(html, width).unwrap_or_default();
-
-    tagged_lines
-        .into_iter()
-        .map(|tagged_line| {
-            let mut fragments = Vec::new();
-            for ts in tagged_line.tagged_strings() {
-                let style = annotations_to_style(&ts.tag);
-                fragments.push(StyledFragment {
-                    text: ts.s.clone(),
-                    style,
-                });
-                for ann in &ts.tag {
-                    if let RichAnnotation::Link(ref url) = ann {
-                        fragments.push(StyledFragment {
-                            text: format!(" [{}]", url),
-                            style: Style::default().fg(theme::DIM),
-                        });
-                    }
-                }
-            }
-            fragments
-        })
-        .collect()
+    tagged_lines_to_styled_with_links(tagged_lines)
 }
 
 #[cfg(test)]
@@ -547,16 +558,18 @@ mod tests {
     #[test]
     fn html_plain_paragraph_produces_fragments() {
         let html = b"<p>hello world</p>";
-        let lines = html_to_styled_lines(html, 80);
+        let (lines, links) = html_to_styled_lines(html, 80);
         assert!(!lines.is_empty());
         let joined: String = lines[0].iter().map(|f| f.text.as_str()).collect();
         assert!(joined.contains("hello world"));
+        // Plain paragraph has no hyperlinks.
+        assert!(links.is_empty());
     }
 
     #[test]
     fn html_link_appends_url_in_dim_fragment() {
         let html = b"<a href=\"https://example.com\">click</a>";
-        let lines = html_to_styled_lines(html, 80);
+        let (lines, _links) = html_to_styled_lines(html, 80);
         let joined: String = lines
             .iter()
             .flat_map(|l| l.iter().map(|f| f.text.as_str()))
@@ -565,8 +578,34 @@ mod tests {
     }
 
     #[test]
+    fn html_link_populates_registry_with_label() {
+        let html = b"<a href=\"https://example.com\">click</a>";
+        let (_lines, links) = html_to_styled_lines(html, 80);
+        assert_eq!(links.links.len(), 1);
+        assert_eq!(links.links[0].url, "https://example.com");
+        assert!(!links.links[0].label.is_empty(), "label should be assigned");
+    }
+
+    #[test]
+    fn html_multiple_links_produce_multiple_registry_entries() {
+        let html =
+            b"<p><a href=\"https://a.example\">A</a> and <a href=\"https://b.example\">B</a></p>";
+        let (_lines, links) = html_to_styled_lines(html, 80);
+        assert_eq!(links.links.len(), 2);
+        let urls: Vec<&str> = links.links.iter().map(|l| l.url.as_str()).collect();
+        assert!(urls.contains(&"https://a.example"));
+        assert!(urls.contains(&"https://b.example"));
+        // Labels must be unique.
+        let mut labels: Vec<&str> = links.links.iter().map(|l| l.label.as_str()).collect();
+        labels.sort();
+        labels.dedup();
+        assert_eq!(labels.len(), 2);
+    }
+
+    #[test]
     fn html_empty_input_is_empty_output() {
-        let lines = html_to_styled_lines(b"", 80);
+        let (lines, links) = html_to_styled_lines(b"", 80);
         assert!(lines.is_empty());
+        assert!(links.is_empty());
     }
 }

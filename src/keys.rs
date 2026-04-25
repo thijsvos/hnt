@@ -5,14 +5,18 @@
 //! the reader overlay has its own reduced map. The [`InputMode`] enum
 //! distinguishes character-capturing search input from normal navigation.
 
+use crate::state::hint_state::HintAction;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// Whether the keyboard is in normal-navigation mode or accumulating
-/// characters for the search-query input.
+/// characters for the search-query input or a Quickjump hint label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
     Normal,
     SearchInput,
+    /// Active during Quickjump label selection — `main.rs` routes raw
+    /// chars to [`Action::HintKey`] and Esc to [`Action::ExitHintMode`].
+    HintMode,
 }
 
 /// A keybinding-independent operation the app may perform.
@@ -37,6 +41,15 @@ pub enum Action {
     ToggleHelp,
     TogglePriorDiscussions,
     EnterSearch,
+    /// Quickjump: enter hint-label mode; the `HintAction` decides what
+    /// fires on a unique label match (open in browser / open in reader /
+    /// copy URL to clipboard via OSC 52).
+    EnterHintMode(HintAction),
+    /// One typed character of a hint-label prefix (only emitted while
+    /// [`InputMode::HintMode`] is active).
+    HintKey(char),
+    /// Cancel hint-label selection and return to the prior input mode.
+    ExitHintMode,
     Back,
     None,
 }
@@ -44,7 +57,7 @@ pub enum Action {
 /// Translates a [`KeyEvent`] into an [`Action`] for the current UI
 /// context.
 ///
-/// Priority order: search-input mode suppresses normal keys (returns
+/// Priority order: search-input + hint-mode suppress normal keys (return
 /// [`Action::None`] so `main.rs` can handle raw characters); a visible
 /// help overlay consumes any key as [`Action::ToggleHelp`]; a visible
 /// reader overlay uses its own reduced keymap; a visible
@@ -57,8 +70,8 @@ pub fn map_key(
     prior_visible: bool,
     input_mode: InputMode,
 ) -> Action {
-    // When in search input mode, main.rs handles raw keys — return None here
-    if input_mode == InputMode::SearchInput {
+    // SearchInput and HintMode both consume raw chars in main.rs.
+    if matches!(input_mode, InputMode::SearchInput | InputMode::HintMode) {
         return Action::None;
     }
 
@@ -77,6 +90,9 @@ pub fn map_key(
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::PageDown,
             KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::PageUp,
             KeyCode::Char('o') => Action::OpenInBrowser,
+            KeyCode::Char('f') => Action::EnterHintMode(HintAction::Open),
+            KeyCode::Char('F') => Action::EnterHintMode(HintAction::OpenInReader),
+            KeyCode::Char('y') => Action::EnterHintMode(HintAction::CopyUrl),
             KeyCode::Esc | KeyCode::Char('q') => Action::Back,
             _ => Action::None,
         };
@@ -121,6 +137,11 @@ pub fn map_key(
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::PageUp,
         KeyCode::Char('/') => Action::EnterSearch,
         KeyCode::Char('?') => Action::ToggleHelp,
+        // Quickjump entry — comments-pane variant. Reader-overlay variant
+        // is handled in the reader_visible block above.
+        KeyCode::Char('f') => Action::EnterHintMode(HintAction::Open),
+        KeyCode::Char('F') => Action::EnterHintMode(HintAction::OpenInReader),
+        KeyCode::Char('y') => Action::EnterHintMode(HintAction::CopyUrl),
         _ => Action::None,
     }
 }
@@ -375,5 +396,120 @@ mod tests {
             ),
             Action::ToggleHelp
         );
+    }
+
+    // --- HintMode (Quickjump) ---
+
+    #[test]
+    fn hint_mode_suppresses_all_keys() {
+        // Every key returns Action::None so main.rs can route raw chars
+        // to HintKey via the input-mode shortcut.
+        assert_eq!(
+            map_key(
+                key(KeyCode::Char('a')),
+                false,
+                false,
+                false,
+                InputMode::HintMode
+            ),
+            Action::None
+        );
+        assert_eq!(
+            map_key(key(KeyCode::Esc), false, false, false, InputMode::HintMode),
+            Action::None
+        );
+        assert_eq!(
+            map_key(
+                key(KeyCode::Char('q')),
+                false,
+                false,
+                false,
+                InputMode::HintMode
+            ),
+            Action::None
+        );
+        // Even with overlays and help flagged, HintMode wins.
+        assert_eq!(
+            map_key(
+                key(KeyCode::Char('a')),
+                true,
+                true,
+                true,
+                InputMode::HintMode
+            ),
+            Action::None
+        );
+    }
+
+    #[test]
+    fn normal_f_enters_open_hint_mode() {
+        let n = |code| map_key(key(code), false, false, false, InputMode::Normal);
+        assert_eq!(
+            n(KeyCode::Char('f')),
+            Action::EnterHintMode(HintAction::Open)
+        );
+    }
+
+    #[test]
+    fn normal_capital_f_enters_open_in_reader_hint_mode() {
+        let n = |code| map_key(key(code), false, false, false, InputMode::Normal);
+        assert_eq!(
+            n(KeyCode::Char('F')),
+            Action::EnterHintMode(HintAction::OpenInReader)
+        );
+    }
+
+    #[test]
+    fn normal_y_enters_copy_url_hint_mode() {
+        let n = |code| map_key(key(code), false, false, false, InputMode::Normal);
+        assert_eq!(
+            n(KeyCode::Char('y')),
+            Action::EnterHintMode(HintAction::CopyUrl)
+        );
+    }
+
+    #[test]
+    fn reader_overlay_hint_mode_keys() {
+        let r = |code| map_key(key(code), false, true, false, InputMode::Normal);
+        assert_eq!(
+            r(KeyCode::Char('f')),
+            Action::EnterHintMode(HintAction::Open)
+        );
+        assert_eq!(
+            r(KeyCode::Char('F')),
+            Action::EnterHintMode(HintAction::OpenInReader)
+        );
+        assert_eq!(
+            r(KeyCode::Char('y')),
+            Action::EnterHintMode(HintAction::CopyUrl)
+        );
+    }
+
+    #[test]
+    fn prior_overlay_does_not_emit_hint_actions() {
+        // Prior overlay's keymap should still consume f/F/y as None — those
+        // keys only make sense in reader/comments contexts.
+        let p = |code| map_key(key(code), false, false, true, InputMode::Normal);
+        assert_eq!(p(KeyCode::Char('f')), Action::None);
+        assert_eq!(p(KeyCode::Char('F')), Action::None);
+        assert_eq!(p(KeyCode::Char('y')), Action::None);
+    }
+
+    #[test]
+    fn search_input_does_not_emit_hint_actions() {
+        // SearchInput priority must dominate — `f`/`F`/`y` are valid query
+        // characters when the user is typing.
+        let s = |c: char| {
+            map_key(
+                key(KeyCode::Char(c)),
+                false,
+                false,
+                false,
+                InputMode::SearchInput,
+            )
+        };
+        assert_eq!(s('f'), Action::None);
+        assert_eq!(s('F'), Action::None);
+        assert_eq!(s('y'), Action::None);
     }
 }

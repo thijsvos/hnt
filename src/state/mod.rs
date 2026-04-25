@@ -6,9 +6,13 @@
 //! and plain-text caching), [`reader_state::ReaderState`] for the article
 //! overlay, [`search_state::SearchState`] for the Algolia search flow,
 //! [`prior_state::PriorDiscussionsState`] for the prior-submissions
-//! overlay, and [`read_store::ReadStore`] for persisted read-state tracking.
+//! overlay, [`read_store::ReadStore`] for persisted read-state tracking,
+//! and [`link_registry::LinkRegistry`] + [`hint_state::HintState`] for the
+//! Quickjump label-hint mode.
 
 pub mod comment_state;
+pub mod hint_state;
+pub mod link_registry;
 pub mod prior_state;
 pub mod read_store;
 pub mod reader_state;
