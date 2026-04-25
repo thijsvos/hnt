@@ -37,16 +37,16 @@ impl<'a> Widget for StoryList<'a> {
             theme::dim_style()
         };
 
-        let title = if let Some(q) = &self.search_query {
-            format!(" Search: {} ", q)
+        let title_span = if let Some(q) = &self.search_query {
+            Span::styled(format!(" Search: {} ", q), theme::title_style())
         } else {
-            " Stories ".to_string()
+            Span::styled(" Stories ", theme::title_style())
         };
 
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(border_style)
-            .title(Span::styled(title, theme::title_style()))
+            .title(title_span)
             .style(theme::base_style());
 
         let inner = block.inner(area);

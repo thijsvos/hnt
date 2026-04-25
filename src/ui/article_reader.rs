@@ -63,12 +63,9 @@ pub fn render_article_overlay(
 }
 
 fn build_title(reader: &ReaderState) -> String {
-    let title = if reader.title.chars().count() > 60 {
-        let truncated: String = reader.title.chars().take(57).collect();
-        format!("{}...", truncated)
-    } else {
-        reader.title.clone()
-    };
+    let truncated: Option<String> = (reader.title.chars().count() > 60)
+        .then(|| reader.title.chars().take(57).collect::<String>() + "...");
+    let title: &str = truncated.as_deref().unwrap_or(reader.title.as_str());
 
     match &reader.domain {
         Some(domain) => format!(" {} ({}) ", title, domain),
@@ -120,7 +117,7 @@ fn render_error(frame: &mut Frame, area: Rect, reader: &ReaderState, error: &str
                 .add_modifier(ratatui::style::Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(Span::styled(error.to_string(), theme::dim_style())),
+        Line::from(Span::styled(error, theme::dim_style())),
         Line::from(""),
         Line::from(Span::styled(
             "Press 'o' to open in browser, Esc to close",

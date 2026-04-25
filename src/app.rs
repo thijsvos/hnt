@@ -1194,12 +1194,12 @@ impl App {
             Ok(p) if matches!(p.scheme(), "http" | "https") => p,
             _ => return,
         };
-        let domain = parsed.host_str().map(|s| s.to_string());
-        let title = parsed.path().trim_matches('/').to_string();
-        let title = if title.is_empty() {
-            domain.clone().unwrap_or_else(|| url.to_string())
+        let domain = parsed.host_str().map(str::to_string);
+        let path_seg = parsed.path().trim_matches('/');
+        let title = if path_seg.is_empty() {
+            domain.as_deref().unwrap_or(url).to_string()
         } else {
-            title
+            path_seg.to_string()
         };
 
         self.reader_state = Some(ReaderState::new_loading(
