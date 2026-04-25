@@ -7,7 +7,9 @@
 
 use super::types::{CommentWithDepth, FeedKind, Item, SearchResponse};
 use anyhow::Result;
+use futures::future::BoxFuture;
 use futures::stream::{self, StreamExt};
+use futures::FutureExt;
 use lru::LruCache;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
@@ -103,14 +105,16 @@ impl HnClient {
             .await;
 
         // buffer_unordered doesn't preserve order, so re-order by input IDs.
-        let mut result_map: HashMap<u64, Arc<Item>> = results
+        // Callers don't pass duplicate IDs, so a non-consuming `get` lookup
+        // suffices — no need to invalidate the map slot per hit.
+        let result_map: HashMap<u64, Arc<Item>> = results
             .into_iter()
             .flatten()
             .map(|arc| (arc.id, arc))
             .collect();
 
         ids.iter()
-            .map(|id| result_map.remove(id).map(|arc| (*arc).clone()))
+            .map(|id| result_map.get(id).map(|arc| (**arc).clone()))
             .collect()
     }
 
@@ -212,16 +216,17 @@ impl HnClient {
 
     /// Walks a comment subtree depth-first, appending [`CommentWithDepth`]
     /// records into `result` for every live descendant up to `max_depth`.
-    /// Dead/deleted comments are skipped. Returns a boxed future so the
-    /// recursion can cross `async` boundaries.
+    /// Dead/deleted comments are skipped. Returns a [`BoxFuture`] so the
+    /// recursion can cross `async` boundaries — `BoxFuture<'a, ()>` is the
+    /// idiomatic alias for the hand-pinned `Pin<Box<dyn Future + Send + 'a>>`.
     pub fn fetch_children_recursive<'a>(
         &'a self,
         ids: &'a [u64],
         depth: usize,
         max_depth: usize,
         result: &'a mut Vec<CommentWithDepth>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
-        Box::pin(async move {
+    ) -> BoxFuture<'a, ()> {
+        async move {
             if depth > max_depth || ids.is_empty() {
                 return;
             }
@@ -244,7 +249,8 @@ impl HnClient {
                     }
                 }
             }
-        })
+        }
+        .boxed()
     }
 }
 
