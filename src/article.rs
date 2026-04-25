@@ -234,11 +234,7 @@ pub async fn fetch_and_extract_article(
         };
     }
 
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .context("Failed to fetch")?;
+    let resp = client.get(url).send().await.context("Failed to fetch")?;
 
     if !resp.status().is_success() {
         bail!("HTTP {}", resp.status());
