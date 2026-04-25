@@ -2,8 +2,12 @@
 //!
 //! [`render_article_overlay`] dispatches to loading, error, or content
 //! renderers based on [`ReaderState`]. Content is drawn as wrapped
-//! styled lines with a title, domain, and keybinding footer.
+//! styled lines with a title, domain, and keybinding footer. When
+//! Quickjump's [`HintState`] is active, a post-pass paints label glyphs
+//! over each visible hyperlink, dimming labels that no longer match the
+//! typed prefix.
 
+use crate::state::hint_state::{HintContext, HintState};
 use crate::state::reader_state::ReaderState;
 use crate::ui::theme;
 use ratatui::{
@@ -15,8 +19,14 @@ use ratatui::{
 
 /// Draws the full-screen reader overlay for `reader`'s current state
 /// (loading, error, or content) into `area` with a small margin. No-op if
-/// the available space is too small.
-pub fn render_article_overlay(frame: &mut Frame, area: Rect, reader: &ReaderState) {
+/// the available space is too small. When `hint` is `Some` and targets the
+/// reader, a label-overlay pass paints Quickjump labels atop visible links.
+pub fn render_article_overlay(
+    frame: &mut Frame,
+    area: Rect,
+    reader: &ReaderState,
+    hint: Option<&HintState>,
+) {
     // Fullscreen overlay with 2-cell margin on each side
     let margin = 2u16;
     let x = margin.min(area.width / 2);
@@ -42,7 +52,14 @@ pub fn render_article_overlay(frame: &mut Frame, area: Rect, reader: &ReaderStat
         return;
     }
 
-    render_content(frame, overlay_area, reader);
+    let inner = render_content(frame, overlay_area, reader);
+
+    // Hint-mode label overlay — draws over the just-rendered content.
+    if let Some(hint) = hint {
+        if matches!(hint.context, HintContext::Reader) {
+            paint_hint_labels(frame, inner, reader, hint);
+        }
+    }
 }
 
 fn build_title(reader: &ReaderState) -> String {
@@ -127,11 +144,11 @@ fn render_error(frame: &mut Frame, area: Rect, reader: &ReaderState, error: &str
     }
 }
 
-fn render_content(frame: &mut Frame, area: Rect, reader: &ReaderState) {
+fn render_content(frame: &mut Frame, area: Rect, reader: &ReaderState) -> Rect {
     let title = build_title(reader);
     let pct = reader.scroll_percent();
     let footer = format!(
-        " j/k:scroll  Ctrl+d/u:page  g/G:top/bottom  o:browser  Esc:close  {}% ",
+        " j/k:scroll  Ctrl+d/u:page  g/G:top/bottom  o:browser  f:hint  y:copy  Esc:close  {}% ",
         pct
     );
 
@@ -166,4 +183,62 @@ fn render_content(frame: &mut Frame, area: Rect, reader: &ReaderState) {
 
     let content = Paragraph::new(visible_lines).wrap(Wrap { trim: false });
     frame.render_widget(content, inner);
+
+    inner
+}
+
+/// Paints Quickjump hint labels atop visible hyperlinks. Each label
+/// renders at the link's first column in inverse video; labels whose full
+/// text no longer starts with the typed prefix are dimmed instead so the
+/// user can see what they've ruled out without having labels disappear.
+///
+/// Column positioning uses `chars().count()` rather than full unicode
+/// width — adequate for the URLs and ASCII link text typical of news
+/// articles; wide-char link anchors (CJK, emoji) may be off by a column.
+/// Wrapped lines (rare; html2text already wrapped to width) place the
+/// label on the unwrapped logical row.
+fn paint_hint_labels(frame: &mut Frame, inner: Rect, reader: &ReaderState, hint: &HintState) {
+    let buf = frame.buffer_mut();
+    let scroll = reader.scroll;
+    let visible_height = inner.height as usize;
+    let prefix = hint.buffer();
+
+    for link in &reader.links.links {
+        if link.line < scroll || link.line >= scroll + visible_height {
+            continue;
+        }
+        let line = match reader.lines.get(link.line) {
+            Some(l) => l,
+            None => continue,
+        };
+        let col_offset: usize = line
+            .iter()
+            .take(link.fragment)
+            .map(|f| f.text.chars().count())
+            .sum();
+        let label_x = inner.x.saturating_add(col_offset as u16);
+        if label_x >= inner.right() {
+            continue;
+        }
+        let row_y = inner.y.saturating_add((link.line - scroll) as u16);
+        if row_y >= inner.bottom() {
+            continue;
+        }
+
+        let style = if link.label.starts_with(prefix) {
+            theme::hint_active_style()
+        } else {
+            theme::hint_dim_style()
+        };
+
+        for (i, ch) in link.label.chars().enumerate() {
+            let cell_x = label_x.saturating_add(i as u16);
+            if cell_x >= inner.right() {
+                break;
+            }
+            let cell = &mut buf[(cell_x, row_y)];
+            cell.set_char(ch);
+            cell.set_style(style);
+        }
+    }
 }

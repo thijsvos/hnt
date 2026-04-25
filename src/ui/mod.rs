@@ -134,7 +134,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 
     // Article reader overlay
     if let Some(ref reader_state) = app.reader_state {
-        article_reader::render_article_overlay(frame, area, reader_state);
+        article_reader::render_article_overlay(frame, area, reader_state, app.hint_state.as_ref());
     }
 
     // Prior-discussions overlay (takes precedence over comment pane focus but
@@ -150,8 +150,8 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 /// Draws the centered modal help overlay listing every keybinding.
 /// Bounded to at most 50×22 cells; auto-shrinks on small terminals.
 fn render_help_overlay(frame: &mut Frame, area: Rect) {
-    let width = 50u16.min(area.width.saturating_sub(4));
-    let height = 24u16.min(area.height.saturating_sub(4));
+    let width = 56u16.min(area.width.saturating_sub(4));
+    let height = 28u16.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let popup_area = Rect::new(x, y, width, height);
@@ -176,6 +176,13 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from(vec![
             Span::styled("  p            ", theme::accent_style()),
             Span::styled("Read article inline", theme::base_style()),
+        ]),
+        Line::from(vec![
+            Span::styled("  f / F / y    ", theme::accent_style()),
+            Span::styled(
+                "(in reader) Quickjump: open / read inline / copy",
+                theme::base_style(),
+            ),
         ]),
         Line::from(vec![
             Span::styled("  h            ", theme::accent_style()),

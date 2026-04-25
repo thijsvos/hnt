@@ -92,6 +92,23 @@ pub const fn depth_color(depth: usize) -> Color {
     DEPTH_COLORS[depth % DEPTH_COLORS.len()]
 }
 
+/// Quickjump hint label — bold black-on-orange so it pops against the
+/// underlying styled link text. Used for labels still matching the
+/// active prefix.
+pub const fn hint_active_style() -> Style {
+    Style::new()
+        .fg(BG)
+        .bg(HN_ORANGE)
+        .add_modifier(Modifier::BOLD)
+}
+
+/// Quickjump hint label — dimmed grey-on-surface for labels that no
+/// longer match the active prefix. Lets the user see what they've
+/// already ruled out without removing the labels entirely.
+pub const fn hint_dim_style() -> Style {
+    Style::new().fg(DIM).bg(SURFACE)
+}
+
 /// Bold badge color on the surface background — one color per
 /// [`StoryBadge`](crate::api::types::StoryBadge) variant.
 pub const fn badge_style(badge: crate::api::types::StoryBadge) -> Style {

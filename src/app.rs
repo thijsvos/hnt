@@ -9,8 +9,11 @@
 use crate::api::client::HnClient;
 use crate::api::types::{CommentId, CommentWithDepth, FeedKind, Item, StoryId};
 use crate::article::{fetch_and_extract_article, html_to_styled_lines};
+use crate::clipboard;
 use crate::keys::{Action, InputMode};
 use crate::state::comment_state::CommentTreeState;
+use crate::state::hint_state::{HintAction, HintContext, HintState};
+use crate::state::link_registry::{LinkRegistry, MatchResult};
 use crate::state::prior_state::PriorDiscussionsState;
 use crate::state::read_store::ReadStore;
 use crate::state::reader_state::{ReaderState, StyledFragment};
@@ -38,6 +41,19 @@ pub enum Pane {
 pub enum LoadMode {
     Replace,
     Append,
+}
+
+/// Tri-state outcome of a [`crate::state::link_registry::LinkRegistry::match_prefix`]
+/// resolved against the current hint buffer. Carries the resolved URL by
+/// value so the borrow on the registry can be released before mutating
+/// `self`.
+enum HintResolve {
+    /// Multiple labels still match — keep accepting characters.
+    Continue,
+    /// No labels match (or no surface to label) — exit hint mode.
+    Cancel,
+    /// Exactly one label matches — fire the action against this URL.
+    Fire(String),
 }
 
 /// Messages sent from async tasks back to the main loop.
@@ -72,8 +88,13 @@ pub enum AppMessage {
     /// All outstanding comment fetches finished; clear any "loading"
     /// spinners.
     CommentsDone,
-    /// Article reader content extracted and ready to render.
-    ArticleLoaded { lines: Vec<Vec<StyledFragment>> },
+    /// Article reader content extracted and ready to render. `links`
+    /// carries every hyperlink in the body (with assigned hint labels)
+    /// for Quickjump.
+    ArticleLoaded {
+        lines: Vec<Vec<StyledFragment>>,
+        links: LinkRegistry,
+    },
     /// Algolia search returned a page of results.
     SearchResultsLoaded {
         stories: Vec<Item>,
@@ -133,6 +154,11 @@ pub struct App {
     /// flushed via [`App::persist`] on shutdown.
     pub read_store: ReadStore,
 
+    /// Quickjump hint-mode state — `Some` while the user is selecting a
+    /// label, `None` otherwise. Created by [`Action::EnterHintMode`]
+    /// and torn down by [`Action::ExitHintMode`] or a unique-match dispatch.
+    pub hint_state: Option<HintState>,
+
     last_comment_click: Option<(std::time::Instant, usize)>,
 
     client: HnClient,
@@ -163,6 +189,7 @@ impl App {
             prior_results: HashMap::new(),
             prior_in_flight: HashSet::new(),
             read_store: ReadStore::load(),
+            hint_state: None,
             last_comment_click: None,
             client: HnClient::new(),
             msg_tx,
@@ -268,9 +295,9 @@ impl App {
                     self.comment_state.loading = false;
                     self.comment_state.pending_root_ids.clear();
                 }
-                AppMessage::ArticleLoaded { lines } => {
+                AppMessage::ArticleLoaded { lines, links } => {
                     if let Some(ref mut reader) = self.reader_state {
-                        reader.set_content(lines);
+                        reader.set_content(lines, links);
                     }
                 }
                 AppMessage::ArticleError(msg) => {
@@ -309,6 +336,25 @@ impl App {
     /// Otherwise the action mutates the focused pane's state or spawns an
     /// async task (feed switch, refresh, comment load, search).
     pub fn dispatch(&mut self, action: Action) {
+        // Hint-mode actions short-circuit ahead of every overlay route
+        // because the user is mid-selection and any keypress should be
+        // narrowing labels, not mutating panes underneath.
+        match &action {
+            Action::HintKey(c) => {
+                self.hint_key(*c);
+                return;
+            }
+            Action::ExitHintMode => {
+                self.exit_hint_mode();
+                return;
+            }
+            Action::EnterHintMode(hint_action) => {
+                self.enter_hint_mode(*hint_action);
+                return;
+            }
+            _ => {}
+        }
+
         // When reader is open, route actions to reader.
         if self.reader_state.is_some() {
             // Back mutates the Option itself, so handle it before borrowing
@@ -341,6 +387,9 @@ impl App {
                 | Action::ToggleHelp
                 | Action::TogglePriorDiscussions
                 | Action::None => {}
+                Action::EnterHintMode(_) | Action::HintKey(_) | Action::ExitHintMode => {
+                    unreachable!("hint actions handled above")
+                }
                 Action::Back => unreachable!("Back is handled above"),
             }
             return;
@@ -382,6 +431,9 @@ impl App {
                 | Action::PageDown
                 | Action::PageUp
                 | Action::None => {}
+                Action::EnterHintMode(_) | Action::HintKey(_) | Action::ExitHintMode => {
+                    unreachable!("hint actions handled above")
+                }
                 Action::Back | Action::Select => unreachable!("handled above"),
             }
             return;
@@ -479,6 +531,9 @@ impl App {
             },
             Action::ToggleHelp => self.show_help = !self.show_help,
             Action::TogglePriorDiscussions => self.toggle_prior_discussions(),
+            Action::EnterHintMode(_) | Action::HintKey(_) | Action::ExitHintMode => {
+                unreachable!("hint actions handled above")
+            }
             Action::None => {}
         }
     }
@@ -844,9 +899,9 @@ impl App {
         if url.is_none() {
             if let Some(ref text) = story.text {
                 let width = self.terminal_width.saturating_sub(6) as usize;
-                let lines = html_to_styled_lines(text.as_bytes(), width);
+                let (lines, links) = html_to_styled_lines(text.as_bytes(), width);
                 let mut reader = ReaderState::new_loading(title, domain, None);
-                reader.set_content(lines);
+                reader.set_content(lines, links);
                 self.reader_state = Some(reader);
             }
             return;
@@ -866,8 +921,8 @@ impl App {
 
         tokio::spawn(async move {
             match fetch_and_extract_article(&url, width).await {
-                Ok(lines) => {
-                    let _ = tx.send(AppMessage::ArticleLoaded { lines });
+                Ok((lines, links)) => {
+                    let _ = tx.send(AppMessage::ArticleLoaded { lines, links });
                 }
                 Err(e) => {
                     let _ = tx.send(AppMessage::ArticleError(e));
@@ -1010,6 +1065,137 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Enters Quickjump hint-label mode. Determines context from current
+    /// app state — reader if the article-reader overlay is open, comments
+    /// if the comments pane is focused. No-op if no surface has links.
+    fn enter_hint_mode(&mut self, action: HintAction) {
+        // Already in hint mode? Re-entering with a different action is
+        // ambiguous; treat as a re-arm with the new action but reset the
+        // buffer so the user can start fresh.
+        let context = if self.reader_state.is_some() {
+            HintContext::Reader
+        } else if self.focus == Pane::Comments {
+            HintContext::Comments
+        } else {
+            // Nothing to label.
+            return;
+        };
+
+        // Refuse to enter if the active registry has no links — silent
+        // no-op (a status-bar hint could be added later).
+        if self
+            .active_link_registry(context)
+            .is_none_or(|r| r.is_empty())
+        {
+            return;
+        }
+
+        self.hint_state = Some(HintState::new(action, context));
+        self.input_mode = InputMode::HintMode;
+    }
+
+    /// Cancels hint-label selection without firing an action. Restores
+    /// the input mode so navigation keys work again.
+    fn exit_hint_mode(&mut self) {
+        self.hint_state = None;
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Appends `c` to the hint prefix and resolves against the active
+    /// registry: a unique match fires the configured action and exits
+    /// hint mode; multiple matches keep narrowing; no match cancels.
+    fn hint_key(&mut self, c: char) {
+        let Some(hs) = self.hint_state.as_mut() else {
+            return;
+        };
+        hs.push(c);
+
+        let context = hs.context;
+        let action = hs.action;
+        let buffer = hs.buffer().to_string();
+
+        let resolution = self
+            .active_link_registry(context)
+            .map(|r| match r.match_prefix(&buffer) {
+                MatchResult::Unique(link) => HintResolve::Fire(link.url.clone()),
+                MatchResult::Multiple => HintResolve::Continue,
+                MatchResult::None => HintResolve::Cancel,
+            })
+            .unwrap_or(HintResolve::Cancel);
+
+        match resolution {
+            HintResolve::Continue => {}
+            HintResolve::Cancel => self.exit_hint_mode(),
+            HintResolve::Fire(url) => {
+                self.exit_hint_mode();
+                self.execute_hint_action(action, &url);
+            }
+        }
+    }
+
+    /// Returns the [`LinkRegistry`] backing the current hint context. For
+    /// reader: the article's pre-built registry. For comments: the
+    /// per-frame snapshot built when hint mode was entered (populated in
+    /// the comment-tree integration step).
+    fn active_link_registry(&self, context: HintContext) -> Option<&LinkRegistry> {
+        match context {
+            HintContext::Reader => self.reader_state.as_ref().map(|r| &r.links),
+            HintContext::Comments => None, // populated by step 9 (comment-tree integration)
+        }
+    }
+
+    /// Dispatches the configured hint action against the resolved URL.
+    /// Open/OpenInReader go through the same scheme-validating
+    /// [`open_http_url`] used elsewhere; CopyUrl emits OSC 52.
+    fn execute_hint_action(&mut self, action: HintAction, url: &str) {
+        match action {
+            HintAction::Open => open_http_url(Some(url)),
+            HintAction::OpenInReader => self.open_url_in_reader(url),
+            HintAction::CopyUrl => {
+                if let Err(e) = clipboard::copy(url) {
+                    self.error = Some(format!("Clipboard write failed: {}", e));
+                }
+            }
+        }
+    }
+
+    /// Opens a hint-resolved URL in the inline article reader (the same
+    /// flow as `p`-on-a-story, but seeded from a labeled link rather
+    /// than the focused story's URL). Drops non-http(s) schemes.
+    fn open_url_in_reader(&mut self, url: &str) {
+        let parsed = match url::Url::parse(url) {
+            Ok(p) if matches!(p.scheme(), "http" | "https") => p,
+            _ => return,
+        };
+        let domain = parsed.host_str().map(|s| s.to_string());
+        let title = parsed.path().trim_matches('/').to_string();
+        let title = if title.is_empty() {
+            domain.clone().unwrap_or_else(|| url.to_string())
+        } else {
+            title
+        };
+
+        self.reader_state = Some(ReaderState::new_loading(
+            title,
+            domain,
+            Some(url.to_string()),
+        ));
+
+        let tx = self.msg_tx.clone();
+        let width = self.terminal_width.saturating_sub(6) as usize;
+        let url_owned = url.to_string();
+        tokio::spawn(async move {
+            match fetch_and_extract_article(&url_owned, width).await {
+                Ok((lines, links)) => {
+                    let _ = tx.send(AppMessage::ArticleLoaded { lines, links });
+                }
+                Err(e) => {
+                    let _ = tx.send(AppMessage::ArticleError(e));
+                }
+            }
+        });
     }
 
     /// Handles a mouse wheel event in the pane under the cursor. When the

@@ -6,6 +6,7 @@
 mod api;
 mod app;
 mod article;
+mod clipboard;
 mod event;
 mod keys;
 mod state;
@@ -16,7 +17,7 @@ use anyhow::Result;
 use app::App;
 use crossterm::event::{KeyCode, KeyModifiers};
 use event::{Event, EventHandler};
-use keys::InputMode;
+use keys::{Action, InputMode};
 use std::time::Duration;
 
 #[tokio::main]
@@ -43,30 +44,37 @@ async fn main() -> Result<()> {
 
         // Handle events
         match events.next().await? {
-            Event::Key(key) => {
-                if app.input_mode == InputMode::SearchInput {
-                    match key.code {
-                        KeyCode::Enter => app.submit_search(),
-                        KeyCode::Esc => {
-                            if app
-                                .search_state
-                                .as_ref()
-                                .is_some_and(|ss| ss.query.is_empty())
-                            {
-                                app.cancel_search();
-                            } else {
-                                // Exit input mode but keep search results
-                                app.input_mode = InputMode::Normal;
-                            }
-                        }
-                        KeyCode::Backspace => app.search_input_backspace(),
-                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Event::Key(key) => match app.input_mode {
+                InputMode::SearchInput => match key.code {
+                    KeyCode::Enter => app.submit_search(),
+                    KeyCode::Esc => {
+                        if app
+                            .search_state
+                            .as_ref()
+                            .is_some_and(|ss| ss.query.is_empty())
+                        {
                             app.cancel_search();
+                        } else {
+                            // Exit input mode but keep search results
+                            app.input_mode = InputMode::Normal;
                         }
-                        KeyCode::Char(c) => app.search_input_char(c),
-                        _ => {}
                     }
-                } else {
+                    KeyCode::Backspace => app.search_input_backspace(),
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.cancel_search();
+                    }
+                    KeyCode::Char(c) => app.search_input_char(c),
+                    _ => {}
+                },
+                InputMode::HintMode => match key.code {
+                    KeyCode::Esc => app.dispatch(Action::ExitHintMode),
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.dispatch(Action::ExitHintMode);
+                    }
+                    KeyCode::Char(c) => app.dispatch(Action::HintKey(c)),
+                    _ => {}
+                },
+                InputMode::Normal => {
                     let action = keys::map_key(
                         key,
                         app.show_help,
@@ -76,7 +84,7 @@ async fn main() -> Result<()> {
                     );
                     app.dispatch(action);
                 }
-            }
+            },
             Event::Mouse(mouse) => {
                 use crossterm::event::{MouseButton, MouseEventKind};
                 match mouse.kind {

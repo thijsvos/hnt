@@ -1,10 +1,14 @@
 //! Article-reader overlay state.
 //!
 //! [`ReaderState`] tracks the pre-rendered [`StyledFragment`] lines,
-//! scroll position, and loading/error status for an article fetched via
-//! `crate::article`. [`StyledFragment`] is the shared line-fragment type
-//! used by both article extraction and HTML comment rendering.
+//! scroll position, loading/error status, and the
+//! [`LinkRegistry`](crate::state::link_registry::LinkRegistry) of every
+//! hyperlink in the article body — populated by `crate::article` and
+//! consulted by Quickjump's hint-mode dispatch. [`StyledFragment`] is the
+//! shared line-fragment type used by both article extraction and HTML
+//! comment rendering.
 
+use crate::state::link_registry::LinkRegistry;
 use ratatui::style::Style;
 
 /// A run of text sharing one ratatui [`Style`]. Multiple fragments compose
@@ -21,6 +25,9 @@ pub struct ReaderState {
     pub domain: Option<String>,
     pub url: Option<String>,
     pub lines: Vec<Vec<StyledFragment>>,
+    /// Every hyperlink in `lines`, with assigned hint labels. Populated by
+    /// [`Self::set_content`].
+    pub links: LinkRegistry,
     pub scroll: usize,
     pub loading: bool,
     pub error: Option<String>,
@@ -36,16 +43,18 @@ impl ReaderState {
             domain,
             url,
             lines: Vec::new(),
+            links: LinkRegistry::new(),
             scroll: 0,
             loading: true,
             error: None,
         }
     }
 
-    /// Installs loaded content, clears the loading flag and any prior
-    /// error, and resets scroll to the top.
-    pub fn set_content(&mut self, lines: Vec<Vec<StyledFragment>>) {
+    /// Installs loaded content + extracted hyperlinks, clears the loading
+    /// flag and any prior error, and resets scroll to the top.
+    pub fn set_content(&mut self, lines: Vec<Vec<StyledFragment>>, links: LinkRegistry) {
         self.lines = lines;
+        self.links = links;
         self.loading = false;
         self.error = None;
         self.scroll = 0;
@@ -129,7 +138,7 @@ mod tests {
         let mut r = ReaderState::new_loading("T".into(), None, None);
         r.error = Some("old error".into());
         r.scroll = 5;
-        r.set_content(make_lines(10));
+        r.set_content(make_lines(10), LinkRegistry::new());
         assert_eq!(r.lines.len(), 10);
         assert!(!r.loading);
         assert!(r.error.is_none());
@@ -147,7 +156,7 @@ mod tests {
     #[test]
     fn scroll_down_increments() {
         let mut r = ReaderState::new_loading("T".into(), None, None);
-        r.set_content(make_lines(20));
+        r.set_content(make_lines(20), LinkRegistry::new());
         r.scroll_down(5);
         assert_eq!(r.scroll, 5);
     }
@@ -155,7 +164,7 @@ mod tests {
     #[test]
     fn scroll_down_clamps_at_max() {
         let mut r = ReaderState::new_loading("T".into(), None, None);
-        r.set_content(make_lines(10));
+        r.set_content(make_lines(10), LinkRegistry::new());
         r.scroll_down(100);
         assert_eq!(r.scroll, 9); // max_scroll = 10 - 1
     }
@@ -170,7 +179,7 @@ mod tests {
     #[test]
     fn scroll_up_decrements() {
         let mut r = ReaderState::new_loading("T".into(), None, None);
-        r.set_content(make_lines(20));
+        r.set_content(make_lines(20), LinkRegistry::new());
         r.scroll = 10;
         r.scroll_up(3);
         assert_eq!(r.scroll, 7);
@@ -179,7 +188,7 @@ mod tests {
     #[test]
     fn scroll_up_clamps_at_zero() {
         let mut r = ReaderState::new_loading("T".into(), None, None);
-        r.set_content(make_lines(20));
+        r.set_content(make_lines(20), LinkRegistry::new());
         r.scroll = 2;
         r.scroll_up(5);
         assert_eq!(r.scroll, 0);
@@ -188,7 +197,7 @@ mod tests {
     #[test]
     fn jump_top_and_bottom() {
         let mut r = ReaderState::new_loading("T".into(), None, None);
-        r.set_content(make_lines(20));
+        r.set_content(make_lines(20), LinkRegistry::new());
         r.jump_bottom();
         assert_eq!(r.scroll, 19);
         r.jump_top();
@@ -198,14 +207,14 @@ mod tests {
     #[test]
     fn scroll_percent_at_top() {
         let mut r = ReaderState::new_loading("T".into(), None, None);
-        r.set_content(make_lines(100));
+        r.set_content(make_lines(100), LinkRegistry::new());
         assert_eq!(r.scroll_percent(), 0);
     }
 
     #[test]
     fn scroll_percent_at_bottom() {
         let mut r = ReaderState::new_loading("T".into(), None, None);
-        r.set_content(make_lines(100));
+        r.set_content(make_lines(100), LinkRegistry::new());
         r.jump_bottom();
         assert_eq!(r.scroll_percent(), 100);
     }
@@ -219,7 +228,7 @@ mod tests {
     #[test]
     fn scroll_percent_single_line() {
         let mut r = ReaderState::new_loading("T".into(), None, None);
-        r.set_content(make_lines(1));
+        r.set_content(make_lines(1), LinkRegistry::new());
         assert_eq!(r.scroll_percent(), 100); // max_scroll is 0
     }
 }
