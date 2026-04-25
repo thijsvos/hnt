@@ -58,6 +58,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             loading: app.story_state.loading,
             search_query: if search_active { search_query } else { None },
             read_store: &app.read_store,
+            pin_store: &app.pin_store,
         },
         layout.stories,
     );
@@ -192,11 +193,15 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
             Span::styled("Switch pane focus", theme::base_style()),
         ]),
         Line::from(vec![
-            Span::styled("  1-6          ", theme::accent_style()),
+            Span::styled("  1-7          ", theme::accent_style()),
             Span::styled(
-                "Switch feed (Top/New/Best/Ask/Show/Jobs)",
+                "Switch feed (Top/New/Best/Ask/Show/Jobs/Pinned)",
                 theme::base_style(),
             ),
+        ]),
+        Line::from(vec![
+            Span::styled("  b            ", theme::accent_style()),
+            Span::styled("Pin/unpin focused story (\u{2605})", theme::base_style()),
         ]),
         Line::from(vec![
             Span::styled("  /            ", theme::accent_style()),

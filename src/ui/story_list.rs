@@ -6,6 +6,7 @@
 //! timestamps.
 
 use crate::api::types::{Item, StoryId};
+use crate::state::pin_store::PinStore;
 use crate::state::read_store::ReadStore;
 use crate::ui::theme;
 use ratatui::{
@@ -26,6 +27,9 @@ pub struct StoryList<'a> {
     /// Persisted read-state: stories present here render dimmed, and those
     /// whose comment count has grown since the last visit get a `+N` badge.
     pub read_store: &'a ReadStore,
+    /// Persisted pin-store: stories present here render with a leading
+    /// `★` glyph in any feed.
+    pub pin_store: &'a PinStore,
 }
 
 impl<'a> Widget for StoryList<'a> {
@@ -93,6 +97,7 @@ impl<'a> Widget for StoryList<'a> {
             let is_selected = i == self.selected;
             let sid = StoryId(story.id);
             let is_read = self.read_store.is_read(sid);
+            let is_pinned = self.pin_store.is_pinned(sid);
             let new_comments = self
                 .read_store
                 .new_comments_since(sid, story.descendants.unwrap_or(0));
@@ -109,8 +114,12 @@ impl<'a> Widget for StoryList<'a> {
             let badge_text = badge.map(|b| format!("[{}] ", b.label()));
             let badge_width = badge_text.as_ref().map_or(0, |t| t.len());
             let new_badge_width = new_badge_text.as_ref().map_or(0, |t| t.len());
-            let max_title_width = (inner.width as usize)
-                .saturating_sub(num.len() + badge_width + new_badge_width + domain.len() + 2);
+            // ★ + space = 2 visual columns. Reserved before the badge so a
+            // pinned Ask HN story stays aligned: "  1. ★ [Ask HN] Title".
+            let pin_width = if is_pinned { 2 } else { 0 };
+            let max_title_width = (inner.width as usize).saturating_sub(
+                num.len() + pin_width + badge_width + new_badge_width + domain.len() + 2,
+            );
             let truncated_title: String = if title.chars().count() > max_title_width {
                 let truncated: String = title
                     .chars()
@@ -156,6 +165,16 @@ impl<'a> Widget for StoryList<'a> {
                     theme::dim_style()
                 },
             )];
+            if is_pinned {
+                spans.push(Span::styled(
+                    "\u{2605} ",
+                    if is_selected {
+                        theme::pinned_style().bg(theme::SURFACE)
+                    } else {
+                        theme::pinned_style()
+                    },
+                ));
+            }
             if let Some((text, b)) = badge_text.zip(badge) {
                 spans.push(Span::styled(text, theme::badge_style(b)));
             }

@@ -7,12 +7,14 @@
 //! overlay, [`search_state::SearchState`] for the Algolia search flow,
 //! [`prior_state::PriorDiscussionsState`] for the prior-submissions
 //! overlay, [`read_store::ReadStore`] for persisted read-state tracking,
-//! and [`link_registry::LinkRegistry`] + [`hint_state::HintState`] for the
-//! Quickjump label-hint mode.
+//! [`pin_store::PinStore`] for persisted pinned stories with
+//! resume-position snapshots, and [`link_registry::LinkRegistry`] +
+//! [`hint_state::HintState`] for the Quickjump label-hint mode.
 
 pub mod comment_state;
 pub mod hint_state;
 pub mod link_registry;
+pub mod pin_store;
 pub mod prior_state;
 pub mod read_store;
 pub mod reader_state;

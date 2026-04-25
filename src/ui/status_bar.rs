@@ -92,7 +92,7 @@ impl<'a> Widget for StatusBar<'a> {
                 ));
             } else {
                 spans.push(Span::styled(
-                    "j/k:nav tab:switch enter:open 1-6:feed /:search o:browser p:read h:prior r:refresh ?:help q:quit ",
+                    "j/k:nav tab:switch enter:open 1-7:feed b:pin /:search o:browser p:read h:prior r:refresh ?:help q:quit ",
                     theme::status_style(),
                 ));
             }
