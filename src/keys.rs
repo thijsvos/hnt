@@ -1,9 +1,12 @@
 //! Keybinding → [`Action`] translation.
 //!
-//! [`map_key`] is a pure, context-aware dispatch: search-input mode
-//! suppresses normal keys, the help overlay eats any keypress, and
-//! the reader overlay has its own reduced map. The [`InputMode`] enum
-//! distinguishes character-capturing search input from normal navigation.
+//! [`map_key`] is a pure, context-aware dispatch: search-input and
+//! hint-mode both suppress normal keys (`main.rs` routes the raw
+//! characters); the help overlay eats any keypress; the article-reader
+//! and prior-discussions overlays each have their own reduced keymap,
+//! with the article reader taking precedence when both are open. The
+//! [`InputMode`] enum distinguishes character-capturing search input
+//! and Quickjump hint selection from normal navigation.
 
 use crate::state::hint_state::HintAction;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

@@ -2,7 +2,7 @@
 //!
 //! [`ReaderState`] tracks the pre-rendered [`StyledFragment`] lines,
 //! scroll position, loading/error status, and the
-//! [`LinkRegistry`](crate::state::link_registry::LinkRegistry) of every
+//! [`LinkRegistry`] of every
 //! hyperlink in the article body — populated by `crate::article` and
 //! consulted by Quickjump's hint-mode dispatch. [`StyledFragment`] is the
 //! shared line-fragment type used by both article extraction and HTML

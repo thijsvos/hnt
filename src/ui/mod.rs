@@ -148,7 +148,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 }
 
 /// Draws the centered modal help overlay listing every keybinding.
-/// Bounded to at most 50×22 cells; auto-shrinks on small terminals.
+/// Bounded to at most 56×28 cells; auto-shrinks on small terminals.
 fn render_help_overlay(frame: &mut Frame, area: Rect) {
     let width = 56u16.min(area.width.saturating_sub(4));
     let height = 28u16.min(area.height.saturating_sub(4));
