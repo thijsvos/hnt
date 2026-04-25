@@ -168,12 +168,7 @@ impl ReadStore {
     /// comments. A shrinking count (rare — deletions) is clamped to `None`.
     pub fn new_comments_since(&self, id: StoryId, current_count: i64) -> Option<i64> {
         let entry = self.entries.get(&id)?;
-        let delta = current_count - entry.last_comment_count;
-        if delta > 0 {
-            Some(delta)
-        } else {
-            None
-        }
+        Some(current_count - entry.last_comment_count).filter(|&d| d > 0)
     }
 
     /// Drops entries with the lowest `last_seen_at` until the store is

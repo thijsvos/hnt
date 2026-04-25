@@ -53,6 +53,7 @@ impl FlatComment {
 /// [`CommentTreeState::set_comments`] replaces the tree;
 /// [`CommentTreeState::insert_children`] splices in subtrees as progressive
 /// loads complete.
+#[derive(Default)]
 pub struct CommentTreeState {
     pub comments: Vec<FlatComment>,
     /// Row-based scroll offset, updated by the renderer.
@@ -77,17 +78,7 @@ pub struct CommentTreeState {
 impl CommentTreeState {
     /// Constructs an empty state with no loaded story and no pending fetches.
     pub fn new() -> Self {
-        Self {
-            comments: Vec::new(),
-            scroll: 0,
-            selected: 0,
-            collapsed: HashSet::new(),
-            loading: false,
-            story: None,
-            pending_root_ids: HashSet::new(),
-            row_map: Vec::new(),
-            story_text_cache: None,
-        }
+        Self::default()
     }
 
     /// Returns the plain-text rendering of the current story's text at
