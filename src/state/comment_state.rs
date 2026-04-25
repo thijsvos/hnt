@@ -139,6 +139,7 @@ impl CommentTreeState {
     /// comment, and yields the indices (into `self.comments`) that should
     /// be shown. Allocation-free — prefer this for `.count()` /
     /// `.nth(...)` over the `Vec`-returning [`Self::visible_indices`].
+    #[must_use]
     pub fn visible_indices_iter(&self) -> impl Iterator<Item = usize> + '_ {
         let mut skip_depth: Option<usize> = None;
         self.comments
@@ -161,6 +162,7 @@ impl CommentTreeState {
     /// `Vec`-backed form of [`Self::visible_indices_iter`] — used by the
     /// renderer which needs to index the list as `&[usize]` for scroll
     /// calculations.
+    #[must_use]
     pub fn visible_indices(&self) -> Vec<usize> {
         self.visible_indices_iter().collect()
     }
@@ -168,6 +170,7 @@ impl CommentTreeState {
     /// Count of currently-visible comments. Replaces a `Vec`-allocating
     /// `visible_comments().len()` in navigation hot paths (every
     /// keystroke).
+    #[must_use]
     pub fn visible_len(&self) -> usize {
         self.visible_indices_iter().count()
     }

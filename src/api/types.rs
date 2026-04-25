@@ -123,6 +123,7 @@ pub enum ItemType {
 /// A classification label shown next to a story title. See [`Item::badge`]
 /// for how values are derived.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum StoryBadge {
     Ask,
     Show,
@@ -220,6 +221,7 @@ fn url_domain(raw: &str) -> Option<String> {
 /// The six Hacker News feeds the app can display; mirrors the Firebase
 /// endpoints exposed via [`FeedKind::endpoint`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FeedKind {
     Top,
     New,

@@ -63,6 +63,7 @@ enum HintResolve {
 /// `ArticleLoaded`, `PriorDiscussionsLoaded`), a multi-step progressive
 /// load (`CommentsLoaded` → zero or more `CommentsAppended` →
 /// `CommentsDone`), or a terminal error (`Error`, `ArticleError`).
+#[non_exhaustive]
 pub enum AppMessage {
     /// Initial or paginated batch of stories finished loading.
     StoriesLoaded {

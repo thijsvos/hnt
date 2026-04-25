@@ -63,6 +63,7 @@ impl PriorDiscussionsState {
     }
 
     /// Returns the currently-selected submission, if any.
+    #[must_use]
     pub fn selected_submission(&self) -> Option<&Item> {
         self.submissions.get(self.selected)
     }
