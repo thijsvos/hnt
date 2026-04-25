@@ -200,7 +200,9 @@ fn markdown_to_styled_lines(text: &str, width: usize) -> Vec<Vec<StyledFragment>
 pub async fn fetch_and_extract_article(
     url: &str,
     width: usize,
-) -> Result<(Vec<Vec<StyledFragment>>, LinkRegistry), String> {
+) -> anyhow::Result<(Vec<Vec<StyledFragment>>, LinkRegistry)> {
+    use anyhow::{anyhow, bail, Context};
+
     let client = reqwest::Client::builder()
         .user_agent(concat!(
             "Mozilla/5.0 (compatible; hnt/",
@@ -208,8 +210,7 @@ pub async fn fetch_and_extract_article(
             ")"
         ))
         .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
+        .build()?;
 
     // For GitHub/GitLab repo pages, try fetching the README directly
     if let Some((readme_text, is_markdown)) = try_fetch_readme(&client, url).await {
@@ -237,15 +238,15 @@ pub async fn fetch_and_extract_article(
         .get(url)
         .send()
         .await
-        .map_err(|e| format!("Failed to fetch: {}", e))?;
+        .context("Failed to fetch")?;
 
     if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status()));
+        bail!("HTTP {}", resp.status());
     }
 
     if let Some(len) = resp.content_length() {
         if len > MAX_RESPONSE_BYTES as u64 {
-            return Err("Article too large (>5MB)".to_string());
+            bail!("Article too large (>5MB)");
         }
     }
 
@@ -262,19 +263,16 @@ pub async fn fetch_and_extract_article(
         && !content_type.contains("text/plain")
         && !content_type.contains("application/xhtml")
     {
-        return Err(format!(
+        bail!(
             "Not an article (content-type: {})",
             content_type.split(';').next().unwrap_or(&content_type)
-        ));
+        );
     }
 
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("Failed to read response: {}", e))?;
+    let bytes = resp.bytes().await.context("Failed to read response")?;
 
     if bytes.len() > MAX_RESPONSE_BYTES {
-        return Err("Article too large (>5MB)".to_string());
+        bail!("Article too large (>5MB)");
     }
 
     // Run readability extraction in a blocking task (CPU-bound)
@@ -282,7 +280,7 @@ pub async fn fetch_and_extract_article(
     let width_copy = width;
     tokio::task::spawn_blocking(move || extract_article_content(&bytes, &url_string, width_copy))
         .await
-        .map_err(|e| format!("Processing error: {}", e))?
+        .map_err(|e| anyhow!("Processing error: {}", e))?
 }
 
 /// Runs readability extraction + html2text rich rendering
@@ -292,8 +290,9 @@ fn extract_article_content(
     html_bytes: &[u8],
     url_str: &str,
     width: usize,
-) -> Result<(Vec<Vec<StyledFragment>>, LinkRegistry), String> {
-    let parsed_url = url::Url::parse(url_str).map_err(|e| format!("Invalid URL: {}", e))?;
+) -> anyhow::Result<(Vec<Vec<StyledFragment>>, LinkRegistry)> {
+    use anyhow::Context;
+    let parsed_url = url::Url::parse(url_str).context("Invalid URL")?;
 
     // Try readability extraction first, fall back to full HTML if it produces no content
     let tagged_lines = {

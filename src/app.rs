@@ -504,7 +504,7 @@ impl App {
                     if !query.is_empty() {
                         self.story_state.reset();
                         self.comment_state.reset();
-                        self.spawn_search(&query, 0, LoadMode::Replace);
+                        self.spawn_search(query, 0, LoadMode::Replace);
                     }
                 } else {
                     self.story_state.reset();
@@ -673,7 +673,7 @@ impl App {
         self.input_mode = InputMode::Normal;
         self.story_state.reset();
         self.comment_state.reset();
-        self.spawn_search(&query, 0, LoadMode::Replace);
+        self.spawn_search(query, 0, LoadMode::Replace);
     }
 
     /// Exits search mode, clears the cache, and reloads the current feed.
@@ -702,11 +702,12 @@ impl App {
 
     /// Kicks off an async Algolia search. [`LoadMode::Append`] extends the
     /// current result list (lazy pagination); [`LoadMode::Replace`] replaces it.
-    fn spawn_search(&mut self, query: &str, page: usize, mode: LoadMode) {
+    /// Takes `query: String` by value so callers can hand ownership in once
+    /// instead of cloning at the call site and again inside this function.
+    fn spawn_search(&mut self, query: String, page: usize, mode: LoadMode) {
         self.story_state.loading = true;
         let client = self.client.clone();
         let tx = self.msg_tx.clone();
-        let query = query.to_string();
         let page_size = self.page_size();
 
         tokio::spawn(async move {
@@ -934,7 +935,7 @@ impl App {
                     let _ = tx.send(AppMessage::ArticleLoaded { lines, links });
                 }
                 Err(e) => {
-                    let _ = tx.send(AppMessage::ArticleError(e));
+                    let _ = tx.send(AppMessage::ArticleError(format!("{e:#}")));
                 }
             }
         });
@@ -983,7 +984,7 @@ impl App {
                 ss.current_page += 1;
                 let query = ss.query.clone();
                 let page = ss.current_page;
-                self.spawn_search(&query, page, LoadMode::Append);
+                self.spawn_search(query, page, LoadMode::Append);
             }
         } else if self.story_state.needs_more() {
             self.story_state.loading = true;
@@ -1206,7 +1207,7 @@ impl App {
                     let _ = tx.send(AppMessage::ArticleLoaded { lines, links });
                 }
                 Err(e) => {
-                    let _ = tx.send(AppMessage::ArticleError(e));
+                    let _ = tx.send(AppMessage::ArticleError(format!("{e:#}")));
                 }
             }
         });
