@@ -169,10 +169,7 @@ impl<'a> Widget for CommentTree<'a> {
                         buf.set_line(
                             inner.left(),
                             inner.top() + header_height,
-                            &Line::from(Span::styled(
-                                format!("  {}", line),
-                                theme::base_style(),
-                            )),
+                            &Line::from(Span::styled(format!("  {}", line), theme::base_style())),
                             inner.width,
                         );
                         header_height += 1;
