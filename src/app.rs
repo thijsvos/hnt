@@ -229,6 +229,19 @@ impl App {
         self.spawn_load_stories(LoadMode::Replace);
     }
 
+    /// Common housekeeping after either a feed page or a search page lands:
+    /// install/append the new stories, clear the loading flag, clear the
+    /// error banner. Auto-load and search-pagination bookkeeping are
+    /// caller-specific and stay at the call sites.
+    fn apply_loaded_stories(&mut self, stories: Vec<Item>, mode: LoadMode) {
+        match mode {
+            LoadMode::Append => self.story_state.stories.extend(stories),
+            LoadMode::Replace => self.story_state.stories = stories,
+        }
+        self.story_state.loading = false;
+        self.error = None;
+    }
+
     /// Processes any pending async messages (non-blocking).
     pub fn process_messages(&mut self) {
         while let Ok(msg) = self.msg_rx.try_recv() {
@@ -238,15 +251,10 @@ impl App {
                     all_ids,
                     mode,
                 } => {
-                    match mode {
-                        LoadMode::Append => self.story_state.stories.extend(stories),
-                        LoadMode::Replace => self.story_state.stories = stories,
-                    }
+                    self.apply_loaded_stories(stories, mode);
                     if let Some(ids) = all_ids {
                         self.story_state.all_ids = ids;
                     }
-                    self.story_state.loading = false;
-                    self.error = None;
                     // Auto-load comments for the first story on initial load
                     if matches!(mode, LoadMode::Replace)
                         && !self.story_state.stories.is_empty()
@@ -262,12 +270,7 @@ impl App {
                     total_hits,
                     mode,
                 } => {
-                    match mode {
-                        LoadMode::Append => self.story_state.stories.extend(stories),
-                        LoadMode::Replace => self.story_state.stories = stories,
-                    }
-                    self.story_state.loading = false;
-                    self.error = None;
+                    self.apply_loaded_stories(stories, mode);
                     if let Some(ref mut ss) = self.search_state {
                         ss.total_pages = total_pages;
                         ss.total_hits = total_hits;
@@ -352,19 +355,10 @@ impl App {
         // Hint-mode actions short-circuit ahead of every overlay route
         // because the user is mid-selection and any keypress should be
         // narrowing labels, not mutating panes underneath.
-        match &action {
-            Action::HintKey(c) => {
-                self.hint_key(*c);
-                return;
-            }
-            Action::ExitHintMode => {
-                self.exit_hint_mode();
-                return;
-            }
-            Action::EnterHintMode(hint_action) => {
-                self.enter_hint_mode(*hint_action);
-                return;
-            }
+        match action {
+            Action::HintKey(c) => return self.hint_key(c),
+            Action::ExitHintMode => return self.exit_hint_mode(),
+            Action::EnterHintMode(a) => return self.enter_hint_mode(a),
             _ => {}
         }
 
@@ -788,10 +782,14 @@ impl App {
     /// query is already in flight. Failures silently no-op — prior-discussions
     /// is optional UX, not critical-path.
     fn spawn_prior_discussions(&mut self, story_id: StoryId, url: &str) {
-        if self.prior_results.contains_key(&story_id) || self.prior_in_flight.contains(&story_id) {
+        if self.prior_results.contains_key(&story_id) {
             return;
         }
-        self.prior_in_flight.insert(story_id);
+        // HashSet::insert returns false if the value was already present —
+        // single-lookup membership-check + insert.
+        if !self.prior_in_flight.insert(story_id) {
+            return;
+        }
 
         let client = self.client.clone();
         let tx = self.msg_tx.clone();
@@ -901,14 +899,11 @@ impl App {
     /// locally. For URL stories, validates the http(s) scheme and then
     /// spawns a fetch + readability extraction task.
     fn open_article_reader(&mut self) {
-        let story = match self.focus {
+        let Some(story) = (match self.focus {
             Pane::Stories => self.story_state.selected_story().cloned(),
             Pane::Comments => self.comment_state.story.clone(),
-        };
-
-        let story = match story {
-            Some(s) => s,
-            None => return,
+        }) else {
+            return;
         };
 
         let title = story.title.clone().unwrap_or_default();
