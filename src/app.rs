@@ -74,9 +74,13 @@ pub enum AppMessage {
         mode: LoadMode,
     },
     /// Root-level comments for a story are available; deeper descendants
-    /// still pending.
+    /// still pending. `story` is boxed so this variant doesn't dominate
+    /// the enum's size — `Vec<CommentWithDepth>` and `HashSet<CommentId>`
+    /// only contribute their headers (24/48 bytes), not their contents,
+    /// so an inline `Item` (~150 bytes) would trip
+    /// `clippy::large_enum_variant`.
     CommentsLoaded {
-        story: Item,
+        story: Box<Item>,
         comments: Vec<CommentWithDepth>,
         pending_roots: HashSet<CommentId>,
     },
@@ -278,7 +282,7 @@ impl App {
                     comments,
                     pending_roots,
                 } => {
-                    self.comment_state.story = Some(story);
+                    self.comment_state.story = Some(*story);
                     self.comment_state.set_comments(comments);
                     self.comment_state.pending_root_ids = pending_roots;
                     // Still loading children in background
@@ -626,7 +630,7 @@ impl App {
                 })
                 .collect();
             let _ = tx.send(AppMessage::CommentsLoaded {
-                story,
+                story: Box::new(story),
                 comments: root_comments,
                 pending_roots,
             });
@@ -867,7 +871,7 @@ impl App {
                     .collect();
 
                 let _ = tx.send(AppMessage::CommentsLoaded {
-                    story,
+                    story: Box::new(story),
                     comments: root_comments,
                     pending_roots,
                 });
