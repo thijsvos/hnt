@@ -18,9 +18,15 @@ const BASE64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123
 
 /// Sends `text` to the host terminal's system clipboard via OSC 52.
 ///
-/// Returns the underlying I/O error if the write or flush fails. In
-/// practice the error is non-fatal — the caller should surface it in the
-/// status bar but keep running.
+/// The escape sequence is written to stdout and the buffer flushed
+/// immediately. Works through SSH because the terminal — not the remote
+/// process — handles the clipboard write.
+///
+/// # Errors
+///
+/// Returns the underlying [`io::Error`] if the write or flush fails.
+/// In practice the error is non-fatal — the caller should surface it
+/// in the status bar but keep running.
 pub fn copy(text: &str) -> io::Result<()> {
     let encoded = base64_encode(text.as_bytes());
     let mut out = io::stdout().lock();

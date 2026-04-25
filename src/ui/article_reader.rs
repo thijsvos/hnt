@@ -188,15 +188,18 @@ fn render_content(frame: &mut Frame, area: Rect, reader: &ReaderState) -> Rect {
 }
 
 /// Paints Quickjump hint labels atop visible hyperlinks. Each label
-/// renders at the link's first column in inverse video; labels whose full
-/// text no longer starts with the typed prefix are dimmed instead so the
-/// user can see what they've ruled out without having labels disappear.
+/// renders at the link's first column with a high-contrast highlight
+/// (HN-orange background); labels whose full text no longer starts with
+/// the typed prefix dim instead, so the user can see what they've
+/// ruled out without having labels disappear.
 ///
 /// Column positioning uses `chars().count()` rather than full unicode
 /// width — adequate for the URLs and ASCII link text typical of news
-/// articles; wide-char link anchors (CJK, emoji) may be off by a column.
-/// Wrapped lines (rare; html2text already wrapped to width) place the
-/// label on the unwrapped logical row.
+/// articles; wide-char link anchors (CJK, emoji) may be off by a
+/// column. Labels paint at the html2text logical row index, so any
+/// further re-wrap by ratatui's `Paragraph` (e.g. when the terminal is
+/// narrower than the width html2text was given) misplaces labels by
+/// the number of intervening wraps.
 fn paint_hint_labels(frame: &mut Frame, inner: Rect, reader: &ReaderState, hint: &HintState) {
     let buf = frame.buffer_mut();
     let scroll = reader.scroll;

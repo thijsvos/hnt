@@ -43,10 +43,10 @@ pub enum LoadMode {
     Append,
 }
 
-/// Tri-state outcome of a [`crate::state::link_registry::LinkRegistry::match_prefix`]
-/// resolved against the current hint buffer. Carries the resolved URL by
-/// value so the borrow on the registry can be released before mutating
-/// `self`.
+/// Tri-state outcome of a hint-buffer match against the active registry.
+///
+/// Carries the resolved URL by value so the borrow on the registry can
+/// be released before mutating `self`. See [`LinkRegistry::match_prefix`].
 enum HintResolve {
     /// Multiple labels still match — keep accepting characters.
     Continue,
@@ -58,11 +58,11 @@ enum HintResolve {
 
 /// Messages sent from async tasks back to the main loop.
 ///
-/// Variants correspond to the lifecycle of each async operation: a one-shot
-/// load (`StoriesLoaded`, `SearchResultsLoaded`, `ArticleLoaded`), a
-/// multi-step progressive load (`CommentsLoaded` → zero or more
-/// `CommentsAppended` → `CommentsDone`), or a terminal error (`Error`,
-/// `ArticleError`).
+/// Variants correspond to the lifecycle of each async operation: a
+/// one-shot load (`StoriesLoaded`, `SearchResultsLoaded`,
+/// `ArticleLoaded`, `PriorDiscussionsLoaded`), a multi-step progressive
+/// load (`CommentsLoaded` → zero or more `CommentsAppended` →
+/// `CommentsDone`), or a terminal error (`Error`, `ArticleError`).
 pub enum AppMessage {
     /// Initial or paginated batch of stories finished loading.
     StoriesLoaded {
@@ -331,10 +331,19 @@ impl App {
 
     /// Applies an [`Action`] from the keybinding layer.
     ///
-    /// Routing is context-sensitive: when the article reader is open, a
-    /// restricted set of actions drives the reader and others are consumed.
-    /// Otherwise the action mutates the focused pane's state or spawns an
-    /// async task (feed switch, refresh, comment load, search).
+    /// Routing is context-sensitive, in priority order:
+    ///
+    /// 1. Hint actions ([`Action::EnterHintMode`] / [`Action::HintKey`] /
+    ///    [`Action::ExitHintMode`]) short-circuit ahead of every overlay
+    ///    so a mid-selection keypress never leaks through to the
+    ///    underlying pane.
+    /// 2. When the article-reader overlay is open, a restricted set of
+    ///    navigation actions drives the reader; others are consumed.
+    /// 3. When the prior-discussions overlay is open, a reduced action
+    ///    set drives the overlay; others are consumed.
+    /// 4. Otherwise the action mutates the focused pane's state or
+    ///    spawns an async task (feed switch, refresh, comment load,
+    ///    search).
     pub fn dispatch(&mut self, action: Action) {
         // Hint-mode actions short-circuit ahead of every overlay route
         // because the user is mid-selection and any keypress should be
@@ -1069,7 +1078,9 @@ impl App {
 
     /// Enters Quickjump hint-label mode. Determines context from current
     /// app state — reader if the article-reader overlay is open, comments
-    /// if the comments pane is focused. No-op if no surface has links.
+    /// if the comments pane is focused. No-op when the active surface has
+    /// no labeled links (currently always the case for comments — see
+    /// [`Self::active_link_registry`]).
     fn enter_hint_mode(&mut self, action: HintAction) {
         // Already in hint mode? Re-entering with a different action is
         // ambiguous; treat as a re-arm with the new action but reset the
@@ -1135,14 +1146,17 @@ impl App {
         }
     }
 
-    /// Returns the [`LinkRegistry`] backing the current hint context. For
-    /// reader: the article's pre-built registry. For comments: the
-    /// per-frame snapshot built when hint mode was entered (populated in
-    /// the comment-tree integration step).
+    /// Returns the [`LinkRegistry`] backing the current hint context.
+    ///
+    /// For the reader, this is the article's pre-built registry. The
+    /// comments path is currently a stub returning `None` — the per-frame
+    /// registry build is scoped to a follow-up PR. Hint mode entered from
+    /// the comments pane therefore degrades to a no-op via
+    /// [`HintResolve::Cancel`] on the first key.
     fn active_link_registry(&self, context: HintContext) -> Option<&LinkRegistry> {
         match context {
             HintContext::Reader => self.reader_state.as_ref().map(|r| &r.links),
-            HintContext::Comments => None, // populated by step 9 (comment-tree integration)
+            HintContext::Comments => None, // TODO: build registry from visible comments on hint-mode entry
         }
     }
 

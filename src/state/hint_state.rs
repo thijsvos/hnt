@@ -18,7 +18,7 @@ pub enum HintAction {
 
 /// Which surface holds the labeled links.
 ///
-/// The article reader carries its own [`crate::state::link_registry::LinkRegistry`]
+/// The article reader carries its own [`LinkRegistry`](crate::state::link_registry::LinkRegistry)
 /// alongside its content; the comment-tree registry is built on demand
 /// when the user enters hint mode there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
