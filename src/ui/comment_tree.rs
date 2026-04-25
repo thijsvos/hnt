@@ -59,17 +59,18 @@ impl<'a> Widget for CommentTree<'a> {
             theme::dim_style()
         };
 
-        let title_text = if let Some(story) = &self.state.story {
-            if let Some(badge) = story.badge() {
+        let title_span = if let Some(story) = &self.state.story {
+            let label = if let Some(badge) = story.badge() {
                 format!(" [{}] {} ", badge.label(), story.display_title())
             } else {
                 format!(" {} ", story.display_title())
-            }
+            };
+            Span::styled(label, theme::title_style())
         } else {
-            " Comments ".to_string()
+            Span::styled(" Comments ", theme::title_style())
         };
 
-        let mut title_spans = vec![Span::styled(title_text, theme::title_style())];
+        let mut title_spans = vec![title_span];
         if self.prior_count > 0 {
             title_spans.push(Span::styled(
                 format!("· {} prior (h) ", self.prior_count),
@@ -114,84 +115,82 @@ impl<'a> Widget for CommentTree<'a> {
             return;
         }
 
-        // Render story meta header (fixed, not scrolled)
+        // Render story meta header (fixed, not scrolled).
+        // Snapshot the meta-line scalars first so the immutable borrow on
+        // self.state.story can be released before story_plain_text mutably
+        // borrows self.state.story_text_cache. This lets the body lines flow
+        // straight from the cache as `&str`, eliminating the per-frame body
+        // text clone the old two-step `.map(str::to_owned)` +
+        // `.clone().unwrap_or_default()` dance needed.
         let mut header_height: u16 = 0;
 
-        let story_plain = self
-            .state
-            .story_plain_text(inner.width as usize)
-            .map(str::to_owned);
-
-        if let Some(story) = &self.state.story {
-            if let Some(_text) = &story.text {
-                let plain = story_plain.clone().unwrap_or_default();
-                let meta = format!(
+        let meta_snapshot = self.state.story.as_ref().map(|s| {
+            let has_text = s.text.is_some();
+            let line = if has_text {
+                format!(
                     "  {} pts | {} | {} comments",
-                    story.score.unwrap_or(0),
-                    story.by.as_deref().unwrap_or("?"),
-                    story.descendants.unwrap_or(0),
-                );
-                buf.set_line(
-                    inner.left(),
-                    inner.top() + header_height,
-                    &Line::from(Span::styled(meta, theme::meta_style())),
-                    inner.width,
-                );
-                header_height += 1;
-
-                for line in plain.lines().take((inner.height / 4) as usize) {
-                    if header_height >= inner.height {
-                        break;
-                    }
-                    buf.set_line(
-                        inner.left(),
-                        inner.top() + header_height,
-                        &Line::from(Span::styled(format!("  {}", line), theme::base_style())),
-                        inner.width,
-                    );
-                    header_height += 1;
-                }
-
-                if header_height < inner.height {
-                    buf.set_line(
-                        inner.left(),
-                        inner.top() + header_height,
-                        &Line::from(Span::styled(
-                            "  ────────────────────────────────────────",
-                            theme::dim_style(),
-                        )),
-                        inner.width,
-                    );
-                    header_height += 1;
-                }
+                    s.score.unwrap_or(0),
+                    s.by.as_deref().unwrap_or("?"),
+                    s.descendants.unwrap_or(0),
+                )
             } else {
-                let meta = format!(
+                format!(
                     "  {} pts | {} | {} comments | {}",
-                    story.score.unwrap_or(0),
-                    story.by.as_deref().unwrap_or("?"),
-                    story.descendants.unwrap_or(0),
-                    story.url.as_deref().unwrap_or(""),
-                );
+                    s.score.unwrap_or(0),
+                    s.by.as_deref().unwrap_or("?"),
+                    s.descendants.unwrap_or(0),
+                    s.url.as_deref().unwrap_or(""),
+                )
+            };
+            (has_text, line)
+        });
+
+        let story_plain: Option<&str> = if meta_snapshot.as_ref().is_some_and(|(t, _)| *t) {
+            self.state.story_plain_text(inner.width as usize)
+        } else {
+            None
+        };
+
+        if let Some((has_text, meta_line)) = meta_snapshot {
+            buf.set_line(
+                inner.left(),
+                inner.top() + header_height,
+                &Line::from(Span::styled(meta_line, theme::meta_style())),
+                inner.width,
+            );
+            header_height += 1;
+
+            if has_text {
+                if let Some(plain) = story_plain {
+                    for line in plain.lines().take((inner.height / 4) as usize) {
+                        if header_height >= inner.height {
+                            break;
+                        }
+                        buf.set_line(
+                            inner.left(),
+                            inner.top() + header_height,
+                            &Line::from(Span::styled(
+                                format!("  {}", line),
+                                theme::base_style(),
+                            )),
+                            inner.width,
+                        );
+                        header_height += 1;
+                    }
+                }
+            }
+
+            if header_height < inner.height {
                 buf.set_line(
                     inner.left(),
                     inner.top() + header_height,
-                    &Line::from(Span::styled(meta, theme::meta_style())),
+                    &Line::from(Span::styled(
+                        "  ────────────────────────────────────────",
+                        theme::dim_style(),
+                    )),
                     inner.width,
                 );
                 header_height += 1;
-
-                if header_height < inner.height {
-                    buf.set_line(
-                        inner.left(),
-                        inner.top() + header_height,
-                        &Line::from(Span::styled(
-                            "  ────────────────────────────────────────",
-                            theme::dim_style(),
-                        )),
-                        inner.width,
-                    );
-                    header_height += 1;
-                }
             }
         }
 
