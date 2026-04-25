@@ -228,16 +228,20 @@ impl HnClient {
 
             let items = self.fetch_items(ids).await;
 
-            for item in items.into_iter().flatten() {
+            for mut item in items.into_iter().flatten() {
                 if item.is_dead_or_deleted() {
                     continue;
                 }
-                let kids = item.kids.clone().unwrap_or_default();
+                // Move kids out of `item` before pushing — avoids a Vec<u64>
+                // clone per comment per recursion level.
+                let item_kids = std::mem::take(&mut item.kids);
                 result.push(CommentWithDepth { item, depth });
 
-                if !kids.is_empty() {
-                    self.fetch_children_recursive(&kids, depth + 1, max_depth, result)
-                        .await;
+                if let Some(kids) = item_kids {
+                    if !kids.is_empty() {
+                        self.fetch_children_recursive(&kids, depth + 1, max_depth, result)
+                            .await;
+                    }
                 }
             }
         })

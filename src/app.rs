@@ -74,7 +74,11 @@ pub enum AppMessage {
         mode: LoadMode,
     },
     /// Root-level comments for a story are available; deeper descendants
-    /// still pending.
+    /// still pending. `story` is boxed so this variant doesn't dominate
+    /// the enum's size — `Vec<CommentWithDepth>` and `HashSet<CommentId>`
+    /// only contribute their headers (24/48 bytes), not their contents,
+    /// so an inline `Item` (~150 bytes) would trip
+    /// `clippy::large_enum_variant`.
     CommentsLoaded {
         story: Box<Item>,
         comments: Vec<CommentWithDepth>,
@@ -589,18 +593,18 @@ impl App {
 
         let client = self.client.clone();
         let tx = self.msg_tx.clone();
-        let story = item.clone();
-        let kids = item.kids.clone().unwrap_or_default();
         let needs_full_fetch = item.kids.is_none();
+        let kids = item.kids.as_deref().unwrap_or(&[]).to_vec();
+        let story = item;
 
         tokio::spawn(async move {
             // Search results arrive with kids == None — fetch the full item to
             // populate them. TryFrom<SearchHit> filters out id=0 upstream, so
             // no sentinel guard is needed. `fetch_item` returns Arc<Item>,
-            // so we clone the kids Vec instead of moving out.
+            // so we copy the kids slice into an owned Vec.
             let kids = if needs_full_fetch {
                 match client.fetch_item(story.id).await {
-                    Ok(Some(full_item)) => full_item.kids.clone().unwrap_or_default(),
+                    Ok(Some(full_item)) => full_item.kids.as_deref().unwrap_or(&[]).to_vec(),
                     _ => kids,
                 }
             } else {
@@ -618,17 +622,19 @@ impl App {
                 .filter(|c| c.item.kids.as_ref().is_some_and(|k| !k.is_empty()))
                 .map(|c| CommentId(c.item.id))
                 .collect();
+            let child_specs: Vec<(CommentId, Vec<u64>)> = root_comments
+                .iter()
+                .filter_map(|c| {
+                    let kids = c.item.kids.as_deref()?;
+                    (!kids.is_empty()).then(|| (CommentId(c.item.id), kids.to_vec()))
+                })
+                .collect();
             let _ = tx.send(AppMessage::CommentsLoaded {
-                story: Box::new(story.clone()),
-                comments: root_comments.clone(),
+                story: Box::new(story),
+                comments: root_comments,
                 pending_roots,
             });
-            for c in &root_comments {
-                let child_ids = c.item.kids.clone().unwrap_or_default();
-                if child_ids.is_empty() {
-                    continue;
-                }
-                let parent_id = CommentId(c.item.id);
+            for (parent_id, child_ids) in child_specs {
                 let mut children = Vec::new();
                 client
                     .fetch_children_recursive(&child_ids, 1, MAX_COMMENT_DEPTH, &mut children)
@@ -822,17 +828,16 @@ impl App {
 
             let client = self.client.clone();
             let tx = self.msg_tx.clone();
-            let story_clone = story.clone();
             let needs_full_fetch = story.kids.is_none();
-            let kids = story.kids.clone().unwrap_or_default();
+            let kids = story.kids.as_deref().unwrap_or(&[]).to_vec();
 
             tokio::spawn(async move {
                 // For search results, kids is None — fetch the full item first.
                 // TryFrom<SearchHit> filters out id=0 upstream. `fetch_item`
-                // returns Arc<Item>, so clone the kids Vec instead of moving.
+                // returns Arc<Item>, so we copy the kids slice into an owned Vec.
                 let kids = if needs_full_fetch {
-                    match client.fetch_item(story_clone.id).await {
-                        Ok(Some(full_item)) => full_item.kids.clone().unwrap_or_default(),
+                    match client.fetch_item(story.id).await {
+                        Ok(Some(full_item)) => full_item.kids.as_deref().unwrap_or(&[]).to_vec(),
                         _ => kids,
                     }
                 } else {
@@ -854,19 +859,25 @@ impl App {
                     .map(|c| CommentId(c.item.id))
                     .collect();
 
+                // Extract (parent, child_ids) pairs before moving root_comments
+                // into the message — avoids cloning the full Vec just to keep
+                // the iterator alive.
+                let child_specs: Vec<(CommentId, Vec<u64>)> = root_comments
+                    .iter()
+                    .filter_map(|c| {
+                        let kids = c.item.kids.as_deref()?;
+                        (!kids.is_empty()).then(|| (CommentId(c.item.id), kids.to_vec()))
+                    })
+                    .collect();
+
                 let _ = tx.send(AppMessage::CommentsLoaded {
-                    story: Box::new(story_clone),
-                    comments: root_comments.clone(),
+                    story: Box::new(story),
+                    comments: root_comments,
                     pending_roots,
                 });
 
                 // Step 2: For each root comment, fetch its children progressively
-                for c in &root_comments {
-                    let child_ids = c.item.kids.clone().unwrap_or_default();
-                    if child_ids.is_empty() {
-                        continue;
-                    }
-                    let parent_id = CommentId(c.item.id);
+                for (parent_id, child_ids) in child_specs {
                     let mut children = Vec::new();
                     client
                         .fetch_children_recursive(&child_ids, 1, MAX_COMMENT_DEPTH, &mut children)
