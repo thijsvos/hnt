@@ -26,6 +26,7 @@ pub struct LinkRef {
 
 /// Result of a [`LinkRegistry::match_prefix`] lookup.
 #[derive(Debug, PartialEq)]
+#[non_exhaustive]
 pub enum MatchResult<'a> {
     /// No links match the prefix — caller should exit hint mode.
     None,
@@ -50,6 +51,7 @@ impl LinkRegistry {
         Self::default()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.links.is_empty()
     }
@@ -86,6 +88,7 @@ impl LinkRegistry {
     }
 
     /// Looks up `prefix` against every link's label. See [`MatchResult`].
+    #[must_use]
     pub fn match_prefix(&self, prefix: &str) -> MatchResult<'_> {
         let mut iter = self.links.iter().filter(|l| l.label.starts_with(prefix));
         match (iter.next(), iter.next()) {

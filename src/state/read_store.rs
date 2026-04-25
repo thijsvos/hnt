@@ -153,6 +153,7 @@ impl ReadStore {
     }
 
     /// Returns whether `id` has ever been visited.
+    #[must_use]
     pub fn is_read(&self, id: StoryId) -> bool {
         self.entries.contains_key(&id)
     }
@@ -166,6 +167,7 @@ impl ReadStore {
     /// New comments since the last visit, if any. Returns `Some(n)` when
     /// `n > 0`; `None` when the story was never visited or has no new
     /// comments. A shrinking count (rare — deletions) is clamped to `None`.
+    #[must_use]
     pub fn new_comments_since(&self, id: StoryId, current_count: i64) -> Option<i64> {
         let entry = self.entries.get(&id)?;
         let delta = current_count - entry.last_comment_count;

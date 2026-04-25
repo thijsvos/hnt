@@ -61,12 +61,14 @@ impl StoryListState {
         self.selected = self.selected.saturating_sub(page_size);
     }
 
+    #[must_use]
     pub fn selected_story(&self) -> Option<&Item> {
         self.stories.get(self.selected)
     }
 
     /// Whether the selected story is within 80% of the loaded window and
     /// more IDs remain to be fetched — signals lazy-pagination time.
+    #[must_use]
     pub fn needs_more(&self) -> bool {
         // Load more when within 80% of loaded stories
         if self.stories.is_empty() {

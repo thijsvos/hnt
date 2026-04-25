@@ -27,6 +27,7 @@ pub enum InputMode {
 /// Produced by [`map_key`] from raw [`KeyEvent`]s, consumed by
 /// [`crate::app::App::dispatch`]. `Action::None` means "unmapped — ignore."
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Action {
     Quit,
     MoveUp,
