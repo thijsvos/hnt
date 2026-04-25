@@ -45,6 +45,10 @@ pub enum Action {
     ToggleHelp,
     TogglePriorDiscussions,
     EnterSearch,
+    /// Cycle the comment-pane "what's new" filter: All → New since last
+    /// visit → Recent 24h → All. Falls through to All when the story has
+    /// never been visited (no `last_seen_at` to anchor `NewSince` to).
+    CycleCommentFilter,
     /// Quickjump: enter hint-label mode; the `HintAction` decides what
     /// fires on a unique label match (open in browser / open in reader /
     /// copy URL to clipboard via OSC 52).
@@ -130,6 +134,7 @@ pub fn map_key(
         KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => Action::SwitchPane,
         KeyCode::Char(c @ '1'..='6') => Action::SwitchFeed(c as usize - '1' as usize),
         KeyCode::Char('r') => Action::Refresh,
+        KeyCode::Char('n') => Action::CycleCommentFilter,
         KeyCode::Char('g') => Action::JumpTop,
         KeyCode::Char('G') => Action::JumpBottom,
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::PageDown,

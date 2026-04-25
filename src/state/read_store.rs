@@ -158,6 +158,14 @@ impl ReadStore {
         self.entries.contains_key(&id)
     }
 
+    /// Wall-clock timestamp (Unix seconds) of the last visit to `id`, if
+    /// any. Used by the "what's new" comment filter to mark comments
+    /// older than the user's previous visit as already-seen.
+    #[must_use]
+    pub fn last_seen_at(&self, id: StoryId) -> Option<i64> {
+        self.entries.get(&id).map(|e| e.last_seen_at)
+    }
+
     /// Persisted entry for `id`, if any.
     #[cfg(test)]
     pub fn entry(&self, id: StoryId) -> Option<&ReadEntry> {

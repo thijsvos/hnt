@@ -11,7 +11,7 @@ use crate::api::types::{CommentId, CommentWithDepth, FeedKind, Item, StoryId};
 use crate::article::{fetch_and_extract_article, html_to_styled_lines};
 use crate::clipboard;
 use crate::keys::{Action, InputMode};
-use crate::state::comment_state::CommentTreeState;
+use crate::state::comment_state::{CommentFilter, CommentTreeState};
 use crate::state::hint_state::{HintAction, HintContext, HintState};
 use crate::state::link_registry::{LinkRegistry, MatchResult};
 use crate::state::prior_state::PriorDiscussionsState;
@@ -394,6 +394,7 @@ impl App {
                 | Action::EnterSearch
                 | Action::ToggleHelp
                 | Action::TogglePriorDiscussions
+                | Action::CycleCommentFilter
                 | Action::None => {}
                 Action::EnterHintMode(_) | Action::HintKey(_) | Action::ExitHintMode => {
                     unreachable!("hint actions handled above")
@@ -436,6 +437,7 @@ impl App {
                 | Action::EnterSearch
                 | Action::ToggleHelp
                 | Action::TogglePriorDiscussions
+                | Action::CycleCommentFilter
                 | Action::PageDown
                 | Action::PageUp
                 | Action::None => {}
@@ -539,10 +541,38 @@ impl App {
             },
             Action::ToggleHelp => self.show_help = !self.show_help,
             Action::TogglePriorDiscussions => self.toggle_prior_discussions(),
+            Action::CycleCommentFilter => self.cycle_comment_filter(),
             Action::EnterHintMode(_) | Action::HintKey(_) | Action::ExitHintMode => {
                 unreachable!("hint actions handled above")
             }
             Action::None => {}
+        }
+    }
+
+    /// Cycles the comment-pane filter: All → New since last visit →
+    /// Recent 24h → All. Stories never visited skip `NewSince` (no
+    /// timestamp to anchor it to) and go All → Recent → All. No-op when
+    /// no story is loaded. Clamps the selection to the new visible
+    /// length so the cursor stays in range.
+    fn cycle_comment_filter(&mut self) {
+        let Some(story) = self.comment_state.story.as_ref() else {
+            return;
+        };
+        let last_seen = self.read_store.last_seen_at(StoryId(story.id));
+        let now = chrono::Utc::now().timestamp();
+        let recent = CommentFilter::Recent(now - 86_400);
+        self.comment_state.filter = match (self.comment_state.filter, last_seen) {
+            (CommentFilter::All, Some(t)) => CommentFilter::NewSince(t),
+            (CommentFilter::All, None) => recent,
+            (CommentFilter::NewSince(_), _) => recent,
+            (CommentFilter::Recent(_), _) => CommentFilter::All,
+        };
+        // Clamp selection to whatever is visible under the new filter.
+        let visible = self.comment_state.visible_len();
+        if visible == 0 {
+            self.comment_state.selected = 0;
+        } else if self.comment_state.selected >= visible {
+            self.comment_state.selected = visible - 1;
         }
     }
 

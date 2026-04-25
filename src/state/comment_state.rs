@@ -11,6 +11,22 @@ use crate::api::types::ItemType;
 use crate::api::types::{CommentId, CommentWithDepth, Item};
 use std::collections::HashSet;
 
+/// Comment-pane visibility filter. Composes with the collapse state so the
+/// user can fold subtrees and narrow to "what's new" simultaneously.
+///
+/// `NewSince(t)` and `Recent(t)` differ only in how `t` is chosen — the
+/// former from `read_store.last_seen_at(story_id)`, the latter from a
+/// rolling clock window — but their semantics are identical: keep every
+/// comment whose `time > t`, plus every ancestor of such a comment so the
+/// thread reads coherently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CommentFilter {
+    #[default]
+    All,
+    NewSince(i64),
+    Recent(i64),
+}
+
 /// One comment in the flattened, depth-tagged comment tree.
 ///
 /// `depth == 0` is a root-level comment; children have strictly greater
@@ -70,6 +86,9 @@ pub struct CommentTreeState {
     /// Maps screen row (relative to inner area top) → visible comment index.
     /// Populated during render for mouse click handling.
     pub row_map: Vec<Option<usize>>,
+    /// "What's new" filter — composes with collapse to narrow the visible
+    /// set. Reset to [`CommentFilter::All`] on every [`Self::set_comments`].
+    pub filter: CommentFilter,
     /// Cached plain-text rendering of the current story's text (id, width, text).
     /// Invalidated automatically when story id or width changes.
     story_text_cache: Option<(u64, usize, String)>,
@@ -99,6 +118,8 @@ impl CommentTreeState {
 
     /// Replaces the flat list and resets selection/scroll to the top.
     /// `items` must be in pre-order (parents before their descendants).
+    /// Also clears any active "what's new" filter — switching stories
+    /// should always start with the full thread visible.
     pub fn set_comments(&mut self, items: Vec<CommentWithDepth>) {
         self.comments = items
             .into_iter()
@@ -106,6 +127,7 @@ impl CommentTreeState {
             .collect();
         self.scroll = 0;
         self.selected = 0;
+        self.filter = CommentFilter::All;
     }
 
     /// Insert child comments right after their parent in the flattened list.
@@ -126,11 +148,52 @@ impl CommentTreeState {
         }
     }
 
+    /// Returns the set of comment indices that pass `self.filter`,
+    /// including every ancestor of a passing comment so the thread reads
+    /// coherently. Returns `None` for [`CommentFilter::All`] — callers
+    /// treat that as "everything passes."
+    ///
+    /// O(comments) for the matching scan plus O(matches × tree_depth) for
+    /// the ancestor walk. The flat list is in pre-order, so each ancestor
+    /// is found by walking backwards over strictly-decreasing depths.
+    fn filter_visible_set(&self) -> Option<HashSet<usize>> {
+        let threshold = match self.filter {
+            CommentFilter::All => return None,
+            CommentFilter::NewSince(t) | CommentFilter::Recent(t) => t,
+        };
+        let mut keep = HashSet::new();
+        for (i, c) in self.comments.iter().enumerate() {
+            if c.item.time.is_none_or(|t| t <= threshold) {
+                continue;
+            }
+            keep.insert(i);
+            let mut wanted_depth = c.depth;
+            if wanted_depth == 0 {
+                continue;
+            }
+            for j in (0..i).rev() {
+                let d = self.comments[j].depth;
+                if d < wanted_depth {
+                    keep.insert(j);
+                    wanted_depth = d;
+                    if d == 0 {
+                        break;
+                    }
+                }
+            }
+        }
+        Some(keep)
+    }
+
     /// Walks the comment tree, skipping subtrees rooted at a collapsed
-    /// comment, and yields the indices (into `self.comments`) that should
-    /// be shown. Allocation-free — prefer this for `.count()` /
+    /// comment and (when `self.filter` is non-default) any comment that
+    /// neither matches the filter nor is an ancestor of a match. Yields
+    /// the indices (into `self.comments`) that should be shown.
+    /// Allocation-free for the common [`CommentFilter::All`] case; one
+    /// `HashSet` allocation otherwise. Prefer this for `.count()` /
     /// `.nth(...)` over the `Vec`-returning [`Self::visible_indices`].
     pub fn visible_indices_iter(&self) -> impl Iterator<Item = usize> + '_ {
+        let filter_set = self.filter_visible_set();
         let mut skip_depth: Option<usize> = None;
         self.comments
             .iter()
@@ -144,6 +207,11 @@ impl CommentTreeState {
                 }
                 if self.collapsed.contains(&CommentId(comment.item.id)) {
                     skip_depth = Some(comment.depth);
+                }
+                if let Some(set) = filter_set.as_ref() {
+                    if !set.contains(&i) {
+                        return None;
+                    }
                 }
                 Some(i)
             })
@@ -233,6 +301,7 @@ impl CommentTreeState {
         self.story = None;
         self.pending_root_ids.clear();
         self.row_map.clear();
+        self.filter = CommentFilter::All;
     }
 }
 
@@ -563,5 +632,125 @@ mod tests {
         // CommentsDone → clear remaining
         state.pending_root_ids.clear();
         assert!(state.pending_root_ids.is_empty());
+    }
+
+    fn cwd_at(id: u64, depth: usize, time: i64) -> CommentWithDepth {
+        let mut item = make_item(id);
+        item.time = Some(time);
+        CommentWithDepth { item, depth }
+    }
+
+    #[test]
+    fn filter_default_is_all() {
+        let state = CommentTreeState::new();
+        assert_eq!(state.filter, CommentFilter::All);
+    }
+
+    #[test]
+    fn filter_all_keeps_everything() {
+        let mut state = CommentTreeState::new();
+        state.set_comments(vec![cwd_at(1, 0, 100), cwd_at(2, 1, 200), cwd_at(3, 0, 50)]);
+        let ids: Vec<u64> = state.visible_comments().iter().map(|c| c.item.id).collect();
+        assert_eq!(ids, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn filter_new_since_keeps_match_and_ancestors() {
+        let mut state = CommentTreeState::new();
+        // root(1)@100 -> child(2)@150 -> grandchild(3)@500, sibling(4)@110
+        // threshold = 200 → only id=3 passes; ancestors 1, 2 must be kept;
+        // sibling 4 is filtered out.
+        state.set_comments(vec![
+            cwd_at(1, 0, 100),
+            cwd_at(2, 1, 150),
+            cwd_at(3, 2, 500),
+            cwd_at(4, 0, 110),
+        ]);
+        state.filter = CommentFilter::NewSince(200);
+        let ids: Vec<u64> = state.visible_comments().iter().map(|c| c.item.id).collect();
+        assert_eq!(ids, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn filter_new_since_keeps_unrelated_new_root() {
+        let mut state = CommentTreeState::new();
+        // root(1)@100 -> child(2)@150, root(3)@500
+        // threshold = 200 → root(3) passes. No ancestors needed (depth 0).
+        state.set_comments(vec![
+            cwd_at(1, 0, 100),
+            cwd_at(2, 1, 150),
+            cwd_at(3, 0, 500),
+        ]);
+        state.filter = CommentFilter::NewSince(200);
+        let ids: Vec<u64> = state.visible_comments().iter().map(|c| c.item.id).collect();
+        assert_eq!(ids, vec![3]);
+    }
+
+    #[test]
+    fn filter_new_since_no_matches_yields_empty() {
+        let mut state = CommentTreeState::new();
+        state.set_comments(vec![cwd_at(1, 0, 100), cwd_at(2, 1, 150)]);
+        state.filter = CommentFilter::NewSince(1_000);
+        assert!(state.visible_comments().is_empty());
+    }
+
+    #[test]
+    fn filter_skips_comments_without_time() {
+        let mut state = CommentTreeState::new();
+        // make_item leaves time = None — those should never pass the filter
+        state.set_comments(sample_tree());
+        state.filter = CommentFilter::NewSince(0);
+        assert!(state.visible_comments().is_empty());
+    }
+
+    #[test]
+    fn filter_recent_uses_threshold_directly() {
+        let mut state = CommentTreeState::new();
+        state.set_comments(vec![
+            cwd_at(1, 0, 100),
+            cwd_at(2, 0, 1000),
+            cwd_at(3, 0, 2000),
+        ]);
+        state.filter = CommentFilter::Recent(500);
+        let ids: Vec<u64> = state.visible_comments().iter().map(|c| c.item.id).collect();
+        assert_eq!(ids, vec![2, 3]);
+    }
+
+    #[test]
+    fn filter_walks_ancestors_with_skipped_intermediate_depths() {
+        let mut state = CommentTreeState::new();
+        // root(1)@100 at depth 0 -> deep(2)@500 at depth 3
+        // The ancestor walk only requires *strictly decreasing* depths;
+        // a single direct parent at depth 0 is enough.
+        state.set_comments(vec![cwd_at(1, 0, 100), cwd_at(2, 3, 500)]);
+        state.filter = CommentFilter::NewSince(200);
+        let ids: Vec<u64> = state.visible_comments().iter().map(|c| c.item.id).collect();
+        assert_eq!(ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn filter_composes_with_collapse() {
+        let mut state = CommentTreeState::new();
+        // root(1)@100 -> child(2)@500 -> grandchild(3)@600, sibling(4)@500
+        state.set_comments(vec![
+            cwd_at(1, 0, 100),
+            cwd_at(2, 1, 500),
+            cwd_at(3, 2, 600),
+            cwd_at(4, 0, 500),
+        ]);
+        state.filter = CommentFilter::NewSince(200);
+        // Without collapse: 1 (ancestor), 2 (match + ancestor), 3 (match), 4 (match)
+        // Collapse 2 → its descendants (3) hidden by collapse rule, 2 still shown
+        state.collapsed.insert(cid(2));
+        let ids: Vec<u64> = state.visible_comments().iter().map(|c| c.item.id).collect();
+        assert_eq!(ids, vec![1, 2, 4]);
+    }
+
+    #[test]
+    fn set_comments_resets_filter() {
+        let mut state = CommentTreeState::new();
+        state.filter = CommentFilter::NewSince(123);
+        state.set_comments(sample_tree());
+        assert_eq!(state.filter, CommentFilter::All);
     }
 }
