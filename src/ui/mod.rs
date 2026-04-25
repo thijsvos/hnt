@@ -54,7 +54,6 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         story_list::StoryList {
             stories: &app.story_state.stories,
             selected: app.story_state.selected,
-            offset: 0,
             focused: app.focus == crate::app::Pane::Stories,
             loading: app.story_state.loading,
             search_query: if search_active { search_query } else { None },

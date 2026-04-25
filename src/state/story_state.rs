@@ -17,7 +17,6 @@ pub struct StoryListState {
     pub stories: Vec<Item>,
     pub all_ids: Vec<u64>,
     pub selected: usize,
-    pub offset: usize,
     pub loading: bool,
 }
 
@@ -77,7 +76,6 @@ impl StoryListState {
         self.stories.clear();
         self.all_ids.clear();
         self.selected = 0;
-        self.offset = 0;
         self.loading = false;
     }
 }
@@ -117,7 +115,6 @@ mod tests {
         assert!(s.stories.is_empty());
         assert!(s.all_ids.is_empty());
         assert_eq!(s.selected, 0);
-        assert_eq!(s.offset, 0);
         assert!(!s.loading);
     }
 
@@ -272,13 +269,11 @@ mod tests {
         let mut s = state_with_stories(5);
         s.all_ids = vec![1, 2, 3];
         s.selected = 3;
-        s.offset = 10;
         s.loading = true;
         s.reset();
         assert!(s.stories.is_empty());
         assert!(s.all_ids.is_empty());
         assert_eq!(s.selected, 0);
-        assert_eq!(s.offset, 0);
         assert!(!s.loading);
     }
 }

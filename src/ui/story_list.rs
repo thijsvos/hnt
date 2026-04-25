@@ -20,7 +20,6 @@ use ratatui::{
 pub struct StoryList<'a> {
     pub stories: &'a [Item],
     pub selected: usize,
-    pub offset: usize,
     pub focused: bool,
     pub loading: bool,
     pub search_query: Option<&'a str>,
@@ -76,13 +75,11 @@ impl<'a> Widget for StoryList<'a> {
 
         let visible_height = inner.height as usize;
 
-        // Calculate scroll offset to keep selected visible
-        let scroll = if self.selected >= self.offset + visible_height {
+        // Calculate scroll offset to keep selected visible.
+        let scroll = if self.selected >= visible_height {
             self.selected - visible_height + 1
-        } else if self.selected < self.offset {
-            self.selected
         } else {
-            self.offset
+            0
         };
 
         for (i, story) in self
