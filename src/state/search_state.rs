@@ -9,6 +9,7 @@
 /// `input` is the in-progress typed text; `query` is the submitted
 /// (committed) query — the two differ while the user is editing, which is
 /// why pagination anchors to `query`.
+#[derive(Default)]
 pub struct SearchState {
     pub query: String,
     pub input: String,
@@ -20,12 +21,6 @@ pub struct SearchState {
 impl SearchState {
     /// Starts with empty input/query and zeroed pagination.
     pub fn new() -> Self {
-        Self {
-            query: String::new(),
-            input: String::new(),
-            current_page: 0,
-            total_pages: 0,
-            total_hits: 0,
-        }
+        Self::default()
     }
 }

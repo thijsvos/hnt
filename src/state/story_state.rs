@@ -12,6 +12,7 @@ use crate::api::types::Item;
 /// `stories` is the currently loaded window; `all_ids` is the full ID list
 /// from the initial feed fetch, used as a stable index for pagination so
 /// appended pages don't drift when new stories are posted mid-session.
+#[derive(Default)]
 pub struct StoryListState {
     pub stories: Vec<Item>,
     pub all_ids: Vec<u64>,
@@ -22,13 +23,7 @@ pub struct StoryListState {
 
 impl StoryListState {
     pub fn new() -> Self {
-        Self {
-            stories: Vec::new(),
-            all_ids: Vec::new(),
-            selected: 0,
-            offset: 0,
-            loading: false,
-        }
+        Self::default()
     }
 
     pub fn select_next(&mut self) {
