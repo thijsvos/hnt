@@ -18,6 +18,12 @@ pub type Tui = Terminal<CrosstermBackend<Stdout>>;
 
 /// Enters raw mode, switches to the alternate screen, and enables mouse
 /// capture; returns a ready-to-draw [`Tui`].
+///
+/// # Errors
+///
+/// Returns the underlying `crossterm`/[`std::io::Error`] if
+/// `enable_raw_mode`, the alternate-screen / mouse-capture sequences, or
+/// terminal construction fail.
 pub fn init() -> Result<Tui> {
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
@@ -28,6 +34,12 @@ pub fn init() -> Result<Tui> {
 
 /// Undoes [`init`]: disables raw mode, leaves the alternate screen, and
 /// disables mouse capture. Safe to call from a panic hook.
+///
+/// # Errors
+///
+/// Returns the underlying `crossterm`/[`std::io::Error`] if
+/// `disable_raw_mode` or the alternate-screen / mouse-capture teardown
+/// sequences fail.
 pub fn restore() -> Result<()> {
     disable_raw_mode()?;
     execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture)?;

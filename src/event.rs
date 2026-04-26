@@ -68,8 +68,13 @@ impl EventHandler {
         Self { rx }
     }
 
-    /// Awaits the next [`Event`]. Returns an error if the channel closes,
-    /// which means the background task has terminated.
+    /// Awaits the next [`Event`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the MPSC channel closes, which means the
+    /// background input/tick task has terminated (crossterm stream
+    /// errored or hit EOF).
     pub async fn next(&mut self) -> Result<Event> {
         self.rx
             .recv()

@@ -30,6 +30,8 @@ pub struct StoryListState {
 }
 
 impl StoryListState {
+    /// Constructs an empty state with no loaded stories, no cached IDs,
+    /// selection at zero, and not loading.
     pub fn new() -> Self {
         Self::default()
     }
@@ -48,32 +50,41 @@ impl StoryListState {
         self.stories.extend(stories);
     }
 
+    /// Advances the cursor by one row, saturating at the last loaded
+    /// story. No-op when `stories` is empty.
     pub fn select_next(&mut self) {
         if !self.stories.is_empty() {
             self.selected = (self.selected + 1).min(self.stories.len() - 1);
         }
     }
 
+    /// Moves the cursor up by one row, saturating at zero.
     pub fn select_prev(&mut self) {
         self.selected = self.selected.saturating_sub(1);
     }
 
+    /// Jumps the cursor to the first row.
     pub fn jump_top(&mut self) {
         self.selected = 0;
     }
 
+    /// Jumps the cursor to the last loaded story. No-op when `stories` is
+    /// empty.
     pub fn jump_bottom(&mut self) {
         if !self.stories.is_empty() {
             self.selected = self.stories.len() - 1;
         }
     }
 
+    /// Advances the cursor by `page_size` rows, saturating at the last
+    /// loaded story. No-op when `stories` is empty.
     pub fn page_down(&mut self, page_size: usize) {
         if !self.stories.is_empty() {
             self.selected = (self.selected + page_size).min(self.stories.len() - 1);
         }
     }
 
+    /// Moves the cursor up by `page_size` rows, saturating at zero.
     pub fn page_up(&mut self, page_size: usize) {
         self.selected = self.selected.saturating_sub(page_size);
     }
@@ -95,6 +106,9 @@ impl StoryListState {
         self.selected >= threshold && self.stories.len() < self.all_ids.len()
     }
 
+    /// Clears the loaded stories, the parallel domain cache, the cached
+    /// ID list, and resets selection and the loading flag. Used on feed
+    /// switch and refresh.
     pub fn reset(&mut self) {
         self.stories.clear();
         self.domains.clear();

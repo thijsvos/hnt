@@ -144,8 +144,11 @@ pub enum AppMessage {
 /// Central application state — owned by the main loop.
 ///
 /// Aggregates every pane's state, the shared [`HnClient`], and an MPSC
-/// channel that async tasks use to send [`AppMessage`]s back. All input
-/// flows through [`App::dispatch`]; all async results flow through
+/// channel that async tasks use to send [`AppMessage`]s back. Most input
+/// flows through [`App::dispatch`] as keymapped [`Action`]s; the
+/// `SearchInput` and hint-mode paths bypass dispatch and call
+/// `App::search_input_*` / hint-key methods directly so raw characters
+/// reach the input buffers verbatim. All async results flow through
 /// [`App::process_messages`].
 pub struct App {
     pub running: bool,
@@ -163,8 +166,10 @@ pub struct App {
     pub tick_count: u64,
 
     /// Prior-discussions overlay state. `Some` while the overlay is open;
-    /// `None` otherwise. Contents are populated from [`App::prior_results`]
-    /// when the user presses `h`.
+    /// `None` otherwise. Contents come from [`App::prior_results`] when
+    /// cached; on a cache miss the overlay opens empty and is backfilled
+    /// when the background Algolia query lands in
+    /// [`App::process_messages`].
     pub prior_state: Option<PriorDiscussionsState>,
     /// Prior-submissions query results, keyed by the story ID that was
     /// queried. Keeps each result around for reopening the
@@ -216,6 +221,11 @@ pub struct App {
 impl App {
     /// Constructs an [`App`] sized to the given terminal dimensions, with
     /// a fresh HN client, empty state, and a brand-new message channel.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `PRIOR_RESULTS_CACHE` is zero (compile-time guaranteed
+    /// non-zero).
     pub fn new(terminal_width: u16, terminal_height: u16) -> Self {
         let (msg_tx, msg_rx) = mpsc::unbounded_channel();
         Self {
@@ -539,9 +549,10 @@ impl App {
         self.dispatch_normal(action);
     }
 
-    /// Dispatch arm for the article-reader overlay. Assumes
-    /// `reader_state.is_some()`. Hint actions are filtered upstream by
-    /// [`Self::dispatch`]. Unmapped actions are silently consumed.
+    /// Dispatch arm for the article-reader overlay. Caller is expected to
+    /// ensure `reader_state.is_some()`; a `None` state is handled
+    /// defensively as a silent return. Hint actions are filtered upstream
+    /// by [`Self::dispatch`]. Unmapped actions are silently consumed.
     fn dispatch_reader(&mut self, action: Action) {
         // Back mutates the Option itself, so handle it before borrowing
         // the inner state.
@@ -564,8 +575,10 @@ impl App {
         }
     }
 
-    /// Dispatch arm for the prior-discussions overlay. Assumes
-    /// `prior_state.is_some()`. Unmapped actions are silently consumed.
+    /// Dispatch arm for the prior-discussions overlay. Caller is expected
+    /// to ensure `prior_state.is_some()`; a `None` state is handled
+    /// defensively as a silent return. Unmapped actions are silently
+    /// consumed.
     fn dispatch_prior(&mut self, action: Action) {
         // Actions that mutate App itself (not just the overlay's inner
         // state) go first so the subsequent borrow of `p` is clean.
@@ -1113,8 +1126,9 @@ impl App {
     }
 
     /// Opens the focused story's URL in the system browser. Falls back to
-    /// the HN item page for text-only stories. Only http(s) URLs are
-    /// opened.
+    /// the HN item page for stories without a usable http(s) URL —
+    /// text-only Ask/Show HN posts plus any story whose URL was rejected
+    /// at deserialization. Only http(s) URLs are opened.
     fn open_in_browser(&self) {
         let url = match self.focus {
             Pane::Stories => self

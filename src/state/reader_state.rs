@@ -14,22 +14,34 @@ use ratatui::style::Style;
 /// A run of text sharing one ratatui [`Style`]. Multiple fragments compose
 /// one rendered line (see `Vec<Vec<StyledFragment>>`).
 pub struct StyledFragment {
+    /// Visible text content of this fragment (UTF-8).
     pub text: String,
+    /// Ratatui style applied uniformly across `text`.
     pub style: Style,
 }
 
 /// Article-reader overlay state: title/domain chrome, pre-rendered styled
 /// lines, scroll position, and loading/error status.
 pub struct ReaderState {
+    /// Title for the overlay header. Truncated on render.
     pub title: String,
+    /// Host of `url` (with `www.` stripped), shown after the title in
+    /// parentheses. `None` for HN-native text posts.
     pub domain: Option<String>,
+    /// Source URL for the article. `None` for HN-native text posts that
+    /// render inline `Item::text`.
     pub url: Option<String>,
+    /// Pre-rendered styled lines populated by [`Self::set_content`].
     pub lines: Vec<Vec<StyledFragment>>,
     /// Every hyperlink in `lines`, with assigned hint labels. Populated by
     /// [`Self::set_content`].
     pub links: LinkRegistry,
+    /// Top-of-viewport line index. Updated by `scroll_*`/`page_*`/`jump_*`.
     pub scroll: usize,
+    /// `true` between [`Self::new_loading`] and
+    /// [`Self::set_content`]/[`Self::set_error`].
     pub loading: bool,
+    /// `Some` after a fetch failure; rendered via the error path.
     pub error: Option<String>,
 }
 
@@ -66,27 +78,37 @@ impl ReaderState {
         self.loading = false;
     }
 
+    /// Scrolls the viewport down by `n` lines, clamped to `max_scroll`.
     pub fn scroll_down(&mut self, n: usize) {
         let max = self.max_scroll();
         self.scroll = (self.scroll + n).min(max);
     }
 
+    /// Scrolls the viewport up by `n` lines, saturating at zero.
     pub fn scroll_up(&mut self, n: usize) {
         self.scroll = self.scroll.saturating_sub(n);
     }
 
+    /// Pages the viewport down by `n` lines (currently identical to
+    /// [`Self::scroll_down`]; kept as a separate entry point so the
+    /// keybinding layer can stay symmetric with [`Self::page_up`]).
     pub fn page_down(&mut self, n: usize) {
         self.scroll_down(n);
     }
 
+    /// Pages the viewport up by `n` lines (currently identical to
+    /// [`Self::scroll_up`]).
     pub fn page_up(&mut self, n: usize) {
         self.scroll_up(n);
     }
 
+    /// Jumps to the top of the article.
     pub fn jump_top(&mut self) {
         self.scroll = 0;
     }
 
+    /// Jumps to the bottom of the article (last line at the top of the
+    /// viewport).
     pub fn jump_bottom(&mut self) {
         self.scroll = self.max_scroll();
     }

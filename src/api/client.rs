@@ -44,6 +44,12 @@ impl Default for HnClient {
 impl HnClient {
     /// Builds a fresh client with an empty LRU cache of up to
     /// `CACHE_CAPACITY` items.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `CACHE_CAPACITY` is zero (compile-time guaranteed
+    /// non-zero) or if [`reqwest::Client::builder`] fails (e.g. unable
+    /// to load native TLS roots — exotic).
     pub fn new() -> Self {
         let capacity = NonZeroUsize::new(CACHE_CAPACITY).expect("cache capacity > 0");
         // Timeouts prevent a stalled HN endpoint from leaving spawned
@@ -80,6 +86,11 @@ impl HnClient {
     /// list for virtual feeds (those whose [`FeedKind::endpoint`] is
     /// `None`) — the caller is responsible for sourcing those IDs from
     /// local state instead.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the underlying [`reqwest::Error`] when the HTTP request
+    /// fails or when the response body fails to decode as `Vec<u64>`.
     pub async fn fetch_story_ids(&self, feed: FeedKind) -> Result<Vec<u64>> {
         let Some(endpoint) = feed.endpoint() else {
             return Ok(Vec::new());
@@ -90,8 +101,14 @@ impl HnClient {
     }
 
     /// Fetches a single item by ID, consulting the LRU cache first.
-    /// Returns [`Arc<Item>`] so callers that only read fields (e.g.
+    /// Returns an `Arc<Item>` so callers that only read fields (e.g.
     /// `item.kids`) can skip cloning the whole struct.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the underlying [`reqwest::Error`] when the HTTP request
+    /// fails (DNS, TLS, timeout, non-success status surfaced through
+    /// `.json()`) or when the response body fails to decode as JSON.
     pub async fn fetch_item(&self, id: u64) -> Result<Option<Arc<Item>>> {
         // Check cache first — release the lock before the network call.
         // `cloned()` on an `Option<&Arc<Item>>` is just a refcount bump.
@@ -119,7 +136,7 @@ impl HnClient {
     /// in flight) and returns them in the order of `ids` — `result[i]`
     /// corresponds to `ids[i]`, and is `None` when the item was missing
     /// or its fetch failed. Owned `Item`s are returned — deref-cloned from
-    /// the cached [`Arc<Item>`] at the boundary because every downstream
+    /// the cached `Arc<Item>` at the boundary because every downstream
     /// consumer needs mutable ownership to stash in state.
     pub async fn fetch_items(&self, ids: &[u64]) -> Vec<Option<Item>> {
         let results: Vec<Option<Arc<Item>>> = stream::iter(ids.iter().copied())
@@ -148,6 +165,13 @@ impl HnClient {
     /// Fetches a page of items from a pre-fetched ID list. Used for pagination
     /// so callers can reuse the initial ID list instead of re-fetching it —
     /// avoiding drift when new stories have been posted since the last fetch.
+    ///
+    /// # Errors
+    ///
+    /// Currently infallible in practice — per-item failures inside
+    /// [`Self::fetch_items`] surface as `None` entries that are filtered
+    /// out — but the signature returns `Result` to leave room for future
+    /// boundary errors (e.g. propagating a hard failure from upstream).
     pub async fn fetch_items_page(
         &self,
         ids: &[u64],
@@ -171,6 +195,11 @@ impl HnClient {
     /// Fetches a page of a feed. Returns `(items, all_ids)` where `all_ids`
     /// is the complete ID list from the feed endpoint — callers should stash
     /// it for stable subsequent pagination.
+    ///
+    /// # Errors
+    ///
+    /// Propagates errors from [`Self::fetch_story_ids`] (network, HTTP,
+    /// JSON decode of the ID list).
     pub async fn fetch_stories(
         &self,
         feed: FeedKind,
@@ -192,6 +221,12 @@ impl HnClient {
     ///
     /// Empty result is not an error — a novel URL legitimately has no prior
     /// submissions.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the underlying [`reqwest::Error`] when the Algolia
+    /// request fails (network, timeout, non-success status) or when the
+    /// response body fails to decode as a [`SearchResponse`].
     pub async fn search_by_url(&self, url: &str) -> Result<Vec<Item>> {
         let target = normalize_url(url);
         if target.is_empty() {
@@ -221,6 +256,12 @@ impl HnClient {
     /// Returns `(stories, total_pages, total_hits)`. `page` is 0-indexed.
     /// Story [`Item::kids`] is always `None` in results — fetch the full
     /// item if comment IDs are needed.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the underlying [`reqwest::Error`] when the Algolia
+    /// request fails (network, timeout, non-success status) or when the
+    /// response body fails to decode as a [`SearchResponse`].
     pub async fn search_stories(
         &self,
         query: &str,

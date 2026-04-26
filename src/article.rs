@@ -261,10 +261,19 @@ fn markdown_to_styled_lines(text: &str, width: usize) -> Vec<Vec<StyledFragment>
     lines
 }
 
-/// Fetches article HTML, runs readability extraction, converts to styled
-/// lines and a [`LinkRegistry`] of every hyperlink (for Quickjump hint
+/// Fetches `url` and produces styled lines for the article reader.
+///
+/// Runs readability extraction first, then converts the result to styled
+/// lines plus a [`LinkRegistry`] of every hyperlink (for Quickjump hint
 /// mode). Markdown READMEs render without a link registry today — only
 /// the rich-HTML path produces hint targets.
+///
+/// # Errors
+///
+/// Propagates errors from the HTTP fetch (network, TLS, timeout) and
+/// `bail!`s when the response is non-success, exceeds 5 MB, or has a
+/// non-HTML/plain content-type. Readability and html2text errors
+/// propagate from the `spawn_blocking` join.
 pub async fn fetch_and_extract_article(
     url: &str,
     width: usize,
@@ -379,11 +388,13 @@ fn extract_article_content(
     Ok(tagged_lines_to_styled_with_links(tagged_lines))
 }
 
-/// Walks html2text rich-tagged lines, producing per-line
-/// [`StyledFragment`] vectors and a parallel [`LinkRegistry`] that records
-/// where every hyperlink lives (line index + fragment index of the
-/// link-text fragment). The dim ` [https://...]` suffix is preserved as a
-/// secondary fragment so non-hint-mode rendering looks identical.
+/// Walks html2text rich-tagged lines and produces per-line styled output.
+///
+/// Returns a `Vec<Vec<StyledFragment>>` plus a parallel [`LinkRegistry`]
+/// that records where every hyperlink lives (line index + fragment index
+/// of the link-text fragment). The dim ` [https://...]` suffix is
+/// preserved as a secondary fragment so non-hint-mode rendering looks
+/// identical.
 fn tagged_lines_to_styled_with_links(
     tagged_lines: Vec<html2text::render::TaggedLine<Vec<RichAnnotation>>>,
 ) -> (Vec<Vec<StyledFragment>>, LinkRegistry) {

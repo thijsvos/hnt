@@ -14,6 +14,7 @@ use std::path::PathBuf;
 /// One persisted entry — must be cheaply clonable, JSON-serializable, and
 /// expose an age key (Unix seconds) used as the LRU eviction order.
 pub(crate) trait PersistedEntry: Clone + Serialize + DeserializeOwned {
+    /// Unix-second age key used for LRU eviction (oldest first).
     fn age_key(&self) -> i64;
 }
 
