@@ -24,7 +24,13 @@ pub fn sanitize_terminal(s: &str) -> Cow<'_, str> {
     }
     Cow::Owned(
         s.chars()
-            .map(|c| if is_control_to_strip(c) { '\u{FFFD}' } else { c })
+            .map(|c| {
+                if is_control_to_strip(c) {
+                    '\u{FFFD}'
+                } else {
+                    c
+                }
+            })
             .collect(),
     )
 }

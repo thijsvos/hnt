@@ -374,9 +374,8 @@ fn measure_comments(
         let comment = &all_comments[idx];
         let depth_color = theme::depth_color(comment.depth);
 
-        let author_sanitized = crate::sanitize::sanitize_terminal(
-            comment.item.by.as_deref().unwrap_or("[deleted]"),
-        );
+        let author_sanitized =
+            crate::sanitize::sanitize_terminal(comment.item.by.as_deref().unwrap_or("[deleted]"));
         let author: &str = author_sanitized.as_ref();
         let time_ago = comment
             .item

@@ -116,9 +116,8 @@ fn format_submission(item: &Item, selected: bool, width: usize) -> [Line<'static
     // terminal's title/palette/scroll region.
     let title_sanitized = crate::sanitize::sanitize_terminal(item.display_title());
     let title: &str = title_sanitized.as_ref();
-    let author_sanitized = crate::sanitize::sanitize_terminal(
-        item.by.as_deref().unwrap_or("[deleted]"),
-    );
+    let author_sanitized =
+        crate::sanitize::sanitize_terminal(item.by.as_deref().unwrap_or("[deleted]"));
     let author: &str = author_sanitized.as_ref();
 
     let cursor = if selected { "> " } else { "  " };

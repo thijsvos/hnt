@@ -312,7 +312,11 @@ mod tests {
         s.insert(StoryId(1), TestEntry { ts: 1, n: 1 });
         s.save();
         let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "saved file mode should be 0o600, got {:o}", mode);
+        assert_eq!(
+            mode, 0o600,
+            "saved file mode should be 0o600, got {:o}",
+            mode
+        );
         let _ = std::fs::remove_file(&p);
     }
 }

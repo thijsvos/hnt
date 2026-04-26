@@ -1475,10 +1475,7 @@ async fn run_comment_load(
             Ok(Some(full_item)) => full_item.kids.as_deref().unwrap_or(&[]).to_vec(),
             Ok(None) => Vec::new(),
             Err(e) => {
-                let _ = tx.send(AppMessage::Error(format!(
-                    "Failed to load comments: {}",
-                    e
-                )));
+                let _ = tx.send(AppMessage::Error(format!("Failed to load comments: {}", e)));
                 return;
             }
         }
