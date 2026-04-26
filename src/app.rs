@@ -640,18 +640,17 @@ impl App {
                     Pane::Comments => Pane::Stories,
                 };
             }
-            Action::SwitchFeed(idx) => {
-                if idx < FeedKind::ALL.len() {
-                    let feed = FeedKind::ALL[idx];
-                    if feed != self.current_feed || self.search_state.is_some() {
-                        self.search_state = None;
-                        self.input_mode = InputMode::Normal;
-                        self.current_feed = feed;
-                        self.focus = Pane::Stories;
-                        self.reset_panes_and_reload();
-                    }
+            Action::SwitchFeed(idx) if idx < FeedKind::ALL.len() => {
+                let feed = FeedKind::ALL[idx];
+                if feed != self.current_feed || self.search_state.is_some() {
+                    self.search_state = None;
+                    self.input_mode = InputMode::Normal;
+                    self.current_feed = feed;
+                    self.focus = Pane::Stories;
+                    self.reset_panes_and_reload();
                 }
             }
+            Action::SwitchFeed(_) => {}
             Action::Refresh => {
                 if let Some(ref ss) = self.search_state {
                     let query = ss.query.clone();
