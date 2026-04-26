@@ -63,10 +63,7 @@ pub fn render_article_overlay(
 }
 
 fn build_title(reader: &ReaderState) -> String {
-    let truncated: Option<String> = (reader.title.chars().count() > 60)
-        .then(|| reader.title.chars().take(57).collect::<String>() + "...");
-    let title: &str = truncated.as_deref().unwrap_or(reader.title.as_str());
-
+    let title = crate::ui::util::truncate_to(&reader.title, 60);
     match &reader.domain {
         Some(domain) => format!(" {} ({}) ", title, domain),
         None => format!(" {} ", title),
@@ -207,16 +204,10 @@ fn paint_hint_labels(frame: &mut Frame, inner: Rect, reader: &ReaderState, hint:
         if link.line < scroll || link.line >= scroll + visible_height {
             continue;
         }
-        let line = match reader.lines.get(link.line) {
-            Some(l) => l,
-            None => continue,
-        };
-        let col_offset: usize = line
-            .iter()
-            .take(link.fragment)
-            .map(|f| f.text.chars().count())
-            .sum();
-        let label_x = inner.x.saturating_add(col_offset as u16);
+        // `link.col` is pre-computed at registry-build time
+        // (`tagged_lines_to_styled_with_links`) — no per-keystroke
+        // chars().count() summing across preceding fragments here.
+        let label_x = inner.x.saturating_add(link.col as u16);
         if label_x >= inner.right() {
             continue;
         }

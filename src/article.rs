@@ -5,13 +5,73 @@
 //! and GitLab repo roots it short-circuits to the raw README. HN-native
 //! text posts (Ask HN, etc.) go through [`html_to_styled_lines`] directly.
 
+use crate::sanitize::sanitize_terminal;
 use crate::state::link_registry::LinkRegistry;
 use crate::state::reader_state::StyledFragment;
 use crate::ui::theme;
 use html2text::render::RichAnnotation;
 use ratatui::style::{Modifier, Style};
+use std::sync::OnceLock;
 
 const MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024; // 5MB
+
+/// Shared HTTP client for article fetches. Built once on first use so
+/// connection pools are reused across reader opens (multiple GH README
+/// clicks in a row share keep-alive). The redirect policy rejects
+/// non-`http(s)` schemes and IP literals in private/loopback ranges,
+/// closing the SSRF redirect path that would otherwise let a HN story
+/// `302` to `http://169.254.169.254/` or `http://localhost:6379/`.
+fn article_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .user_agent(concat!(
+                "Mozilla/5.0 (compatible; hnt/",
+                env!("CARGO_PKG_VERSION"),
+                ")"
+            ))
+            .timeout(std::time::Duration::from_secs(15))
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 5 {
+                    return attempt.error("too many redirects");
+                }
+                let url = attempt.url();
+                if !matches!(url.scheme(), "http" | "https") {
+                    return attempt.error("non-http redirect");
+                }
+                if let Some(host) = url.host_str() {
+                    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                        if is_private_ip(ip) {
+                            return attempt.error("redirect to private/loopback host");
+                        }
+                    }
+                }
+                attempt.follow()
+            }))
+            .build()
+            .expect("article client builder")
+    })
+}
+
+/// Whether `ip` falls inside an address range we won't follow redirects
+/// to. Covers loopback, link-local, unspecified, RFC1918 private (v4),
+/// and unique-local + loopback (v6).
+fn is_private_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    if ip.is_loopback() || ip.is_unspecified() {
+        return true;
+    }
+    match ip {
+        IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
+        // v6 unique-local (fc00::/7) doesn't have a stable .is_unique_local()
+        // on stable Rust yet; check manually.
+        IpAddr::V6(v6) => {
+            let seg0 = v6.segments()[0];
+            (seg0 & 0xfe00) == 0xfc00 // ULA
+                || (seg0 & 0xffc0) == 0xfe80 // link-local
+        }
+    }
+}
 
 /// For GitHub/GitLab repo pages, tries to fetch the raw README instead of
 /// the JS-heavy HTML shell (the README content is loaded dynamically by JS).
@@ -60,28 +120,36 @@ async fn try_fetch_readme(client: &reqwest::Client, url: &str) -> Option<(String
         return None;
     };
 
-    for readme_url in readme_urls {
-        if let Ok(resp) = client.get(&readme_url).send().await {
-            if resp.status().is_success() {
+    // Fire all candidate URLs in parallel and return the first one that
+    // produces a non-empty, size-bounded response. Saves ~3× RTT on the
+    // common case where the first 1-3 candidates 404. `select_ok`
+    // cancels the remaining futures as soon as one succeeds.
+    use futures::future::{select_ok, BoxFuture};
+    let futs: Vec<BoxFuture<'_, Result<(String, bool), ()>>> = readme_urls
+        .into_iter()
+        .map(|readme_url| {
+            let client = client.clone();
+            Box::pin(async move {
+                let resp = client.get(&readme_url).send().await.map_err(|_| ())?;
+                if !resp.status().is_success() {
+                    return Err(());
+                }
                 if let Some(len) = resp.content_length() {
                     if len > MAX_RESPONSE_BYTES as u64 {
-                        continue;
+                        return Err(());
                     }
                 }
-                if let Ok(text) = resp.text().await {
-                    if text.len() > MAX_RESPONSE_BYTES {
-                        continue;
-                    }
-                    if !text.trim().is_empty() {
-                        let is_markdown = readme_url.ends_with(".md");
-                        return Some((text, is_markdown));
-                    }
+                let text = resp.text().await.map_err(|_| ())?;
+                if text.len() > MAX_RESPONSE_BYTES || text.trim().is_empty() {
+                    return Err(());
                 }
-            }
-        }
-    }
+                let is_markdown = readme_url.ends_with(".md");
+                Ok((text, is_markdown))
+            }) as BoxFuture<'_, _>
+        })
+        .collect();
 
-    None
+    select_ok(futs).await.ok().map(|(value, _rest)| value)
 }
 
 /// Converts markdown text to styled lines with basic formatting.
@@ -203,17 +271,10 @@ pub async fn fetch_and_extract_article(
 ) -> anyhow::Result<(Vec<Vec<StyledFragment>>, LinkRegistry)> {
     use anyhow::{anyhow, bail, Context};
 
-    let client = reqwest::Client::builder()
-        .user_agent(concat!(
-            "Mozilla/5.0 (compatible; hnt/",
-            env!("CARGO_PKG_VERSION"),
-            ")"
-        ))
-        .timeout(std::time::Duration::from_secs(15))
-        .build()?;
+    let client = article_client();
 
     // For GitHub/GitLab repo pages, try fetching the README directly
-    if let Some((readme_text, is_markdown)) = try_fetch_readme(&client, url).await {
+    if let Some((readme_text, is_markdown)) = try_fetch_readme(client, url).await {
         return if is_markdown {
             Ok((
                 markdown_to_styled_lines(&readme_text, width),
@@ -332,6 +393,11 @@ fn tagged_lines_to_styled_with_links(
         .enumerate()
         .map(|(line_idx, tagged_line)| {
             let mut fragments: Vec<StyledFragment> = Vec::new();
+            // Running column offset on this line, in chars. Updated as
+            // each fragment is appended so the link's `col` field is
+            // captured once at registry-build time — the hint paint then
+            // reads it directly without re-summing fragment widths.
+            let mut cur_col: usize = 0;
             for ts in tagged_line.tagged_strings() {
                 let style = annotations_to_style(&ts.tag);
                 let url = ts.tag.iter().find_map(|ann| {
@@ -343,18 +409,25 @@ fn tagged_lines_to_styled_with_links(
                 });
                 let fragment_idx = fragments.len();
                 let text_is_visible = !ts.s.trim().is_empty();
+                let safe_text = sanitize_terminal(&ts.s).into_owned();
+                let text_cols = safe_text.chars().count();
                 fragments.push(StyledFragment {
-                    text: ts.s.clone(),
+                    text: safe_text,
                     style,
                 });
                 if let Some(url) = url {
+                    let safe_url = sanitize_terminal(&url).into_owned();
                     if text_is_visible {
-                        links.push(url.clone(), line_idx, fragment_idx);
+                        links.push(safe_url.clone(), line_idx, fragment_idx, cur_col);
                     }
+                    let suffix = format!(" [{}]", safe_url);
+                    cur_col += text_cols + suffix.chars().count();
                     fragments.push(StyledFragment {
-                        text: format!(" [{}]", url),
+                        text: suffix,
                         style: Style::default().fg(theme::DIM),
                     });
+                } else {
+                    cur_col += text_cols;
                 }
             }
             fragments
@@ -407,6 +480,63 @@ pub fn html_to_styled_lines(html: &[u8], width: usize) -> (Vec<Vec<StyledFragmen
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    // --- is_private_ip ---
+
+    #[test]
+    fn private_ip_blocks_loopback_ipv4() {
+        assert!(is_private_ip(IpAddr::V4(Ipv4Addr::LOCALHOST)));
+    }
+
+    #[test]
+    fn private_ip_blocks_loopback_ipv6() {
+        assert!(is_private_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+    }
+
+    #[test]
+    fn private_ip_blocks_unspecified() {
+        assert!(is_private_ip(IpAddr::V4(Ipv4Addr::UNSPECIFIED)));
+        assert!(is_private_ip(IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
+    }
+
+    #[test]
+    fn private_ip_blocks_rfc1918() {
+        assert!(is_private_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+        assert!(is_private_ip(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
+        assert!(is_private_ip(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1))));
+    }
+
+    #[test]
+    fn private_ip_blocks_link_local_v4() {
+        // AWS IMDS — 169.254.169.254 is the canonical SSRF target.
+        assert!(is_private_ip(IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))));
+    }
+
+    #[test]
+    fn private_ip_blocks_unique_local_v6() {
+        // fc00::/7
+        let ula: Ipv6Addr = "fd00::1".parse().unwrap();
+        assert!(is_private_ip(IpAddr::V6(ula)));
+    }
+
+    #[test]
+    fn private_ip_blocks_link_local_v6() {
+        let lla: Ipv6Addr = "fe80::1".parse().unwrap();
+        assert!(is_private_ip(IpAddr::V6(lla)));
+    }
+
+    #[test]
+    fn private_ip_allows_public_v4() {
+        assert!(!is_private_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+        assert!(!is_private_ip(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));
+    }
+
+    #[test]
+    fn private_ip_allows_public_v6() {
+        let public: Ipv6Addr = "2606:4700:4700::1111".parse().unwrap();
+        assert!(!is_private_ip(IpAddr::V6(public)));
+    }
 
     // --- markdown_to_styled_lines ---
 

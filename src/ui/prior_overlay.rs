@@ -7,6 +7,7 @@
 use crate::api::types::Item;
 use crate::state::prior_state::PriorDiscussionsState;
 use crate::ui::theme;
+use crate::ui::util::truncate_to;
 use ratatui::{
     layout::Rect,
     text::{Line, Span},
@@ -110,8 +111,15 @@ fn format_submission(item: &Item, selected: bool, width: usize) -> [Line<'static
         .and_then(|t| chrono::DateTime::<chrono::Utc>::from_timestamp(t, 0))
         .map(|dt| dt.format("%Y-%m-%d").to_string())
         .unwrap_or_else(|| "?".into());
-    let title = item.display_title();
-    let author = item.by.as_deref().unwrap_or("[deleted]");
+    // Sanitize HN-supplied strings before they enter a Span — a comment
+    // submitter could otherwise inject ANSI escapes that retarget the
+    // terminal's title/palette/scroll region.
+    let title_sanitized = crate::sanitize::sanitize_terminal(item.display_title());
+    let title: &str = title_sanitized.as_ref();
+    let author_sanitized = crate::sanitize::sanitize_terminal(
+        item.by.as_deref().unwrap_or("[deleted]"),
+    );
+    let author: &str = author_sanitized.as_ref();
 
     let cursor = if selected { "> " } else { "  " };
     let title_style = if selected {
@@ -156,15 +164,4 @@ fn format_submission(item: &Item, selected: bool, width: usize) -> [Line<'static
     let line2 = Line::from(Span::styled(byline, dim_style)).style(row_bg);
 
     [line1, line2]
-}
-
-/// Truncates `s` to at most `max` characters (operating on `char`s to stay
-/// UTF-8-safe), appending `...` when truncation occurs. Returns `s`
-/// unchanged when it already fits.
-fn truncate_to(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    let truncated: String = s.chars().take(max.saturating_sub(3)).collect();
-    format!("{}...", truncated)
 }

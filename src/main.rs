@@ -9,6 +9,7 @@ mod article;
 mod clipboard;
 mod event;
 mod keys;
+mod sanitize;
 mod state;
 mod tui;
 mod ui;
@@ -75,14 +76,15 @@ async fn main() -> Result<()> {
                     _ => {}
                 },
                 InputMode::Normal => {
-                    let action = keys::map_key(
+                    if let Some(action) = keys::map_key(
                         key,
                         app.show_help,
                         app.reader_state.is_some(),
                         app.prior_state.is_some(),
                         app.input_mode,
-                    );
-                    app.dispatch(action);
+                    ) {
+                        app.dispatch(action);
+                    }
                 }
             },
             Event::Mouse(mouse) => {
@@ -100,8 +102,8 @@ async fn main() -> Result<()> {
                     _ => {}
                 }
             }
-            Event::Resize(w, h) => {
-                app.set_terminal_size(w, h);
+            Event::Resize { width, height } => {
+                app.set_terminal_size(width, height);
             }
             Event::Tick => {
                 app.tick_count = app.tick_count.wrapping_add(1);

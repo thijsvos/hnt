@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 pub enum Event {
     Key(KeyEvent),
     Mouse(MouseEvent),
-    Resize(#[allow(dead_code)] u16, u16),
+    Resize { width: u16, height: u16 },
     Tick,
 }
 
@@ -26,7 +26,6 @@ pub enum Event {
 /// [`EventHandler::next`] to `.await` the next [`Event`].
 pub struct EventHandler {
     rx: mpsc::UnboundedReceiver<Event>,
-    _tx: mpsc::UnboundedSender<Event>,
 }
 
 impl EventHandler {
@@ -36,7 +35,6 @@ impl EventHandler {
     /// errors/ends. Ticks fire every `tick_rate`.
     pub fn new(tick_rate: Duration) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        let _tx = tx.clone();
 
         tokio::spawn(async move {
             let mut reader = EventStream::new();
@@ -53,7 +51,9 @@ impl EventHandler {
                         let send_result = match event {
                             Some(Ok(CrosstermEvent::Key(key))) => tx.send(Event::Key(key)),
                             Some(Ok(CrosstermEvent::Mouse(mouse))) => tx.send(Event::Mouse(mouse)),
-                            Some(Ok(CrosstermEvent::Resize(w, h))) => tx.send(Event::Resize(w, h)),
+                            Some(Ok(CrosstermEvent::Resize(w, h))) => {
+                                tx.send(Event::Resize { width: w, height: h })
+                            }
                             Some(Err(_)) | None => break,
                             _ => continue,
                         };
@@ -65,7 +65,7 @@ impl EventHandler {
             }
         });
 
-        Self { rx, _tx }
+        Self { rx }
     }
 
     /// Awaits the next [`Event`]. Returns an error if the channel closes,

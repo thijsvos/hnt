@@ -10,8 +10,8 @@
 //! still works within the session but is not persisted across restarts.
 
 use crate::api::types::StoryId;
+use crate::state::persist::{xdg_data_path, JsonStore, PersistedEntry};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Soft cap on stored entries. Oldest (lowest `last_seen_at`) entries are
@@ -32,6 +32,12 @@ pub struct ReadEntry {
     pub last_comment_count: i64,
 }
 
+impl PersistedEntry for ReadEntry {
+    fn age_key(&self) -> i64 {
+        self.last_seen_at
+    }
+}
+
 /// In-memory read-state store with JSON-file persistence.
 ///
 /// Constructed via [`ReadStore::load`] at startup. Mark a story as visited
@@ -42,16 +48,7 @@ pub struct ReadEntry {
 /// comment IDs. The JSON on disk still uses stringified-u64 keys —
 /// conversion happens at the serde boundary.
 pub struct ReadStore {
-    entries: HashMap<StoryId, ReadEntry>,
-    path: Option<PathBuf>,
-    dirty: bool,
-}
-
-#[derive(Serialize, Deserialize)]
-struct DiskStore {
-    version: u32,
-    #[serde(default)]
-    entries: HashMap<String, ReadEntry>,
+    inner: JsonStore<ReadEntry>,
 }
 
 impl ReadStore {
@@ -59,9 +56,7 @@ impl ReadStore {
     /// default XDG path can't be resolved.
     pub fn empty() -> Self {
         Self {
-            entries: HashMap::new(),
-            path: None,
-            dirty: false,
+            inner: JsonStore::empty(MAX_ENTRIES, SCHEMA_VERSION),
         }
     }
 
@@ -70,7 +65,7 @@ impl ReadStore {
     /// in-memory store if the path can't be resolved or the file is
     /// missing/corrupt.
     pub fn load() -> Self {
-        match default_path() {
+        match xdg_data_path("read.json") {
             Some(path) => Self::load_from(path),
             None => Self::empty(),
         }
@@ -80,20 +75,8 @@ impl ReadStore {
     /// produces an empty store with `path` still set as the save target —
     /// the next [`ReadStore::save`] will replace it.
     pub fn load_from(path: PathBuf) -> Self {
-        let entries = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|raw| serde_json::from_str::<DiskStore>(&raw).ok())
-            .map(|disk| {
-                disk.entries
-                    .into_iter()
-                    .filter_map(|(k, v)| k.parse::<u64>().ok().map(|id| (StoryId(id), v)))
-                    .collect()
-            })
-            .unwrap_or_default();
         Self {
-            entries,
-            path: Some(path),
-            dirty: false,
+            inner: JsonStore::load_from(path, MAX_ENTRIES, SCHEMA_VERSION),
         }
     }
 
@@ -103,30 +86,7 @@ impl ReadStore {
     /// Failures (permissions, missing parent, disk full) are silently
     /// swallowed — read-state is non-critical.
     pub fn save(&mut self) {
-        if !self.dirty {
-            return;
-        }
-        let Some(path) = self.path.as_ref() else {
-            return;
-        };
-        let disk = DiskStore {
-            version: SCHEMA_VERSION,
-            entries: self
-                .entries
-                .iter()
-                .map(|(&id, entry)| (id.0.to_string(), *entry))
-                .collect(),
-        };
-        let Ok(json) = serde_json::to_string(&disk) else {
-            return;
-        };
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, json).is_ok() && std::fs::rename(&tmp, path).is_ok() {
-            self.dirty = false;
-        }
+        self.inner.save();
     }
 
     /// Records or refreshes the entry for `id` with the current wall-clock
@@ -139,23 +99,19 @@ impl ReadStore {
     /// Variant of [`ReadStore::mark`] that uses an explicit timestamp —
     /// used by tests to keep behavior deterministic.
     pub fn mark_at(&mut self, id: StoryId, current_comment_count: i64, now: i64) {
-        self.entries.insert(
+        self.inner.insert(
             id,
             ReadEntry {
                 last_seen_at: now,
                 last_comment_count: current_comment_count,
             },
         );
-        if self.entries.len() > MAX_ENTRIES {
-            self.evict_oldest();
-        }
-        self.dirty = true;
     }
 
     /// Returns whether `id` has ever been visited.
     #[must_use]
     pub fn is_read(&self, id: StoryId) -> bool {
-        self.entries.contains_key(&id)
+        self.inner.entries.contains_key(&id)
     }
 
     /// Wall-clock timestamp (Unix seconds) of the last visit to `id`, if
@@ -163,13 +119,13 @@ impl ReadStore {
     /// older than the user's previous visit as already-seen.
     #[must_use]
     pub fn last_seen_at(&self, id: StoryId) -> Option<i64> {
-        self.entries.get(&id).map(|e| e.last_seen_at)
+        self.inner.entries.get(&id).map(|e| e.last_seen_at)
     }
 
     /// Persisted entry for `id`, if any.
     #[cfg(test)]
     pub fn entry(&self, id: StoryId) -> Option<&ReadEntry> {
-        self.entries.get(&id)
+        self.inner.entries.get(&id)
     }
 
     /// New comments since the last visit, if any. Returns `Some(n)` when
@@ -177,52 +133,15 @@ impl ReadStore {
     /// comments. A shrinking count (rare — deletions) is clamped to `None`.
     #[must_use]
     pub fn new_comments_since(&self, id: StoryId, current_count: i64) -> Option<i64> {
-        let entry = self.entries.get(&id)?;
+        let entry = self.inner.entries.get(&id)?;
         Some(current_count - entry.last_comment_count).filter(|&d| d > 0)
-    }
-
-    /// Drops entries with the lowest `last_seen_at` until the store is
-    /// back within [`MAX_ENTRIES`].
-    fn evict_oldest(&mut self) {
-        let mut ages: Vec<(i64, StoryId)> = self
-            .entries
-            .iter()
-            .map(|(&id, e)| (e.last_seen_at, id))
-            .collect();
-        ages.sort_unstable();
-        let excess = self.entries.len().saturating_sub(MAX_ENTRIES);
-        for (_, id) in ages.into_iter().take(excess) {
-            self.entries.remove(&id);
-        }
     }
 
     /// Number of persisted entries. Exposed for tests and diagnostics.
     #[cfg(test)]
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.inner.entries.len()
     }
-}
-
-/// Resolves the default persistence path: `$XDG_DATA_HOME/hnt/read.json`,
-/// falling back to `$HOME/.local/share/hnt/read.json`. Returns `None` if
-/// neither variable is set (rare — containers with no `HOME`).
-fn default_path() -> Option<PathBuf> {
-    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-        if !xdg.is_empty() {
-            return Some(PathBuf::from(xdg).join("hnt").join("read.json"));
-        }
-    }
-    let home = std::env::var("HOME").ok()?;
-    if home.is_empty() {
-        return None;
-    }
-    Some(
-        PathBuf::from(home)
-            .join(".local")
-            .join("share")
-            .join("hnt")
-            .join("read.json"),
-    )
 }
 
 #[cfg(test)]

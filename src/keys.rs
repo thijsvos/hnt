@@ -25,7 +25,8 @@ pub enum InputMode {
 /// A keybinding-independent operation the app may perform.
 ///
 /// Produced by [`map_key`] from raw [`KeyEvent`]s, consumed by
-/// [`crate::app::App::dispatch`]. `Action::None` means "unmapped — ignore."
+/// [`crate::app::App::dispatch`]. Unmapped keys yield `None` from
+/// [`map_key`] — there is no in-band sentinel variant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Action {
@@ -63,50 +64,53 @@ pub enum Action {
     /// Cancel hint-label selection and return to the prior input mode.
     ExitHintMode,
     Back,
-    None,
 }
 
 /// Translates a [`KeyEvent`] into an [`Action`] for the current UI
 /// context.
 ///
 /// Priority order: search-input + hint-mode suppress normal keys (return
-/// [`Action::None`] so `main.rs` can handle raw characters); a visible
-/// help overlay consumes any key as [`Action::ToggleHelp`]; a visible
-/// reader overlay uses its own reduced keymap; a visible
-/// prior-discussions overlay likewise uses a reduced keymap; otherwise
-/// the standard navigation keymap applies.
+/// `None` so `main.rs` can handle raw characters); a visible help
+/// overlay consumes any key as [`Action::ToggleHelp`]; a visible reader
+/// overlay uses its own reduced keymap; a visible prior-discussions
+/// overlay likewise uses a reduced keymap; otherwise the standard
+/// navigation keymap applies. Unmapped keys yield `None`.
 pub fn map_key(
     key: KeyEvent,
     help_visible: bool,
     reader_visible: bool,
     prior_visible: bool,
     input_mode: InputMode,
-) -> Action {
+) -> Option<Action> {
     // SearchInput and HintMode both consume raw chars in main.rs.
     if matches!(input_mode, InputMode::SearchInput | InputMode::HintMode) {
-        return Action::None;
+        return None;
     }
 
     // If help overlay is open, any key closes it
     if help_visible {
-        return Action::ToggleHelp;
+        return Some(Action::ToggleHelp);
     }
 
     // Reader overlay has its own limited key set
     if reader_visible {
         return match key.code {
-            KeyCode::Char('j') | KeyCode::Down => Action::MoveDown,
-            KeyCode::Char('k') | KeyCode::Up => Action::MoveUp,
-            KeyCode::Char('g') => Action::JumpTop,
-            KeyCode::Char('G') => Action::JumpBottom,
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::PageDown,
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::PageUp,
-            KeyCode::Char('o') => Action::OpenInBrowser,
-            KeyCode::Char('f') => Action::EnterHintMode(HintAction::Open),
-            KeyCode::Char('F') => Action::EnterHintMode(HintAction::OpenInReader),
-            KeyCode::Char('y') => Action::EnterHintMode(HintAction::CopyUrl),
-            KeyCode::Esc | KeyCode::Char('q') => Action::Back,
-            _ => Action::None,
+            KeyCode::Char('j') | KeyCode::Down => Some(Action::MoveDown),
+            KeyCode::Char('k') | KeyCode::Up => Some(Action::MoveUp),
+            KeyCode::Char('g') => Some(Action::JumpTop),
+            KeyCode::Char('G') => Some(Action::JumpBottom),
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::PageDown)
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                Some(Action::PageUp)
+            }
+            KeyCode::Char('o') => Some(Action::OpenInBrowser),
+            KeyCode::Char('f') => Some(Action::EnterHintMode(HintAction::Open)),
+            KeyCode::Char('F') => Some(Action::EnterHintMode(HintAction::OpenInReader)),
+            KeyCode::Char('y') => Some(Action::EnterHintMode(HintAction::CopyUrl)),
+            KeyCode::Esc | KeyCode::Char('q') => Some(Action::Back),
+            _ => None,
         };
     }
 
@@ -115,44 +119,48 @@ pub fn map_key(
     // global toggle in normal mode (below) without ambiguity.
     if prior_visible {
         return match key.code {
-            KeyCode::Char('j') | KeyCode::Down => Action::MoveDown,
-            KeyCode::Char('k') | KeyCode::Up => Action::MoveUp,
-            KeyCode::Char('g') => Action::JumpTop,
-            KeyCode::Char('G') => Action::JumpBottom,
-            KeyCode::Enter => Action::Select,
-            KeyCode::Char('o') => Action::OpenInBrowser,
-            KeyCode::Esc | KeyCode::Char('q') => Action::Back,
-            _ => Action::None,
+            KeyCode::Char('j') | KeyCode::Down => Some(Action::MoveDown),
+            KeyCode::Char('k') | KeyCode::Up => Some(Action::MoveUp),
+            KeyCode::Char('g') => Some(Action::JumpTop),
+            KeyCode::Char('G') => Some(Action::JumpBottom),
+            KeyCode::Enter => Some(Action::Select),
+            KeyCode::Char('o') => Some(Action::OpenInBrowser),
+            KeyCode::Esc | KeyCode::Char('q') => Some(Action::Back),
+            _ => None,
         };
     }
 
     match key.code {
-        KeyCode::Char('q') => Action::Quit,
-        KeyCode::Esc => Action::Back,
-        KeyCode::Char('j') | KeyCode::Down => Action::MoveDown,
-        KeyCode::Char('k') | KeyCode::Up => Action::MoveUp,
-        KeyCode::Enter => Action::Select,
-        KeyCode::Char('o') => Action::OpenInBrowser,
-        KeyCode::Char('p') => Action::OpenReader,
-        KeyCode::Char('h') => Action::TogglePriorDiscussions,
-        KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => Action::SwitchPane,
+        KeyCode::Char('q') => Some(Action::Quit),
+        KeyCode::Esc => Some(Action::Back),
+        KeyCode::Char('j') | KeyCode::Down => Some(Action::MoveDown),
+        KeyCode::Char('k') | KeyCode::Up => Some(Action::MoveUp),
+        KeyCode::Enter => Some(Action::Select),
+        KeyCode::Char('o') => Some(Action::OpenInBrowser),
+        KeyCode::Char('p') => Some(Action::OpenReader),
+        KeyCode::Char('h') => Some(Action::TogglePriorDiscussions),
+        KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
+            Some(Action::SwitchPane)
+        }
         // 1–7: Top, New, Best, Ask, Show, Jobs, Pinned (matches FeedKind::ALL order).
-        KeyCode::Char(c @ '1'..='7') => Action::SwitchFeed(c as usize - '1' as usize),
-        KeyCode::Char('r') => Action::Refresh,
-        KeyCode::Char('n') => Action::CycleCommentFilter,
-        KeyCode::Char('b') => Action::TogglePin,
-        KeyCode::Char('g') => Action::JumpTop,
-        KeyCode::Char('G') => Action::JumpBottom,
-        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::PageDown,
-        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => Action::PageUp,
-        KeyCode::Char('/') => Action::EnterSearch,
-        KeyCode::Char('?') => Action::ToggleHelp,
+        KeyCode::Char(c @ '1'..='7') => Some(Action::SwitchFeed(c as usize - '1' as usize)),
+        KeyCode::Char('r') => Some(Action::Refresh),
+        KeyCode::Char('n') => Some(Action::CycleCommentFilter),
+        KeyCode::Char('b') => Some(Action::TogglePin),
+        KeyCode::Char('g') => Some(Action::JumpTop),
+        KeyCode::Char('G') => Some(Action::JumpBottom),
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(Action::PageDown)
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => Some(Action::PageUp),
+        KeyCode::Char('/') => Some(Action::EnterSearch),
+        KeyCode::Char('?') => Some(Action::ToggleHelp),
         // Quickjump entry — comments-pane variant. Reader-overlay variant
         // is handled in the reader_visible block above.
-        KeyCode::Char('f') => Action::EnterHintMode(HintAction::Open),
-        KeyCode::Char('F') => Action::EnterHintMode(HintAction::OpenInReader),
-        KeyCode::Char('y') => Action::EnterHintMode(HintAction::CopyUrl),
-        _ => Action::None,
+        KeyCode::Char('f') => Some(Action::EnterHintMode(HintAction::Open)),
+        KeyCode::Char('F') => Some(Action::EnterHintMode(HintAction::OpenInReader)),
+        KeyCode::Char('y') => Some(Action::EnterHintMode(HintAction::CopyUrl)),
+        _ => None,
     }
 }
 
@@ -180,7 +188,7 @@ mod tests {
                 false,
                 InputMode::SearchInput
             ),
-            Action::None
+            None
         );
         assert_eq!(
             map_key(
@@ -190,7 +198,7 @@ mod tests {
                 false,
                 InputMode::SearchInput
             ),
-            Action::None
+            None
         );
     }
 
@@ -204,11 +212,11 @@ mod tests {
                 false,
                 InputMode::Normal
             ),
-            Action::ToggleHelp
+            Some(Action::ToggleHelp)
         );
         assert_eq!(
             map_key(key(KeyCode::Enter), true, false, false, InputMode::Normal),
-            Action::ToggleHelp
+            Some(Action::ToggleHelp)
         );
     }
 
@@ -222,7 +230,7 @@ mod tests {
                 false,
                 InputMode::Normal
             ),
-            Action::ToggleHelp
+            Some(Action::ToggleHelp)
         );
     }
 
@@ -231,26 +239,26 @@ mod tests {
     #[test]
     fn reader_navigation() {
         let r = |code| map_key(key(code), false, true, false, InputMode::Normal);
-        assert_eq!(r(KeyCode::Char('j')), Action::MoveDown);
-        assert_eq!(r(KeyCode::Down), Action::MoveDown);
-        assert_eq!(r(KeyCode::Char('k')), Action::MoveUp);
-        assert_eq!(r(KeyCode::Up), Action::MoveUp);
-        assert_eq!(r(KeyCode::Char('g')), Action::JumpTop);
-        assert_eq!(r(KeyCode::Char('G')), Action::JumpBottom);
-        assert_eq!(r(KeyCode::Char('o')), Action::OpenInBrowser);
-        assert_eq!(r(KeyCode::Esc), Action::Back);
-        assert_eq!(r(KeyCode::Char('q')), Action::Back);
+        assert_eq!(r(KeyCode::Char('j')), Some(Action::MoveDown));
+        assert_eq!(r(KeyCode::Down), Some(Action::MoveDown));
+        assert_eq!(r(KeyCode::Char('k')), Some(Action::MoveUp));
+        assert_eq!(r(KeyCode::Up), Some(Action::MoveUp));
+        assert_eq!(r(KeyCode::Char('g')), Some(Action::JumpTop));
+        assert_eq!(r(KeyCode::Char('G')), Some(Action::JumpBottom));
+        assert_eq!(r(KeyCode::Char('o')), Some(Action::OpenInBrowser));
+        assert_eq!(r(KeyCode::Esc), Some(Action::Back));
+        assert_eq!(r(KeyCode::Char('q')), Some(Action::Back));
     }
 
     #[test]
     fn reader_ctrl_keys() {
         assert_eq!(
             map_key(ctrl('d'), false, true, false, InputMode::Normal),
-            Action::PageDown
+            Some(Action::PageDown)
         );
         assert_eq!(
             map_key(ctrl('u'), false, true, false, InputMode::Normal),
-            Action::PageUp
+            Some(Action::PageUp)
         );
     }
 
@@ -264,11 +272,11 @@ mod tests {
                 false,
                 InputMode::Normal
             ),
-            Action::None
+            None
         );
         assert_eq!(
             map_key(key(KeyCode::Enter), false, true, false, InputMode::Normal),
-            Action::None
+            None
         );
     }
 
@@ -277,31 +285,31 @@ mod tests {
     #[test]
     fn normal_quit_and_back() {
         let n = |code| map_key(key(code), false, false, false, InputMode::Normal);
-        assert_eq!(n(KeyCode::Char('q')), Action::Quit);
-        assert_eq!(n(KeyCode::Esc), Action::Back);
+        assert_eq!(n(KeyCode::Char('q')), Some(Action::Quit));
+        assert_eq!(n(KeyCode::Esc), Some(Action::Back));
     }
 
     #[test]
     fn normal_navigation() {
         let n = |code| map_key(key(code), false, false, false, InputMode::Normal);
-        assert_eq!(n(KeyCode::Char('j')), Action::MoveDown);
-        assert_eq!(n(KeyCode::Down), Action::MoveDown);
-        assert_eq!(n(KeyCode::Char('k')), Action::MoveUp);
-        assert_eq!(n(KeyCode::Up), Action::MoveUp);
-        assert_eq!(n(KeyCode::Enter), Action::Select);
-        assert_eq!(n(KeyCode::Char('g')), Action::JumpTop);
-        assert_eq!(n(KeyCode::Char('G')), Action::JumpBottom);
+        assert_eq!(n(KeyCode::Char('j')), Some(Action::MoveDown));
+        assert_eq!(n(KeyCode::Down), Some(Action::MoveDown));
+        assert_eq!(n(KeyCode::Char('k')), Some(Action::MoveUp));
+        assert_eq!(n(KeyCode::Up), Some(Action::MoveUp));
+        assert_eq!(n(KeyCode::Enter), Some(Action::Select));
+        assert_eq!(n(KeyCode::Char('g')), Some(Action::JumpTop));
+        assert_eq!(n(KeyCode::Char('G')), Some(Action::JumpBottom));
     }
 
     #[test]
     fn normal_ctrl_keys() {
         assert_eq!(
             map_key(ctrl('d'), false, false, false, InputMode::Normal),
-            Action::PageDown
+            Some(Action::PageDown)
         );
         assert_eq!(
             map_key(ctrl('u'), false, false, false, InputMode::Normal),
-            Action::PageUp
+            Some(Action::PageUp)
         );
     }
 
@@ -325,14 +333,14 @@ mod tests {
             ('6', 5),
             ('7', 6), // Pinned virtual feed
         ] {
-            assert_eq!(n(c), Action::SwitchFeed(idx));
+            assert_eq!(n(c), Some(Action::SwitchFeed(idx)));
         }
     }
 
     #[test]
     fn normal_b_toggles_pin() {
         let n = |code| map_key(key(code), false, false, false, InputMode::Normal);
-        assert_eq!(n(KeyCode::Char('b')), Action::TogglePin);
+        assert_eq!(n(KeyCode::Char('b')), Some(Action::TogglePin));
     }
 
     #[test]
@@ -341,13 +349,13 @@ mod tests {
         // not emit it (the reader's focused story is already known to the
         // user — pinning belongs in the underlying pane).
         let r = |code| map_key(key(code), false, true, false, InputMode::Normal);
-        assert_eq!(r(KeyCode::Char('b')), Action::None);
+        assert_eq!(r(KeyCode::Char('b')), None);
     }
 
     #[test]
     fn prior_overlay_does_not_consume_b() {
         let p = |code| map_key(key(code), false, false, true, InputMode::Normal);
-        assert_eq!(p(KeyCode::Char('b')), Action::None);
+        assert_eq!(p(KeyCode::Char('b')), None);
     }
 
     #[test]
@@ -361,23 +369,23 @@ mod tests {
                 false,
                 InputMode::SearchInput
             ),
-            Action::None
+            None
         );
     }
 
     #[test]
     fn normal_actions() {
         let n = |code| map_key(key(code), false, false, false, InputMode::Normal);
-        assert_eq!(n(KeyCode::Char('o')), Action::OpenInBrowser);
-        assert_eq!(n(KeyCode::Char('p')), Action::OpenReader);
-        assert_eq!(n(KeyCode::Char('h')), Action::TogglePriorDiscussions);
-        assert_eq!(n(KeyCode::Tab), Action::SwitchPane);
-        assert_eq!(n(KeyCode::BackTab), Action::SwitchPane);
-        assert_eq!(n(KeyCode::Left), Action::SwitchPane);
-        assert_eq!(n(KeyCode::Right), Action::SwitchPane);
-        assert_eq!(n(KeyCode::Char('r')), Action::Refresh);
-        assert_eq!(n(KeyCode::Char('/')), Action::EnterSearch);
-        assert_eq!(n(KeyCode::Char('?')), Action::ToggleHelp);
+        assert_eq!(n(KeyCode::Char('o')), Some(Action::OpenInBrowser));
+        assert_eq!(n(KeyCode::Char('p')), Some(Action::OpenReader));
+        assert_eq!(n(KeyCode::Char('h')), Some(Action::TogglePriorDiscussions));
+        assert_eq!(n(KeyCode::Tab), Some(Action::SwitchPane));
+        assert_eq!(n(KeyCode::BackTab), Some(Action::SwitchPane));
+        assert_eq!(n(KeyCode::Left), Some(Action::SwitchPane));
+        assert_eq!(n(KeyCode::Right), Some(Action::SwitchPane));
+        assert_eq!(n(KeyCode::Char('r')), Some(Action::Refresh));
+        assert_eq!(n(KeyCode::Char('/')), Some(Action::EnterSearch));
+        assert_eq!(n(KeyCode::Char('?')), Some(Action::ToggleHelp));
     }
 
     #[test]
@@ -390,7 +398,7 @@ mod tests {
                 false,
                 InputMode::Normal
             ),
-            Action::None
+            None
         );
     }
 
@@ -399,16 +407,16 @@ mod tests {
     #[test]
     fn prior_overlay_keymap() {
         let p = |code| map_key(key(code), false, false, true, InputMode::Normal);
-        assert_eq!(p(KeyCode::Char('j')), Action::MoveDown);
-        assert_eq!(p(KeyCode::Down), Action::MoveDown);
-        assert_eq!(p(KeyCode::Char('k')), Action::MoveUp);
-        assert_eq!(p(KeyCode::Up), Action::MoveUp);
-        assert_eq!(p(KeyCode::Char('g')), Action::JumpTop);
-        assert_eq!(p(KeyCode::Char('G')), Action::JumpBottom);
-        assert_eq!(p(KeyCode::Enter), Action::Select);
-        assert_eq!(p(KeyCode::Char('o')), Action::OpenInBrowser);
-        assert_eq!(p(KeyCode::Esc), Action::Back);
-        assert_eq!(p(KeyCode::Char('q')), Action::Back);
+        assert_eq!(p(KeyCode::Char('j')), Some(Action::MoveDown));
+        assert_eq!(p(KeyCode::Down), Some(Action::MoveDown));
+        assert_eq!(p(KeyCode::Char('k')), Some(Action::MoveUp));
+        assert_eq!(p(KeyCode::Up), Some(Action::MoveUp));
+        assert_eq!(p(KeyCode::Char('g')), Some(Action::JumpTop));
+        assert_eq!(p(KeyCode::Char('G')), Some(Action::JumpBottom));
+        assert_eq!(p(KeyCode::Enter), Some(Action::Select));
+        assert_eq!(p(KeyCode::Char('o')), Some(Action::OpenInBrowser));
+        assert_eq!(p(KeyCode::Esc), Some(Action::Back));
+        assert_eq!(p(KeyCode::Char('q')), Some(Action::Back));
     }
 
     #[test]
@@ -416,10 +424,10 @@ mod tests {
         // Keys that would otherwise dispatch in normal mode — the overlay
         // should swallow them so e.g. `/` doesn't enter search underneath.
         let p = |code| map_key(key(code), false, false, true, InputMode::Normal);
-        assert_eq!(p(KeyCode::Char('/')), Action::None);
-        assert_eq!(p(KeyCode::Char('1')), Action::None);
-        assert_eq!(p(KeyCode::Char('p')), Action::None);
-        assert_eq!(p(KeyCode::Char('h')), Action::None);
+        assert_eq!(p(KeyCode::Char('/')), None);
+        assert_eq!(p(KeyCode::Char('1')), None);
+        assert_eq!(p(KeyCode::Char('p')), None);
+        assert_eq!(p(KeyCode::Char('h')), None);
     }
 
     #[test]
@@ -434,7 +442,7 @@ mod tests {
                 true,
                 InputMode::Normal
             ),
-            Action::OpenInBrowser
+            Some(Action::OpenInBrowser)
         );
     }
 
@@ -448,7 +456,7 @@ mod tests {
                 true,
                 InputMode::Normal
             ),
-            Action::ToggleHelp
+            Some(Action::ToggleHelp)
         );
     }
 
@@ -456,8 +464,8 @@ mod tests {
 
     #[test]
     fn hint_mode_suppresses_all_keys() {
-        // Every key returns Action::None so main.rs can route raw chars
-        // to HintKey via the input-mode shortcut.
+        // Every key returns None so main.rs can route raw chars to
+        // HintKey via the input-mode shortcut.
         assert_eq!(
             map_key(
                 key(KeyCode::Char('a')),
@@ -466,11 +474,11 @@ mod tests {
                 false,
                 InputMode::HintMode
             ),
-            Action::None
+            None
         );
         assert_eq!(
             map_key(key(KeyCode::Esc), false, false, false, InputMode::HintMode),
-            Action::None
+            None
         );
         assert_eq!(
             map_key(
@@ -480,7 +488,7 @@ mod tests {
                 false,
                 InputMode::HintMode
             ),
-            Action::None
+            None
         );
         // Even with overlays and help flagged, HintMode wins.
         assert_eq!(
@@ -491,7 +499,7 @@ mod tests {
                 true,
                 InputMode::HintMode
             ),
-            Action::None
+            None
         );
     }
 
@@ -500,7 +508,7 @@ mod tests {
         let n = |code| map_key(key(code), false, false, false, InputMode::Normal);
         assert_eq!(
             n(KeyCode::Char('f')),
-            Action::EnterHintMode(HintAction::Open)
+            Some(Action::EnterHintMode(HintAction::Open))
         );
     }
 
@@ -509,7 +517,7 @@ mod tests {
         let n = |code| map_key(key(code), false, false, false, InputMode::Normal);
         assert_eq!(
             n(KeyCode::Char('F')),
-            Action::EnterHintMode(HintAction::OpenInReader)
+            Some(Action::EnterHintMode(HintAction::OpenInReader))
         );
     }
 
@@ -518,7 +526,7 @@ mod tests {
         let n = |code| map_key(key(code), false, false, false, InputMode::Normal);
         assert_eq!(
             n(KeyCode::Char('y')),
-            Action::EnterHintMode(HintAction::CopyUrl)
+            Some(Action::EnterHintMode(HintAction::CopyUrl))
         );
     }
 
@@ -527,15 +535,15 @@ mod tests {
         let r = |code| map_key(key(code), false, true, false, InputMode::Normal);
         assert_eq!(
             r(KeyCode::Char('f')),
-            Action::EnterHintMode(HintAction::Open)
+            Some(Action::EnterHintMode(HintAction::Open))
         );
         assert_eq!(
             r(KeyCode::Char('F')),
-            Action::EnterHintMode(HintAction::OpenInReader)
+            Some(Action::EnterHintMode(HintAction::OpenInReader))
         );
         assert_eq!(
             r(KeyCode::Char('y')),
-            Action::EnterHintMode(HintAction::CopyUrl)
+            Some(Action::EnterHintMode(HintAction::CopyUrl))
         );
     }
 
@@ -544,9 +552,9 @@ mod tests {
         // Prior overlay's keymap should still consume f/F/y as None — those
         // keys only make sense in reader/comments contexts.
         let p = |code| map_key(key(code), false, false, true, InputMode::Normal);
-        assert_eq!(p(KeyCode::Char('f')), Action::None);
-        assert_eq!(p(KeyCode::Char('F')), Action::None);
-        assert_eq!(p(KeyCode::Char('y')), Action::None);
+        assert_eq!(p(KeyCode::Char('f')), None);
+        assert_eq!(p(KeyCode::Char('F')), None);
+        assert_eq!(p(KeyCode::Char('y')), None);
     }
 
     #[test]
@@ -562,8 +570,8 @@ mod tests {
                 InputMode::SearchInput,
             )
         };
-        assert_eq!(s('f'), Action::None);
-        assert_eq!(s('F'), Action::None);
-        assert_eq!(s('y'), Action::None);
+        assert_eq!(s('f'), None);
+        assert_eq!(s('F'), None);
+        assert_eq!(s('y'), None);
     }
 }

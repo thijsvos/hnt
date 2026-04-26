@@ -57,7 +57,13 @@ impl FlatComment {
         let needs_refresh = !matches!(&self.plain_text_cache, Some((w, _)) if *w == width);
         if needs_refresh {
             let rendered = html2text::from_read(text.as_bytes(), width.max(20)).unwrap_or_default();
-            self.plain_text_cache = Some((width, rendered));
+            // Strip terminal control bytes that html2text re-emits via
+            // entity-decoded HTML (e.g. `&#x1b;`). Otherwise a malicious
+            // comment could rewrite the user's terminal title or palette.
+            self.plain_text_cache = Some((
+                width,
+                crate::sanitize::sanitize_terminal(&rendered).into_owned(),
+            ));
         }
         self.plain_text_cache.as_ref().map(|(_, s)| s.as_str())
     }
@@ -111,7 +117,11 @@ impl CommentTreeState {
             !matches!(&self.story_text_cache, Some((cid, w, _)) if *cid == id && *w == width);
         if needs_refresh {
             let rendered = html2text::from_read(text.as_bytes(), width.max(20)).unwrap_or_default();
-            self.story_text_cache = Some((id, width, rendered));
+            self.story_text_cache = Some((
+                id,
+                width,
+                crate::sanitize::sanitize_terminal(&rendered).into_owned(),
+            ));
         }
         self.story_text_cache.as_ref().map(|(_, _, s)| s.as_str())
     }
@@ -153,34 +163,32 @@ impl CommentTreeState {
     /// coherently. Returns `None` for [`CommentFilter::All`] — callers
     /// treat that as "everything passes."
     ///
-    /// O(comments) for the matching scan plus O(matches × tree_depth) for
-    /// the ancestor walk. The flat list is in pre-order, so each ancestor
-    /// is found by walking backwards over strictly-decreasing depths.
+    /// O(n) using a single forward pass: maintains a `path` stack of
+    /// ancestor indices at strictly-decreasing depths, then unions the
+    /// current path into `keep` whenever a comment passes the filter.
     fn filter_visible_set(&self) -> Option<HashSet<usize>> {
         let threshold = match self.filter {
             CommentFilter::All => return None,
             CommentFilter::NewSince(t) | CommentFilter::Recent(t) => t,
         };
-        let mut keep = HashSet::new();
+        let mut keep: HashSet<usize> = HashSet::new();
+        let mut path: Vec<usize> = Vec::with_capacity(16);
         for (i, c) in self.comments.iter().enumerate() {
-            if c.item.time.is_none_or(|t| t <= threshold) {
-                continue;
+            // Pop any ancestors at or above this depth — they can't be on
+            // the path to `i`.
+            while path
+                .last()
+                .is_some_and(|&p| self.comments[p].depth >= c.depth)
+            {
+                path.pop();
             }
-            keep.insert(i);
-            let mut wanted_depth = c.depth;
-            if wanted_depth == 0 {
-                continue;
-            }
-            for j in (0..i).rev() {
-                let d = self.comments[j].depth;
-                if d < wanted_depth {
-                    keep.insert(j);
-                    wanted_depth = d;
-                    if d == 0 {
-                        break;
-                    }
+            if c.item.time.is_some_and(|t| t > threshold) {
+                for &p in &path {
+                    keep.insert(p);
                 }
+                keep.insert(i);
             }
+            path.push(i);
         }
         Some(keep)
     }

@@ -9,7 +9,7 @@
 use crate::api::types::CommentId;
 use crate::state::comment_state::{CommentFilter, CommentTreeState, FlatComment};
 use crate::ui::spinner;
-use crate::ui::story_list::format_time_ago;
+use crate::ui::story_list::format_time_ago_since;
 use crate::ui::theme;
 use ratatui::{
     buffer::Buffer,
@@ -31,6 +31,10 @@ pub struct CommentTree<'a> {
     pub focused: bool,
     pub tick: u64,
     pub prior_count: usize,
+    /// Wall-clock timestamp captured once per frame in [`crate::ui::render`]
+    /// so the `Ns/Nm/Nh` ago column doesn't `clock_gettime` per visible
+    /// comment.
+    pub now_secs: i64,
 }
 
 /// A pre-measured comment: all the lines it will produce and its visual index.
@@ -136,20 +140,25 @@ impl<'a> Widget for CommentTree<'a> {
 
         let meta_snapshot = self.state.story.as_ref().map(|s| {
             let has_text = s.text.is_some();
+            // Sanitize HN-supplied fields before they enter the rendered
+            // line — a malicious URL or username could otherwise embed
+            // terminal escapes via entity-decoded HTML upstream.
+            let by = crate::sanitize::sanitize_terminal(s.by.as_deref().unwrap_or("?"));
             let line = if has_text {
                 format!(
                     "  {} pts | {} | {} comments",
                     s.score.unwrap_or(0),
-                    s.by.as_deref().unwrap_or("?"),
+                    by,
                     s.descendants.unwrap_or(0),
                 )
             } else {
+                let url = crate::sanitize::sanitize_terminal(s.url.as_deref().unwrap_or(""));
                 format!(
                     "  {} pts | {} | {} comments | {}",
                     s.score.unwrap_or(0),
-                    s.by.as_deref().unwrap_or("?"),
+                    by,
                     s.descendants.unwrap_or(0),
-                    s.url.as_deref().unwrap_or(""),
+                    url,
                 )
             };
             (has_text, line)
@@ -229,6 +238,7 @@ impl<'a> Widget for CommentTree<'a> {
             inner.width as usize,
             &self.state.pending_root_ids,
             spinner_frame,
+            self.now_secs,
         );
 
         // Initialize row_map for mouse click handling
@@ -341,6 +351,7 @@ fn measure_comments(
     width: usize,
     pending_root_ids: &std::collections::HashSet<CommentId>,
     spinner_frame: &str,
+    now_secs: i64,
 ) -> Vec<MeasuredComment> {
     let mut result = Vec::new();
 
@@ -363,19 +374,25 @@ fn measure_comments(
         let comment = &all_comments[idx];
         let depth_color = theme::depth_color(comment.depth);
 
-        let author = comment.item.by.as_deref().unwrap_or("[deleted]");
-        let time_ago = comment.item.time.map(format_time_ago).unwrap_or_default();
+        let author_sanitized = crate::sanitize::sanitize_terminal(
+            comment.item.by.as_deref().unwrap_or("[deleted]"),
+        );
+        let author: &str = author_sanitized.as_ref();
+        let time_ago = comment
+            .item
+            .time
+            .map(|t| format_time_ago_since(t, now_secs))
+            .unwrap_or_default();
         let collapse_indicator = if is_collapsed { " [+]" } else { "" };
 
-        let child_count = if is_collapsed {
+        // Only allocate when there's actually a hidden-children badge to
+        // show — for the common "not collapsed" path this stays None and
+        // skips a per-comment-per-frame `String::new()` plus its Span.
+        let child_count: Option<String> = if is_collapsed {
             let count = count_hidden_children(all_comments, idx);
-            if count > 0 {
-                format!(" ({} hidden)", count)
-            } else {
-                String::new()
-            }
+            (count > 0).then(|| format!(" ({} hidden)", count))
         } else {
-            String::new()
+            None
         };
 
         // Header line — build Spans directly. Each Span owns its String
@@ -406,8 +423,13 @@ fn measure_comments(
                 collapse_indicator.to_string(),
                 ratatui::style::Style::default().fg(theme::YELLOW),
             ),
-            Span::styled(child_count, ratatui::style::Style::default().fg(theme::DIM)),
         ]);
+        if let Some(text) = child_count {
+            header_spans.push(Span::styled(
+                text,
+                ratatui::style::Style::default().fg(theme::DIM),
+            ));
+        }
         lines.push(CommentLine::Header(header_spans));
 
         // Comment text lines
