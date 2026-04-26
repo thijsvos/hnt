@@ -12,11 +12,12 @@
 //! resolve the path or read the file leave the store in-memory only —
 //! the feature still works within the session but is not persisted across
 //! restarts. Mirrors [`crate::state::read_store::ReadStore`]'s atomic
-//! tmp+rename write, version field, and corrupt-file recovery.
+//! tmp+rename write, version field, and corrupt-file recovery via the
+//! shared [`crate::state::persist::JsonStore`] helper.
 
 use crate::api::types::StoryId;
+use crate::state::persist::{xdg_data_path, JsonStore, PersistedEntry};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Soft cap on stored pins. Oldest (lowest `pinned_at`) entries are
@@ -51,6 +52,12 @@ pub struct PinEntry {
     pub collapsed: Vec<u64>,
 }
 
+impl PersistedEntry for PinEntry {
+    fn age_key(&self) -> i64 {
+        self.pinned_at
+    }
+}
+
 /// In-memory pinned-store with JSON-file persistence.
 ///
 /// Constructed via [`PinStore::load`] at startup. Add a pin with
@@ -60,16 +67,7 @@ pub struct PinEntry {
 /// [`PinStore::resume_for`], [`PinStore::pinned_ids_newest_first`]) are
 /// cheap.
 pub struct PinStore {
-    entries: HashMap<StoryId, PinEntry>,
-    path: Option<PathBuf>,
-    dirty: bool,
-}
-
-#[derive(Serialize, Deserialize)]
-struct DiskStore {
-    version: u32,
-    #[serde(default)]
-    entries: HashMap<String, PinEntry>,
+    inner: JsonStore<PinEntry>,
 }
 
 impl PinStore {
@@ -77,9 +75,7 @@ impl PinStore {
     /// default XDG path can't be resolved.
     pub fn empty() -> Self {
         Self {
-            entries: HashMap::new(),
-            path: None,
-            dirty: false,
+            inner: JsonStore::empty(MAX_ENTRIES, SCHEMA_VERSION),
         }
     }
 
@@ -88,7 +84,7 @@ impl PinStore {
     /// in-memory store if the path can't be resolved or the file is
     /// missing/corrupt.
     pub fn load() -> Self {
-        match default_path() {
+        match xdg_data_path("pinned.json") {
             Some(path) => Self::load_from(path),
             None => Self::empty(),
         }
@@ -98,20 +94,8 @@ impl PinStore {
     /// produces an empty store with `path` still set as the save target —
     /// the next [`PinStore::save`] will replace it.
     pub fn load_from(path: PathBuf) -> Self {
-        let entries = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|raw| serde_json::from_str::<DiskStore>(&raw).ok())
-            .map(|disk| {
-                disk.entries
-                    .into_iter()
-                    .filter_map(|(k, v)| k.parse::<u64>().ok().map(|id| (StoryId(id), v)))
-                    .collect()
-            })
-            .unwrap_or_default();
         Self {
-            entries,
-            path: Some(path),
-            dirty: false,
+            inner: JsonStore::load_from(path, MAX_ENTRIES, SCHEMA_VERSION),
         }
     }
 
@@ -121,30 +105,7 @@ impl PinStore {
     /// Failures (permissions, missing parent, disk full) are silently
     /// swallowed — pin-state is non-critical.
     pub fn save(&mut self) {
-        if !self.dirty {
-            return;
-        }
-        let Some(path) = self.path.as_ref() else {
-            return;
-        };
-        let disk = DiskStore {
-            version: SCHEMA_VERSION,
-            entries: self
-                .entries
-                .iter()
-                .map(|(&id, entry)| (id.0.to_string(), entry.clone()))
-                .collect(),
-        };
-        let Ok(json) = serde_json::to_string(&disk) else {
-            return;
-        };
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, json).is_ok() && std::fs::rename(&tmp, path).is_ok() {
-            self.dirty = false;
-        }
+        self.inner.save();
     }
 
     /// Pins `id` with the current wall-clock timestamp and a default
@@ -158,10 +119,10 @@ impl PinStore {
     /// Variant of [`PinStore::pin`] that uses an explicit timestamp —
     /// used by tests to keep behavior deterministic.
     pub fn pin_at(&mut self, id: StoryId, now: i64) {
-        if self.entries.contains_key(&id) {
+        if self.inner.entries.contains_key(&id) {
             return;
         }
-        self.entries.insert(
+        self.inner.insert(
             id,
             PinEntry {
                 pinned_at: now,
@@ -169,35 +130,26 @@ impl PinStore {
                 collapsed: Vec::new(),
             },
         );
-        if self.entries.len() > MAX_ENTRIES {
-            self.evict_oldest();
-        }
-        self.dirty = true;
     }
 
     /// Unpins `id`. No-op if not pinned. Returns whether anything was
     /// removed (useful for callers that want to flag the store dirty
     /// only on a real change).
     pub fn unpin(&mut self, id: StoryId) -> bool {
-        if self.entries.remove(&id).is_some() {
-            self.dirty = true;
-            true
-        } else {
-            false
-        }
+        self.inner.remove(id)
     }
 
     /// Whether `id` is currently pinned.
     #[must_use]
     pub fn is_pinned(&self, id: StoryId) -> bool {
-        self.entries.contains_key(&id)
+        self.inner.entries.contains_key(&id)
     }
 
     /// Snapshot the user's reading position for `id`. No-op if `id` isn't
     /// pinned — only deliberately-curated stories get their position
     /// remembered.
     pub fn update_resume(&mut self, id: StoryId, selected: usize, collapsed: Vec<u64>) {
-        let Some(entry) = self.entries.get_mut(&id) else {
+        let Some(entry) = self.inner.entries.get_mut(&id) else {
             return;
         };
         // Skip a write (and `dirty`) when nothing actually changed —
@@ -207,14 +159,14 @@ impl PinStore {
         }
         entry.selected = selected;
         entry.collapsed = collapsed;
-        self.dirty = true;
+        self.inner.dirty = true;
     }
 
     /// Persisted entry for `id`, if any. Used by the comment-load path to
     /// restore reading position once the thread has finished loading.
     #[must_use]
     pub fn resume_for(&self, id: StoryId) -> Option<&PinEntry> {
-        self.entries.get(&id)
+        self.inner.entries.get(&id)
     }
 
     /// Pinned story IDs in newest-first order — the listing the Pinned
@@ -225,6 +177,7 @@ impl PinStore {
     #[must_use]
     pub fn pinned_ids_newest_first(&self) -> Vec<u64> {
         let mut entries: Vec<(i64, StoryId)> = self
+            .inner
             .entries
             .iter()
             .map(|(&id, e)| (e.pinned_at, id))
@@ -235,48 +188,24 @@ impl PinStore {
         entries.into_iter().map(|(_, id)| id.0).collect()
     }
 
-    /// Drops entries with the lowest `pinned_at` until the store is
-    /// back within [`MAX_ENTRIES`].
-    fn evict_oldest(&mut self) {
-        let mut ages: Vec<(i64, StoryId)> = self
-            .entries
-            .iter()
-            .map(|(&id, e)| (e.pinned_at, id))
-            .collect();
-        ages.sort_unstable();
-        let excess = self.entries.len().saturating_sub(MAX_ENTRIES);
-        for (_, id) in ages.into_iter().take(excess) {
-            self.entries.remove(&id);
-        }
-    }
-
     /// Number of pinned entries. Exposed for tests and diagnostics.
     #[cfg(test)]
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.inner.entries.len()
     }
-}
 
-/// Resolves the default persistence path: `$XDG_DATA_HOME/hnt/pinned.json`,
-/// falling back to `$HOME/.local/share/hnt/pinned.json`. Returns `None` if
-/// neither variable is set (rare — containers with no `HOME`).
-fn default_path() -> Option<PathBuf> {
-    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-        if !xdg.is_empty() {
-            return Some(PathBuf::from(xdg).join("hnt").join("pinned.json"));
-        }
+    /// Test-only: clear the dirty flag (simulate "just saved" without
+    /// hitting disk).
+    #[cfg(test)]
+    pub(crate) fn clear_dirty(&mut self) {
+        self.inner.dirty = false;
     }
-    let home = std::env::var("HOME").ok()?;
-    if home.is_empty() {
-        return None;
+
+    /// Test-only: read the dirty flag.
+    #[cfg(test)]
+    pub(crate) fn is_dirty(&self) -> bool {
+        self.inner.dirty
     }
-    Some(
-        PathBuf::from(home)
-            .join(".local")
-            .join("share")
-            .join("hnt")
-            .join("pinned.json"),
-    )
 }
 
 #[cfg(test)]
@@ -382,10 +311,10 @@ mod tests {
     fn update_resume_no_change_does_not_dirty() {
         let mut s = fresh_store("no_change");
         s.pin_at(sid(42), 1_700_000_000);
-        s.dirty = false; // simulate "just saved"
+        s.clear_dirty(); // simulate "just saved"
         s.update_resume(sid(42), 0, Vec::new());
         assert!(
-            !s.dirty,
+            !s.is_dirty(),
             "equal-value resume update must not dirty the store"
         );
     }

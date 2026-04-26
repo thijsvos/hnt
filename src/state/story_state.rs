@@ -12,9 +12,18 @@ use crate::api::types::Item;
 /// `stories` is the currently loaded window; `all_ids` is the full ID list
 /// from the initial feed fetch, used as a stable index for pagination so
 /// appended pages don't drift when new stories are posted mid-session.
+///
+/// `domains` is a parallel cache of `Item::domain()` results, populated
+/// once when stories load so per-frame rendering doesn't re-parse URLs.
+/// Mutate `stories` only through [`Self::replace_stories`] /
+/// [`Self::append_stories`] so the cache stays in sync.
 #[derive(Default)]
 pub struct StoryListState {
     pub stories: Vec<Item>,
+    /// Pre-computed `story.domain()` for each story at the same index.
+    /// Avoids the per-frame `url::Url::parse` that
+    /// [`StoryList`](crate::ui::story_list::StoryList) used to do.
+    pub domains: Vec<Option<String>>,
     pub all_ids: Vec<u64>,
     pub selected: usize,
     pub loading: bool,
@@ -23,6 +32,20 @@ pub struct StoryListState {
 impl StoryListState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Replaces the loaded stories and refreshes the parallel domain
+    /// cache. Use instead of `state.stories = ...` so per-frame rendering
+    /// can keep using the cache.
+    pub fn replace_stories(&mut self, stories: Vec<Item>) {
+        self.domains = stories.iter().map(Item::domain).collect();
+        self.stories = stories;
+    }
+
+    /// Appends a paginated batch and extends the parallel domain cache.
+    pub fn append_stories(&mut self, stories: Vec<Item>) {
+        self.domains.extend(stories.iter().map(Item::domain));
+        self.stories.extend(stories);
     }
 
     pub fn select_next(&mut self) {
@@ -74,6 +97,7 @@ impl StoryListState {
 
     pub fn reset(&mut self) {
         self.stories.clear();
+        self.domains.clear();
         self.all_ids.clear();
         self.selected = 0;
         self.loading = false;

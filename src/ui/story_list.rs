@@ -20,6 +20,9 @@ use ratatui::{
 /// app state; rebuilt each frame.
 pub struct StoryList<'a> {
     pub stories: &'a [Item],
+    /// Pre-computed `Item::domain()` results, parallel to `stories`.
+    /// Avoids a per-frame `url::Url::parse` per visible row.
+    pub domains: &'a [Option<String>],
     pub selected: usize,
     pub focused: bool,
     pub loading: bool,
@@ -102,33 +105,41 @@ impl<'a> Widget for StoryList<'a> {
                 .read_store
                 .new_comments_since(sid, story.descendants.unwrap_or(0));
 
-            let title = story.display_title();
+            // Sanitize untrusted HN-supplied strings before they reach a
+            // ratatui Span — terminal escapes embedded in titles/domains
+            // would otherwise be forwarded straight to crossterm.
+            let title_sanitized = crate::sanitize::sanitize_terminal(story.display_title());
+            let title: &str = title_sanitized.as_ref();
             let badge = story.badge();
-            let domain = story
-                .domain()
-                .map(|d| format!(" ({})", d))
+            // Domain is pre-parsed by `StoryListState::replace_stories` /
+            // `append_stories`; rendering only formats the cached value.
+            let domain = self
+                .domains
+                .get(i)
+                .and_then(|d| d.as_deref())
+                .map(|d| format!(" ({})", crate::sanitize::sanitize_terminal(d)))
                 .unwrap_or_default();
             let new_badge_text = new_comments.map(|n| format!(" +{}", n));
 
             let num = format!("{:>3}. ", i + 1);
             let badge_text = badge.map(|b| format!("[{}] ", b.label()));
-            let badge_width = badge_text.as_ref().map_or(0, |t| t.len());
-            let new_badge_width = new_badge_text.as_ref().map_or(0, |t| t.len());
+            // Visible-column math: `chars().count()` not `.len()` so a
+            // future non-ASCII badge or `+N` glyph doesn't misalign the
+            // truncation boundary.
+            let badge_width = badge_text.as_ref().map_or(0, |t| t.chars().count());
+            let new_badge_width = new_badge_text.as_ref().map_or(0, |t| t.chars().count());
             // ★ + space = 2 visual columns. Reserved before the badge so a
             // pinned Ask HN story stays aligned: "  1. ★ [Ask HN] Title".
             let pin_width = if is_pinned { 2 } else { 0 };
             let max_title_width = (inner.width as usize).saturating_sub(
-                num.len() + pin_width + badge_width + new_badge_width + domain.len() + 2,
+                num.chars().count()
+                    + pin_width
+                    + badge_width
+                    + new_badge_width
+                    + domain.chars().count()
+                    + 2,
             );
-            let truncated_title: String = if title.chars().count() > max_title_width {
-                let truncated: String = title
-                    .chars()
-                    .take(max_title_width.saturating_sub(3))
-                    .collect();
-                format!("{}...", truncated)
-            } else {
-                title.to_string()
-            };
+            let truncated_title = crate::ui::util::truncate_to(title, max_title_width);
 
             let row_bg = if is_selected {
                 theme::SURFACE
@@ -191,12 +202,9 @@ impl<'a> Widget for StoryList<'a> {
 }
 
 /// Renders a Unix timestamp as `"Ns"`/`"Nm"`/`"Nh"`/`"Nd"` relative to
-/// the current wall-clock time.
-pub fn format_time_ago(timestamp: i64) -> String {
-    format_time_ago_since(timestamp, chrono::Utc::now().timestamp())
-}
-
-fn format_time_ago_since(timestamp: i64, now: i64) -> String {
+/// `now`. Per-frame callers should hoist `now` out of any visible-rows
+/// loop so they only `clock_gettime` once per render.
+pub fn format_time_ago_since(timestamp: i64, now: i64) -> String {
     let diff = now - timestamp;
 
     if diff < 60 {

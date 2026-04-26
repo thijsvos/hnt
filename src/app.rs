@@ -20,12 +20,19 @@ use crate::state::read_store::ReadStore;
 use crate::state::reader_state::{ReaderState, StyledFragment};
 use crate::state::search_state::SearchState;
 use crate::state::story_state::StoryListState;
-use std::collections::{HashMap, HashSet};
+use lru::LruCache;
+use std::collections::HashSet;
+use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 const MIN_PAGE_SIZE: usize = 30;
 const SCROLL_PAGE: usize = 10;
 const MAX_COMMENT_DEPTH: usize = 10;
+/// Maximum prior-discussions results retained across a session. Long
+/// browse sessions otherwise grow this cache unboundedly (one entry per
+/// distinct visited story URL).
+const PRIOR_RESULTS_CACHE: usize = 200;
 
 /// Which content pane currently has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,11 +167,18 @@ pub struct App {
     /// when the user presses `h`.
     pub prior_state: Option<PriorDiscussionsState>,
     /// Prior-submissions query results, keyed by the story ID that was
-    /// queried. Keeps each result around for the rest of the session so
-    /// reopening the [`PriorDiscussionsState`] overlay doesn't trigger a refetch.
-    pub prior_results: HashMap<StoryId, Vec<Item>>,
-    /// Story IDs whose URL queries are in flight. Prevents duplicate spawns.
-    prior_in_flight: HashSet<StoryId>,
+    /// queried. Keeps each result around for reopening the
+    /// [`PriorDiscussionsState`] overlay without a refetch. Bounded by
+    /// [`PRIOR_RESULTS_CACHE`] entries so a long browse session doesn't
+    /// grow the cache unboundedly. LRU eviction order means the most
+    /// recently visited stories stay warm.
+    pub prior_results: LruCache<StoryId, Vec<Item>>,
+    /// Story IDs whose URL queries are in flight. Prevents duplicate
+    /// spawns. Wrapped in `Arc<Mutex<...>>` so the spawned task can hold
+    /// a [`PriorInFlightGuard`] that clears the entry on `Drop` — that
+    /// way a task panic doesn't leak the ID and lock the user out of
+    /// reopening prior-discussions for that story.
+    prior_in_flight: Arc<Mutex<HashSet<StoryId>>>,
 
     /// Persisted read-state — records which stories have been opened and
     /// how many comments each had at the time. Rendered by
@@ -219,8 +233,10 @@ impl App {
             terminal_width,
             tick_count: 0,
             prior_state: None,
-            prior_results: HashMap::new(),
-            prior_in_flight: HashSet::new(),
+            prior_results: LruCache::new(
+                NonZeroUsize::new(PRIOR_RESULTS_CACHE).expect("PRIOR_RESULTS_CACHE > 0"),
+            ),
+            prior_in_flight: Arc::new(Mutex::new(HashSet::new())),
             read_store: ReadStore::load(),
             pin_store: PinStore::load(),
             pending_pinned_resume: None,
@@ -283,6 +299,23 @@ impl App {
     /// Also clears pending if the loaded story has changed underneath us
     /// (the user moved on while comments were still streaming in).
     fn try_advance_resume(&mut self) {
+        self.apply_pending_resume(false);
+    }
+
+    /// Final-pass clamp invoked from `CommentsDone`: if a saved target
+    /// still lies past the now-complete visible range (rare — heavy
+    /// moderation since the last visit), pin the cursor to the last
+    /// visible row instead of leaving the resume permanently pending.
+    fn finalize_pending_resume(&mut self) {
+        self.apply_pending_resume(true);
+    }
+
+    /// Shared body for [`Self::try_advance_resume`] (in-progress) and
+    /// [`Self::finalize_pending_resume`] (final pass after `CommentsDone`).
+    /// Returns silently with the resume still pending when the loaded
+    /// tree hasn't grown enough yet — except in the final pass, where
+    /// past-end targets clamp to `visible_len - 1` and the resume clears.
+    fn apply_pending_resume(&mut self, clamp_to_end: bool) {
         let Some(target) = self.pending_pinned_resume else {
             return;
         };
@@ -296,12 +329,39 @@ impl App {
         }
         let visible_len = self.comment_state.visible_len();
         if visible_len == 0 {
-            return; // no rows yet — try again on the next batch
+            if clamp_to_end {
+                self.pending_pinned_resume = None;
+            }
+            return;
         }
         if target.target_selected < visible_len {
             self.comment_state.selected = target.target_selected;
             self.pending_pinned_resume = None;
+        } else if clamp_to_end {
+            self.comment_state.selected = visible_len - 1;
+            self.pending_pinned_resume = None;
         }
+    }
+
+    /// Records that the user just navigated within the comments pane.
+    /// Drops any pending pinned-resume target so we don't override their
+    /// intentional cursor motion. Called from every comments-pane
+    /// navigation arm in `dispatch`, plus the click and scroll handlers.
+    fn user_navigated_comments(&mut self) {
+        self.pending_pinned_resume = None;
+    }
+
+    /// Snapshot the outgoing pinned story's reading position, blow away
+    /// both panes' state plus the HN client cache, drop any pending
+    /// resume target, and kick off a fresh feed fetch. Used by
+    /// `Action::SwitchFeed`, `Action::Refresh`, and [`Self::cancel_search`].
+    fn reset_panes_and_reload(&mut self) {
+        self.snapshot_pinned_resume_if_any();
+        self.story_state.reset();
+        self.comment_state.reset();
+        self.pending_pinned_resume = None;
+        self.client.clear_cache();
+        self.spawn_load_stories(LoadMode::Replace);
     }
 
     /// Spawns a background fetch for the first page of the current feed.
@@ -318,8 +378,8 @@ impl App {
     /// caller-specific and stay at the call sites.
     fn apply_loaded_stories(&mut self, stories: Vec<Item>, mode: LoadMode) {
         match mode {
-            LoadMode::Append => self.story_state.stories.extend(stories),
-            LoadMode::Replace => self.story_state.stories = stories,
+            LoadMode::Append => self.story_state.append_stories(stories),
+            LoadMode::Replace => self.story_state.replace_stories(stories),
         }
         self.story_state.loading = false;
         self.error = None;
@@ -405,18 +465,9 @@ impl App {
                 AppMessage::CommentsDone => {
                     self.comment_state.loading = false;
                     self.comment_state.pending_root_ids.clear();
-                    // Final attempt — clamp to the now-complete tree.
-                    if let Some(target) = self.pending_pinned_resume.take() {
-                        if let Some(ref story) = self.comment_state.story {
-                            if StoryId(story.id) == target.story_id {
-                                let visible_len = self.comment_state.visible_len();
-                                if visible_len > 0 {
-                                    self.comment_state.selected =
-                                        target.target_selected.min(visible_len - 1);
-                                }
-                            }
-                        }
-                    }
+                    // Final attempt — clamp past-end targets to the last
+                    // visible row of the now-complete tree.
+                    self.finalize_pending_resume();
                 }
                 AppMessage::ArticleLoaded { lines, links } => {
                     if let Some(ref mut reader) = self.reader_state {
@@ -437,7 +488,8 @@ impl App {
                     story_id,
                     submissions,
                 } => {
-                    self.prior_in_flight.remove(&story_id);
+                    // The spawned task's `PriorInFlightGuard` clears the
+                    // in-flight entry on Drop, so no explicit removal here.
                     // If the user has already opened the overlay for this
                     // same story, backfill its contents now that we have data.
                     if let Some(ref mut ps) = self.prior_state {
@@ -446,7 +498,7 @@ impl App {
                             ps.selected = 0;
                         }
                     }
-                    self.prior_results.insert(story_id, submissions);
+                    self.prior_results.put(story_id, submissions);
                 }
             }
         }
@@ -478,94 +530,70 @@ impl App {
             _ => {}
         }
 
-        // When reader is open, route actions to reader.
         if self.reader_state.is_some() {
-            // Back mutates the Option itself, so handle it before borrowing
-            // the inner state.
-            if matches!(action, Action::Back) {
-                self.reader_state = None;
-                return;
-            }
-            let Some(r) = self.reader_state.as_mut() else {
-                return;
-            };
-            match action {
-                Action::MoveDown => r.scroll_down(1),
-                Action::MoveUp => r.scroll_up(1),
-                Action::PageDown => r.page_down(SCROLL_PAGE),
-                Action::PageUp => r.page_up(SCROLL_PAGE),
-                Action::JumpTop => r.jump_top(),
-                Action::JumpBottom => r.jump_bottom(),
-                Action::OpenInBrowser => open_http_url(r.url.as_deref()),
-                // Exhaustive no-op list — when new Action variants are added
-                // they'll provoke a compile error here so the overlay's
-                // handling is a deliberate choice, not an accident.
-                Action::Quit
-                | Action::Select
-                | Action::OpenReader
-                | Action::SwitchPane
-                | Action::SwitchFeed(_)
-                | Action::Refresh
-                | Action::EnterSearch
-                | Action::ToggleHelp
-                | Action::TogglePriorDiscussions
-                | Action::CycleCommentFilter
-                | Action::TogglePin
-                | Action::None => {}
-                Action::EnterHintMode(_) | Action::HintKey(_) | Action::ExitHintMode => {
-                    unreachable!("hint actions handled above")
-                }
-                Action::Back => unreachable!("Back is handled above"),
-            }
-            return;
+            return self.dispatch_reader(action);
         }
-
-        // When the prior-discussions overlay is open, route a reduced action
-        // set and consume everything else.
         if self.prior_state.is_some() {
-            // Actions that mutate App itself (not just the overlay's inner
-            // state) go first so the subsequent borrow of `p` is clean.
-            if matches!(action, Action::Back) {
-                self.prior_state = None;
-                return;
-            }
-            if matches!(action, Action::Select) {
-                self.open_selected_prior_discussion();
-                return;
-            }
-            let Some(p) = self.prior_state.as_mut() else {
-                return;
-            };
-            match action {
-                Action::MoveDown => p.select_next(),
-                Action::MoveUp => p.select_prev(),
-                Action::JumpTop => p.jump_top(),
-                Action::JumpBottom => p.jump_bottom(),
-                Action::OpenInBrowser => {
-                    open_http_url(p.selected_submission().and_then(|i| i.url.as_deref()));
-                }
-                // Exhaustive no-op list — see note in reader block above.
-                Action::Quit
-                | Action::OpenReader
-                | Action::SwitchPane
-                | Action::SwitchFeed(_)
-                | Action::Refresh
-                | Action::EnterSearch
-                | Action::ToggleHelp
-                | Action::TogglePriorDiscussions
-                | Action::CycleCommentFilter
-                | Action::TogglePin
-                | Action::PageDown
-                | Action::PageUp
-                | Action::None => {}
-                Action::EnterHintMode(_) | Action::HintKey(_) | Action::ExitHintMode => {
-                    unreachable!("hint actions handled above")
-                }
-                Action::Back | Action::Select => unreachable!("handled above"),
-            }
+            return self.dispatch_prior(action);
+        }
+        self.dispatch_normal(action);
+    }
+
+    /// Dispatch arm for the article-reader overlay. Assumes
+    /// `reader_state.is_some()`. Hint actions are filtered upstream by
+    /// [`Self::dispatch`]. Unmapped actions are silently consumed.
+    fn dispatch_reader(&mut self, action: Action) {
+        // Back mutates the Option itself, so handle it before borrowing
+        // the inner state.
+        if matches!(action, Action::Back) {
+            self.reader_state = None;
             return;
         }
+        let Some(r) = self.reader_state.as_mut() else {
+            return;
+        };
+        match action {
+            Action::MoveDown => r.scroll_down(1),
+            Action::MoveUp => r.scroll_up(1),
+            Action::PageDown => r.page_down(SCROLL_PAGE),
+            Action::PageUp => r.page_up(SCROLL_PAGE),
+            Action::JumpTop => r.jump_top(),
+            Action::JumpBottom => r.jump_bottom(),
+            Action::OpenInBrowser => open_http_url(r.url.as_deref()),
+            _ => {}
+        }
+    }
 
+    /// Dispatch arm for the prior-discussions overlay. Assumes
+    /// `prior_state.is_some()`. Unmapped actions are silently consumed.
+    fn dispatch_prior(&mut self, action: Action) {
+        // Actions that mutate App itself (not just the overlay's inner
+        // state) go first so the subsequent borrow of `p` is clean.
+        if matches!(action, Action::Back) {
+            self.prior_state = None;
+            return;
+        }
+        if matches!(action, Action::Select) {
+            self.open_selected_prior_discussion();
+            return;
+        }
+        let Some(p) = self.prior_state.as_mut() else {
+            return;
+        };
+        match action {
+            Action::MoveDown => p.select_next(),
+            Action::MoveUp => p.select_prev(),
+            Action::JumpTop => p.jump_top(),
+            Action::JumpBottom => p.jump_bottom(),
+            Action::OpenInBrowser => {
+                open_http_url(p.selected_submission().and_then(|i| i.url.as_deref()));
+            }
+            _ => {}
+        }
+    }
+
+    /// Dispatch arm for the normal two-pane state (no overlay open).
+    fn dispatch_normal(&mut self, action: Action) {
         match action {
             Action::Quit => self.running = false,
             Action::Back => {
@@ -586,21 +614,21 @@ impl App {
                     self.check_lazy_load();
                 }
                 Pane::Comments => {
-                    self.pending_pinned_resume = None;
+                    self.user_navigated_comments();
                     self.comment_state.select_next();
                 }
             },
             Action::MoveUp => match self.focus {
                 Pane::Stories => self.story_state.select_prev(),
                 Pane::Comments => {
-                    self.pending_pinned_resume = None;
+                    self.user_navigated_comments();
                     self.comment_state.select_prev();
                 }
             },
             Action::Select => match self.focus {
                 Pane::Stories => self.load_selected_comments(),
                 Pane::Comments => {
-                    self.pending_pinned_resume = None;
+                    self.user_navigated_comments();
                     self.comment_state.toggle_collapse();
                 }
             },
@@ -612,23 +640,17 @@ impl App {
                     Pane::Comments => Pane::Stories,
                 };
             }
-            Action::SwitchFeed(idx) => {
-                if idx < FeedKind::ALL.len() {
-                    let feed = FeedKind::ALL[idx];
-                    if feed != self.current_feed || self.search_state.is_some() {
-                        self.snapshot_pinned_resume_if_any();
-                        self.search_state = None;
-                        self.input_mode = InputMode::Normal;
-                        self.current_feed = feed;
-                        self.story_state.reset();
-                        self.comment_state.reset();
-                        self.pending_pinned_resume = None;
-                        self.client.clear_cache();
-                        self.focus = Pane::Stories;
-                        self.spawn_load_stories(LoadMode::Replace);
-                    }
+            Action::SwitchFeed(idx) if idx < FeedKind::ALL.len() => {
+                let feed = FeedKind::ALL[idx];
+                if feed != self.current_feed || self.search_state.is_some() {
+                    self.search_state = None;
+                    self.input_mode = InputMode::Normal;
+                    self.current_feed = feed;
+                    self.focus = Pane::Stories;
+                    self.reset_panes_and_reload();
                 }
             }
+            Action::SwitchFeed(_) => {}
             Action::Refresh => {
                 if let Some(ref ss) = self.search_state {
                     let query = ss.query.clone();
@@ -640,12 +662,7 @@ impl App {
                         self.spawn_search(query, 0, LoadMode::Replace);
                     }
                 } else {
-                    self.snapshot_pinned_resume_if_any();
-                    self.story_state.reset();
-                    self.comment_state.reset();
-                    self.pending_pinned_resume = None;
-                    self.client.clear_cache();
-                    self.spawn_load_stories(LoadMode::Replace);
+                    self.reset_panes_and_reload();
                 }
             }
             Action::EnterSearch => {
@@ -654,7 +671,7 @@ impl App {
             Action::JumpTop => match self.focus {
                 Pane::Stories => self.story_state.jump_top(),
                 Pane::Comments => {
-                    self.pending_pinned_resume = None;
+                    self.user_navigated_comments();
                     self.comment_state.jump_top();
                 }
             },
@@ -664,7 +681,7 @@ impl App {
                     self.check_lazy_load();
                 }
                 Pane::Comments => {
-                    self.pending_pinned_resume = None;
+                    self.user_navigated_comments();
                     self.comment_state.jump_bottom();
                 }
             },
@@ -674,14 +691,14 @@ impl App {
                     self.check_lazy_load();
                 }
                 Pane::Comments => {
-                    self.pending_pinned_resume = None;
+                    self.user_navigated_comments();
                     self.comment_state.page_down(SCROLL_PAGE);
                 }
             },
             Action::PageUp => match self.focus {
                 Pane::Stories => self.story_state.page_up(SCROLL_PAGE),
                 Pane::Comments => {
-                    self.pending_pinned_resume = None;
+                    self.user_navigated_comments();
                     self.comment_state.page_up(SCROLL_PAGE);
                 }
             },
@@ -689,10 +706,9 @@ impl App {
             Action::TogglePriorDiscussions => self.toggle_prior_discussions(),
             Action::CycleCommentFilter => self.cycle_comment_filter(),
             Action::TogglePin => self.toggle_pin_focused_story(),
-            Action::EnterHintMode(_) | Action::HintKey(_) | Action::ExitHintMode => {
-                unreachable!("hint actions handled above")
-            }
-            Action::None => {}
+            // Hint-mode actions are already handled in `dispatch`; any
+            // unmapped Action variant is silently consumed.
+            _ => {}
         }
     }
 
@@ -734,8 +750,11 @@ impl App {
             return;
         };
         let last_seen = self.read_store.last_seen_at(StoryId(story.id));
+        // Subtract a 60s skew tolerance so users whose system clock is
+        // slightly ahead of HN's wall clock don't see legitimately-recent
+        // comments filtered out as "older than now − 24h".
         let now = chrono::Utc::now().timestamp();
-        let recent = CommentFilter::Recent(now - 86_400);
+        let recent = CommentFilter::Recent(now - 86_400 - 60);
         self.comment_state.filter = match (self.comment_state.filter, last_seen) {
             (CommentFilter::All, Some(t)) => CommentFilter::NewSince(t),
             (CommentFilter::All, None) => recent,
@@ -765,6 +784,8 @@ impl App {
         };
         let story_id = StoryId(story.id);
         if let Some(submissions) = self.prior_results.get(&story_id) {
+            // `LruCache::get` bumps recency — the most-recently-opened
+            // overlay stays warm even under cache pressure.
             self.prior_state = Some(PriorDiscussionsState::new(story_id, submissions.clone()));
         } else if let Some(url) = story.url.clone() {
             // No result yet — fire the query (if not already in flight) and
@@ -796,63 +817,13 @@ impl App {
         self.focus = Pane::Comments;
         self.comment_state.loading = true;
 
-        let client = self.client.clone();
-        let tx = self.msg_tx.clone();
         let needs_full_fetch = item.kids.is_none();
-        let kids = item.kids.as_deref().unwrap_or(&[]).to_vec();
-        let story = item;
-
-        tokio::spawn(async move {
-            // Search results arrive with kids == None — fetch the full item to
-            // populate them. TryFrom<SearchHit> filters out id=0 upstream, so
-            // no sentinel guard is needed. `fetch_item` returns Arc<Item>,
-            // so we copy the kids slice into an owned Vec.
-            let kids = if needs_full_fetch {
-                match client.fetch_item(story.id).await {
-                    Ok(Some(full_item)) => full_item.kids.as_deref().unwrap_or(&[]).to_vec(),
-                    _ => kids,
-                }
-            } else {
-                kids
-            };
-            let root_items = client.fetch_items(&kids).await;
-            let root_comments: Vec<CommentWithDepth> = root_items
-                .into_iter()
-                .flatten()
-                .filter(|item| !item.is_dead_or_deleted())
-                .map(|item| CommentWithDepth { item, depth: 0 })
-                .collect();
-            let pending_roots: HashSet<CommentId> = root_comments
-                .iter()
-                .filter(|c| c.item.kids.as_ref().is_some_and(|k| !k.is_empty()))
-                .map(|c| CommentId(c.item.id))
-                .collect();
-            let child_specs: Vec<(CommentId, Vec<u64>)> = root_comments
-                .iter()
-                .filter_map(|c| {
-                    let kids = c.item.kids.as_deref()?;
-                    (!kids.is_empty()).then(|| (CommentId(c.item.id), kids.to_vec()))
-                })
-                .collect();
-            let _ = tx.send(AppMessage::CommentsLoaded {
-                story: Box::new(story),
-                comments: root_comments,
-                pending_roots,
-            });
-            for (parent_id, child_ids) in child_specs {
-                let mut children = Vec::new();
-                client
-                    .fetch_children_recursive(&child_ids, 1, MAX_COMMENT_DEPTH, &mut children)
-                    .await;
-                if !children.is_empty() {
-                    let _ = tx.send(AppMessage::CommentsAppended {
-                        parent_id,
-                        children,
-                    });
-                }
-            }
-            let _ = tx.send(AppMessage::CommentsDone);
-        });
+        tokio::spawn(run_comment_load(
+            self.client.clone(),
+            self.msg_tx.clone(),
+            item,
+            needs_full_fetch,
+        ));
     }
 
     /// Transitions into search-input mode, showing an empty search prompt.
@@ -889,14 +860,9 @@ impl App {
 
     /// Exits search mode, clears the cache, and reloads the current feed.
     pub fn cancel_search(&mut self) {
-        self.snapshot_pinned_resume_if_any();
         self.search_state = None;
         self.input_mode = InputMode::Normal;
-        self.story_state.reset();
-        self.comment_state.reset();
-        self.pending_pinned_resume = None;
-        self.client.clear_cache();
-        self.spawn_load_stories(LoadMode::Replace);
+        self.reset_panes_and_reload();
     }
 
     /// Appends a typed character to the in-progress search input.
@@ -1018,19 +984,36 @@ impl App {
     /// query is already in flight. Failures silently no-op — prior-discussions
     /// is optional UX, not critical-path.
     fn spawn_prior_discussions(&mut self, story_id: StoryId, url: &str) {
-        if self.prior_results.contains_key(&story_id) {
+        if self.prior_results.contains(&story_id) {
             return;
         }
         // HashSet::insert returns false if the value was already present —
-        // single-lookup membership-check + insert.
-        if !self.prior_in_flight.insert(story_id) {
-            return;
+        // single-lookup membership-check + insert. Recover from a poisoned
+        // mutex by taking the inner guard rather than panicking; the
+        // in-flight set is non-essential.
+        {
+            let mut g = match self.prior_in_flight.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            if !g.insert(story_id) {
+                return;
+            }
         }
 
         let client = self.client.clone();
         let tx = self.msg_tx.clone();
         let url = url.to_string();
+        let in_flight = Arc::clone(&self.prior_in_flight);
         tokio::spawn(async move {
+            // Guard removes `story_id` from the in-flight set when the
+            // task finishes — including the panic path. Without it, a
+            // panic before `tx.send(...)` would leak the entry and lock
+            // the user out of reopening prior-discussions for that story.
+            let _guard = PriorInFlightGuard {
+                set: in_flight,
+                id: story_id,
+            };
             let submissions = match client.search_by_url(&url).await {
                 Ok(items) => items.into_iter().filter(|i| i.id != story_id.0).collect(),
                 Err(_) => Vec::new(),
@@ -1066,72 +1049,13 @@ impl App {
                 self.spawn_prior_discussions(StoryId(story.id), url);
             }
 
-            let client = self.client.clone();
-            let tx = self.msg_tx.clone();
             let needs_full_fetch = story.kids.is_none();
-            let kids = story.kids.as_deref().unwrap_or(&[]).to_vec();
-
-            tokio::spawn(async move {
-                // For search results, kids is None — fetch the full item first.
-                // TryFrom<SearchHit> filters out id=0 upstream. `fetch_item`
-                // returns Arc<Item>, so we copy the kids slice into an owned Vec.
-                let kids = if needs_full_fetch {
-                    match client.fetch_item(story.id).await {
-                        Ok(Some(full_item)) => full_item.kids.as_deref().unwrap_or(&[]).to_vec(),
-                        _ => kids,
-                    }
-                } else {
-                    kids
-                };
-
-                // Step 1: Fetch root-level comments and show them immediately
-                let root_items = client.fetch_items(&kids).await;
-                let root_comments: Vec<CommentWithDepth> = root_items
-                    .into_iter()
-                    .flatten()
-                    .filter(|item| !item.is_dead_or_deleted())
-                    .map(|item| CommentWithDepth { item, depth: 0 })
-                    .collect();
-
-                let pending_roots: HashSet<CommentId> = root_comments
-                    .iter()
-                    .filter(|c| c.item.kids.as_ref().is_some_and(|k| !k.is_empty()))
-                    .map(|c| CommentId(c.item.id))
-                    .collect();
-
-                // Extract (parent, child_ids) pairs before moving root_comments
-                // into the message — avoids cloning the full Vec just to keep
-                // the iterator alive.
-                let child_specs: Vec<(CommentId, Vec<u64>)> = root_comments
-                    .iter()
-                    .filter_map(|c| {
-                        let kids = c.item.kids.as_deref()?;
-                        (!kids.is_empty()).then(|| (CommentId(c.item.id), kids.to_vec()))
-                    })
-                    .collect();
-
-                let _ = tx.send(AppMessage::CommentsLoaded {
-                    story: Box::new(story),
-                    comments: root_comments,
-                    pending_roots,
-                });
-
-                // Step 2: For each root comment, fetch its children progressively
-                for (parent_id, child_ids) in child_specs {
-                    let mut children = Vec::new();
-                    client
-                        .fetch_children_recursive(&child_ids, 1, MAX_COMMENT_DEPTH, &mut children)
-                        .await;
-                    if !children.is_empty() {
-                        let _ = tx.send(AppMessage::CommentsAppended {
-                            parent_id,
-                            children,
-                        });
-                    }
-                }
-
-                let _ = tx.send(AppMessage::CommentsDone);
-            });
+            tokio::spawn(run_comment_load(
+                self.client.clone(),
+                self.msg_tx.clone(),
+                story,
+                needs_full_fetch,
+            ));
         }
     }
 
@@ -1239,6 +1163,32 @@ impl App {
         }
     }
 
+    /// Maps a terminal cell to the pane under it plus that pane's inner
+    /// (post-border) rect. Returns `None` when the cell falls inside a
+    /// pane border or outside both panes. Shared by [`Self::handle_click`]
+    /// and [`Self::handle_scroll`] so the layout/contains math lives in
+    /// one place.
+    fn pane_at(&self, column: u16, row: u16) -> Option<(Pane, ratatui::layout::Rect)> {
+        use crate::ui::layout::build_layout;
+        use ratatui::layout::{Position, Rect};
+        use ratatui::widgets::{Block, Borders};
+
+        let area = Rect::new(0, 0, self.terminal_width, self.terminal_height);
+        let layout = build_layout(area);
+        let pos = Position::new(column, row);
+
+        for (pane_rect, pane) in [
+            (layout.stories, Pane::Stories),
+            (layout.comments, Pane::Comments),
+        ] {
+            if pane_rect.contains(pos) {
+                let inner = Block::default().borders(Borders::ALL).inner(pane_rect);
+                return inner.contains(pos).then_some((pane, inner));
+            }
+        }
+        None
+    }
+
     /// Handles a mouse left-click at the given terminal cell.
     ///
     /// Maps the cell to a pane via `build_layout`: in the stories pane,
@@ -1252,22 +1202,11 @@ impl App {
             return;
         }
 
-        use crate::ui::layout::build_layout;
-        use ratatui::layout::Rect;
-        use ratatui::widgets::{Block, Borders};
+        let Some((pane, inner)) = self.pane_at(column, row) else {
+            return;
+        };
 
-        let area = Rect::new(0, 0, self.terminal_width, self.terminal_height);
-        let layout = build_layout(area);
-
-        if layout
-            .stories
-            .contains(ratatui::layout::Position::new(column, row))
-        {
-            let inner = Block::default().borders(Borders::ALL).inner(layout.stories);
-            if !inner.contains(ratatui::layout::Position::new(column, row)) {
-                return;
-            }
-
+        if pane == Pane::Stories {
             let visible_height = inner.height as usize;
             let selected = self.story_state.selected;
             let scroll = if selected >= visible_height {
@@ -1283,17 +1222,7 @@ impl App {
                 // Auto-load comments for the clicked story
                 self.load_selected_comments();
             }
-        } else if layout
-            .comments
-            .contains(ratatui::layout::Position::new(column, row))
-        {
-            let inner = Block::default()
-                .borders(Borders::ALL)
-                .inner(layout.comments);
-            if !inner.contains(ratatui::layout::Position::new(column, row)) {
-                return;
-            }
-
+        } else {
             self.focus = Pane::Comments;
 
             let screen_row = (row - inner.y) as usize;
@@ -1310,7 +1239,7 @@ impl App {
                     // Mouse interaction in the comments pane is intentional
                     // navigation — drop any pending resume target so we don't
                     // jump the cursor away from where the user clicked.
-                    self.pending_pinned_resume = None;
+                    self.user_navigated_comments();
                     // Check for double-click to toggle collapse
                     let now = std::time::Instant::now();
                     if let Some((last_time, last_vi)) = self.last_comment_click {
@@ -1467,7 +1396,7 @@ impl App {
     /// Handles a mouse wheel event in the pane under the cursor. When the
     /// reader overlay is open, scrolls the reader (3 lines per tick);
     /// otherwise moves the selected item in the hit pane.
-    pub fn handle_scroll(&mut self, _column: u16, _row: u16, down: bool) {
+    pub fn handle_scroll(&mut self, column: u16, row: u16, down: bool) {
         // When reader is open, scroll reader
         if self.reader_state.is_some() {
             if let Some(ref mut reader) = self.reader_state {
@@ -1480,46 +1409,133 @@ impl App {
             return;
         }
 
-        use crate::ui::layout::build_layout;
-        use ratatui::layout::Rect;
-
-        let area = Rect::new(0, 0, self.terminal_width, self.terminal_height);
-        let layout = build_layout(area);
-
-        let pane = if layout
-            .stories
-            .contains(ratatui::layout::Position::new(_column, _row))
-        {
-            Some(Pane::Stories)
-        } else if layout
-            .comments
-            .contains(ratatui::layout::Position::new(_column, _row))
-        {
-            Some(Pane::Comments)
-        } else {
-            None
+        let Some((pane, _inner)) = self.pane_at(column, row) else {
+            return;
         };
 
-        if let Some(pane) = pane {
-            match (pane, down) {
-                (Pane::Stories, true) => {
-                    self.story_state.select_next();
-                    self.check_lazy_load();
-                }
-                (Pane::Stories, false) => {
-                    self.story_state.select_prev();
-                }
-                (Pane::Comments, true) => {
-                    self.pending_pinned_resume = None;
-                    self.comment_state.select_next();
-                }
-                (Pane::Comments, false) => {
-                    self.pending_pinned_resume = None;
-                    self.comment_state.select_prev();
-                }
+        match (pane, down) {
+            (Pane::Stories, true) => {
+                self.story_state.select_next();
+                self.check_lazy_load();
+            }
+            (Pane::Stories, false) => {
+                self.story_state.select_prev();
+            }
+            (Pane::Comments, true) => {
+                self.user_navigated_comments();
+                self.comment_state.select_next();
+            }
+            (Pane::Comments, false) => {
+                self.user_navigated_comments();
+                self.comment_state.select_prev();
             }
         }
     }
+}
+
+/// Removes a `story_id` from `App::prior_in_flight` on `Drop` so a
+/// panicking spawned task doesn't leave the entry stranded — without
+/// this guard, the user would be unable to reopen prior-discussions for
+/// that story for the rest of the session.
+struct PriorInFlightGuard {
+    set: Arc<Mutex<HashSet<StoryId>>>,
+    id: StoryId,
+}
+
+impl Drop for PriorInFlightGuard {
+    fn drop(&mut self) {
+        // Recover from a poisoned mutex — same rationale as the
+        // `HnClient::cache` guard: a transient task panic shouldn't
+        // tear down the rest of the TUI.
+        let mut g = match self.set.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        g.remove(&self.id);
+    }
+}
+
+/// Two-phase comment load shared by `load_selected_comments` and
+/// `open_selected_prior_discussion`. Resolves the kids list (fetching the
+/// full item when search results arrive without one), sends
+/// `CommentsLoaded`, drives subtree walks concurrently, then sends
+/// `CommentsDone`. A failed `fetch_item` surfaces as `AppMessage::Error`
+/// instead of silently rendering an empty thread.
+async fn run_comment_load(
+    client: HnClient,
+    tx: mpsc::UnboundedSender<AppMessage>,
+    story: Item,
+    needs_full_fetch: bool,
+) {
+    use futures::stream::{self, StreamExt};
+
+    let kids: Vec<u64> = if needs_full_fetch {
+        match client.fetch_item(story.id).await {
+            Ok(Some(full_item)) => full_item.kids.as_deref().unwrap_or(&[]).to_vec(),
+            Ok(None) => Vec::new(),
+            Err(e) => {
+                let _ = tx.send(AppMessage::Error(format!("Failed to load comments: {}", e)));
+                return;
+            }
+        }
+    } else {
+        story.kids.as_deref().unwrap_or(&[]).to_vec()
+    };
+
+    let root_items = client.fetch_items(&kids).await;
+    let root_comments: Vec<CommentWithDepth> = root_items
+        .into_iter()
+        .flatten()
+        .filter(|item| !item.is_dead_or_deleted())
+        .map(|item| CommentWithDepth { item, depth: 0 })
+        .collect();
+
+    let pending_roots: HashSet<CommentId> = root_comments
+        .iter()
+        .filter(|c| c.item.kids.as_ref().is_some_and(|k| !k.is_empty()))
+        .map(|c| CommentId(c.item.id))
+        .collect();
+
+    // Extract (parent, child_ids) pairs before moving root_comments into
+    // the message — avoids cloning the full Vec just to keep the iterator
+    // alive.
+    let child_specs: Vec<(CommentId, Vec<u64>)> = root_comments
+        .iter()
+        .filter_map(|c| {
+            let kids = c.item.kids.as_deref()?;
+            (!kids.is_empty()).then(|| (CommentId(c.item.id), kids.to_vec()))
+        })
+        .collect();
+
+    let _ = tx.send(AppMessage::CommentsLoaded {
+        story: Box::new(story),
+        comments: root_comments,
+        pending_roots,
+    });
+
+    // Step 2: drive each root subtree concurrently. `fetch_children_recursive`
+    // already does buffer_unordered(20) inside; capping outer concurrency at
+    // 4 keeps total in-flight requests bounded (~80 worst case).
+    stream::iter(child_specs)
+        .for_each_concurrent(Some(4), |(parent_id, child_ids)| {
+            let client = client.clone();
+            let tx = tx.clone();
+            async move {
+                let mut children = Vec::new();
+                client
+                    .fetch_children_recursive(&child_ids, 1, MAX_COMMENT_DEPTH, &mut children)
+                    .await;
+                if !children.is_empty() {
+                    let _ = tx.send(AppMessage::CommentsAppended {
+                        parent_id,
+                        children,
+                    });
+                }
+            }
+        })
+        .await;
+
+    let _ = tx.send(AppMessage::CommentsDone);
 }
 
 /// Opens `url` in the system browser — but only when it parses as an

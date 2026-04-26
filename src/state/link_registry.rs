@@ -18,8 +18,14 @@ pub struct LinkRef {
     /// Line index within the rendered `Vec<Vec<StyledFragment>>`.
     pub line: usize,
     /// Fragment index within that line; the label paints at this fragment's
-    /// first column, so the column offset = sum of preceding fragment widths.
+    /// first column. Kept for diagnostics — see `col` for the value the
+    /// renderer actually consumes.
     pub fragment: usize,
+    /// Visible-column offset of the link's first character, computed
+    /// once when the registry is built. Used by the hint-overlay paint
+    /// so it doesn't sum `chars().count()` across preceding fragments
+    /// on every keystroke.
+    pub col: usize,
     /// Assigned by [`LinkRegistry::assign_labels`]. Empty until then.
     pub label: String,
 }
@@ -56,13 +62,17 @@ impl LinkRegistry {
         self.links.is_empty()
     }
 
-    /// Records a new link at `(line, fragment)`. The `label` is left empty
-    /// until [`Self::assign_labels`] is called once all links are pushed.
-    pub fn push(&mut self, url: String, line: usize, fragment: usize) {
+    /// Records a new link at `(line, fragment, col)`. `col` is the
+    /// visible-column offset of the link text within its line, computed
+    /// once at registry-build time so the hint paint doesn't re-sum
+    /// fragment widths per keystroke. The `label` is left empty until
+    /// [`Self::assign_labels`] is called once all links are pushed.
+    pub fn push(&mut self, url: String, line: usize, fragment: usize, col: usize) {
         self.links.push(LinkRef {
             url,
             line,
             fragment,
+            col,
             label: String::new(),
         });
     }
@@ -103,14 +113,19 @@ impl LinkRegistry {
 /// length `length`, big-endian. Index 0 → "aa…a", index 1 → "aa…s", etc.
 fn generate_label(index: usize, length: usize) -> String {
     let alphabet_len = ALPHABET.len();
-    let mut chars = Vec::with_capacity(length);
+    let mut out = String::with_capacity(length);
     let mut n = index;
+    let mut chars: Vec<char> = Vec::with_capacity(length);
     for _ in 0..length {
-        chars.push(ALPHABET[n % alphabet_len]);
+        // ALPHABET is a literal ASCII byte slice; the cast is safe by
+        // construction. Building the string via `char` removes the
+        // panicking `String::from_utf8(...).expect(...)`.
+        chars.push(ALPHABET[n % alphabet_len] as char);
         n /= alphabet_len;
     }
     chars.reverse();
-    String::from_utf8(chars).expect("ALPHABET is valid ASCII")
+    out.extend(chars);
+    out
 }
 
 #[cfg(test)]
@@ -120,7 +135,7 @@ mod tests {
     fn registry_with(n: usize) -> LinkRegistry {
         let mut r = LinkRegistry::new();
         for i in 0..n {
-            r.push(format!("https://example.com/{}", i), i, 0);
+            r.push(format!("https://example.com/{}", i), i, 0, 0);
         }
         r.assign_labels();
         r
@@ -136,11 +151,12 @@ mod tests {
     #[test]
     fn push_adds_link_without_label() {
         let mut r = LinkRegistry::new();
-        r.push("https://x.com".into(), 5, 2);
+        r.push("https://x.com".into(), 5, 2, 17);
         assert_eq!(r.links.len(), 1);
         assert_eq!(r.links[0].url, "https://x.com");
         assert_eq!(r.links[0].line, 5);
         assert_eq!(r.links[0].fragment, 2);
+        assert_eq!(r.links[0].col, 17);
         assert!(r.links[0].label.is_empty());
     }
 

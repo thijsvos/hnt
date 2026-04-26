@@ -35,13 +35,29 @@ pub struct HnClient {
     cache: Arc<Mutex<LruCache<u64, Arc<Item>>>>,
 }
 
+impl Default for HnClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HnClient {
     /// Builds a fresh client with an empty LRU cache of up to
     /// `CACHE_CAPACITY` items.
     pub fn new() -> Self {
         let capacity = NonZeroUsize::new(CACHE_CAPACITY).expect("cache capacity > 0");
+        // Timeouts prevent a stalled HN endpoint from leaving spawned
+        // tasks hung forever (no progress, just a spinning UI). 15s body
+        // timeout is enough for a /topstories list (usually ~20KB);
+        // connect_timeout catches DNS/handshake stalls fast.
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .user_agent(concat!("hnt/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .expect("hn client builder");
         Self {
-            client: reqwest::Client::new(),
+            client,
             cache: Arc::new(Mutex::new(LruCache::new(capacity))),
         }
     }
@@ -89,7 +105,12 @@ impl HnClient {
 
         Ok(item.map(|item| {
             let arc = Arc::new(item);
-            self.cache().put(id, Arc::clone(&arc));
+            // Skip caching dead/deleted items — the rest of the app filters
+            // them out anyway and a moderation reversal (rare but real)
+            // shouldn't be masked by a session-long stale cache entry.
+            if !arc.is_dead_or_deleted() {
+                self.cache().put(id, Arc::clone(&arc));
+            }
             arc
         }))
     }

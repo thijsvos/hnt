@@ -14,6 +14,7 @@
 pub mod comment_state;
 pub mod hint_state;
 pub mod link_registry;
+mod persist;
 pub mod pin_store;
 pub mod prior_state;
 pub mod read_store;

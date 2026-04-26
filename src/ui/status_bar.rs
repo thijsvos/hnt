@@ -98,9 +98,13 @@ impl<'a> Widget for StatusBar<'a> {
             }
         }
 
-        // Right-aligned position indicator
+        // Right-aligned position indicator. Use `chars().count()` rather
+        // than byte `.len()` so the alignment stays correct if any field
+        // ever picks up a non-ASCII glyph.
         let right_text = format!(" {} [{}] ", self.position, self.focus_pane);
-        let right_start = area.right().saturating_sub(right_text.len() as u16);
+        let right_start = area
+            .right()
+            .saturating_sub(right_text.chars().count() as u16);
 
         let line = Line::from(spans);
         buf.set_line(area.left(), area.top(), &line, area.width);

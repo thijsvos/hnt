@@ -14,6 +14,7 @@ pub mod spinner;
 pub mod status_bar;
 pub mod story_list;
 pub mod theme;
+pub mod util;
 
 use crate::app::App;
 use layout::build_layout;
@@ -40,6 +41,10 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let search_active = app.search_state.is_some();
     let search_query = app.search_state.as_ref().map(|ss| ss.query.as_str());
 
+    // Capture wall-clock once per frame so per-row `format_time_ago`
+    // callers don't `clock_gettime` per visible comment / story.
+    let now_secs = chrono::Utc::now().timestamp();
+
     // Header
     frame.render_widget(
         header::Header {
@@ -53,6 +58,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     frame.render_widget(
         story_list::StoryList {
             stories: &app.story_state.stories,
+            domains: &app.story_state.domains,
             selected: app.story_state.selected,
             focused: app.focus == crate::app::Pane::Stories,
             loading: app.story_state.loading,
@@ -68,11 +74,13 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let visible_indices = app.comment_state.visible_indices();
 
     // Comment tree
+    // `peek` reads without bumping recency — every render frame would
+    // otherwise pin whichever story is currently open as MRU.
     let prior_count = app
         .comment_state
         .story
         .as_ref()
-        .and_then(|s| app.prior_results.get(&crate::api::types::StoryId(s.id)))
+        .and_then(|s| app.prior_results.peek(&crate::api::types::StoryId(s.id)))
         .map(|v| v.len())
         .unwrap_or(0);
     frame.render_widget(
@@ -82,6 +90,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             focused: app.focus == crate::app::Pane::Comments,
             tick: app.tick_count,
             prior_count,
+            now_secs,
         },
         layout.comments,
     );

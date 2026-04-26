@@ -20,7 +20,11 @@ pub struct Item {
     pub id: u64,
     #[serde(default)]
     pub title: Option<String>,
-    #[serde(default)]
+    /// Story URL — only populated for `http`/`https` schemes. Other
+    /// schemes are dropped to `None` at deserialization so downstream
+    /// open/fetch helpers don't need to re-validate; see
+    /// [`validate_http_url`].
+    #[serde(default, deserialize_with = "deserialize_http_url")]
     pub url: Option<String>,
     #[serde(default)]
     pub text: Option<String>,
@@ -195,7 +199,11 @@ impl TryFrom<SearchHit> for Item {
         Ok(Item {
             id: hit.object_id.parse::<u64>()?,
             title: hit.title,
-            url: hit.url,
+            // Drop non-`http(s)` schemes — `mailto:`, `data:`, `javascript:`
+            // could otherwise reach `open::that` or be rendered as a clickable
+            // hint target. The Firebase decode path applies the same guard
+            // via `deserialize_http_url`.
+            url: hit.url.as_deref().and_then(validate_http_url),
             text: hit.story_text,
             by: hit.author,
             score: hit.points,
@@ -207,6 +215,27 @@ impl TryFrom<SearchHit> for Item {
             deleted: None,
         })
     }
+}
+
+/// Returns `Some(url.to_owned())` only when the input parses as an
+/// `http`/`https` URL. Used at the API boundary so the rest of the app
+/// can trust that any `Some(url)` on an [`Item`] is safe to open or
+/// render. Empty strings, non-http schemes, and malformed URLs all
+/// collapse to `None`.
+pub fn validate_http_url(raw: &str) -> Option<String> {
+    let parsed = url::Url::parse(raw).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+    Some(raw.to_string())
+}
+
+fn deserialize_http_url<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::<String>::deserialize(deserializer)?;
+    Ok(opt.as_deref().and_then(validate_http_url))
 }
 
 fn url_domain(raw: &str) -> Option<String> {
@@ -588,6 +617,82 @@ mod tests {
         assert_eq!(item.descendants, Some(10));
         assert_eq!(item.text.as_deref(), Some("body"));
         assert_eq!(item.item_type, Some(ItemType::Story));
+    }
+
+    // --- validate_http_url ---
+
+    #[test]
+    fn validate_http_url_accepts_https() {
+        assert_eq!(
+            validate_http_url("https://example.com/x"),
+            Some("https://example.com/x".into())
+        );
+    }
+
+    #[test]
+    fn validate_http_url_accepts_http() {
+        assert_eq!(
+            validate_http_url("http://example.com/x"),
+            Some("http://example.com/x".into())
+        );
+    }
+
+    #[test]
+    fn validate_http_url_rejects_javascript() {
+        assert_eq!(validate_http_url("javascript:alert(1)"), None);
+    }
+
+    #[test]
+    fn validate_http_url_rejects_data() {
+        assert_eq!(validate_http_url("data:text/html,<script>"), None);
+    }
+
+    #[test]
+    fn validate_http_url_rejects_mailto() {
+        assert_eq!(validate_http_url("mailto:foo@example.com"), None);
+    }
+
+    #[test]
+    fn validate_http_url_rejects_file() {
+        assert_eq!(validate_http_url("file:///etc/passwd"), None);
+    }
+
+    #[test]
+    fn validate_http_url_rejects_garbage() {
+        assert_eq!(validate_http_url("not a url"), None);
+        assert_eq!(validate_http_url(""), None);
+    }
+
+    #[test]
+    fn item_deserialize_drops_non_http_url() {
+        // Firebase returns whatever the submitter put in. Verify a
+        // mailto: URL is normalised to None at decode time.
+        let json = r#"{"id":1,"url":"mailto:a@b.com"}"#;
+        let item: Item = serde_json::from_str(json).unwrap();
+        assert_eq!(item.url, None);
+    }
+
+    #[test]
+    fn item_deserialize_keeps_http_url() {
+        let json = r#"{"id":1,"url":"https://example.com/foo"}"#;
+        let item: Item = serde_json::from_str(json).unwrap();
+        assert_eq!(item.url.as_deref(), Some("https://example.com/foo"));
+    }
+
+    #[test]
+    fn search_hit_drops_non_http_url() {
+        let hit = SearchHit {
+            object_id: "1".into(),
+            title: None,
+            url: Some("javascript:alert(1)".into()),
+            author: None,
+            points: None,
+            num_comments: None,
+            created_at_i: None,
+            story_text: None,
+        };
+        let item = Item::try_from(hit).unwrap();
+        assert_eq!(item.url, None);
     }
 
     #[test]
