@@ -18,9 +18,10 @@ pub enum HintAction {
 
 /// Which surface holds the labeled links.
 ///
-/// The article reader carries its own [`LinkRegistry`](crate::state::link_registry::LinkRegistry)
-/// alongside its content; the comment-tree registry is built on demand
-/// when the user enters hint mode there.
+/// The article reader carries its own
+/// [`LinkRegistry`](crate::state::link_registry::LinkRegistry) alongside
+/// its content; the comment-tree registry is built on demand when the
+/// user enters hint mode there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HintContext {
     Reader,
@@ -31,12 +32,16 @@ pub enum HintContext {
 /// `Some` only while the user is mid-selection.
 #[derive(Debug, Clone)]
 pub struct HintState {
+    /// Action to fire on a unique-label match.
     pub action: HintAction,
+    /// Surface (reader / comments) the labels live on.
     pub context: HintContext,
+    /// Prefix accumulated so far via [`Self::push`].
     pub buffer: String,
 }
 
 impl HintState {
+    /// Starts a fresh hint-mode session with an empty prefix buffer.
     pub fn new(action: HintAction, context: HintContext) -> Self {
         Self {
             action,
@@ -50,6 +55,8 @@ impl HintState {
         self.buffer.push(c);
     }
 
+    /// Returns the prefix accumulated so far, used to look up against the
+    /// active [`crate::state::link_registry::LinkRegistry`].
     pub fn buffer(&self) -> &str {
         &self.buffer
     }

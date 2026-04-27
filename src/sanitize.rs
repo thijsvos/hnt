@@ -14,9 +14,12 @@
 
 use std::borrow::Cow;
 
-/// Returns `s` unchanged if it contains no control bytes, otherwise an
-/// owned [`String`] with `\u{FFFD}` (REPLACEMENT CHARACTER) substituted
-/// for any C0 / C1 / DEL byte. `\t` (0x09) and `\n` (0x0A) are kept.
+/// Replaces C0 / C1 / DEL bytes in `s` with `\u{FFFD}` (REPLACEMENT
+/// CHARACTER).
+///
+/// Returns `s` unchanged (as [`Cow::Borrowed`]) when it contains no
+/// control bytes, otherwise an owned [`String`] with the substitution
+/// applied. `\t` (0x09) and `\n` (0x0A) are preserved.
 #[must_use]
 pub fn sanitize_terminal(s: &str) -> Cow<'_, str> {
     if !s.chars().any(is_control_to_strip) {

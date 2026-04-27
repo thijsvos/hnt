@@ -49,9 +49,11 @@ impl FlatComment {
         }
     }
 
-    /// Returns the plain-text rendering of `item.text` at `width`, reusing
-    /// the last-rendered result if the width matches. The cache is keyed
-    /// only on width because each `FlatComment` wraps a single `Item`.
+    /// Returns the plain-text rendering of `item.text` rendered at
+    /// `width.max(20)` (html2text refuses very narrow widths), reusing
+    /// the last-rendered result when `width` matches the cached key. The
+    /// cache is keyed on the caller's `width`, not the floored value, so
+    /// each `FlatComment` wraps a single `Item`.
     pub fn plain_text(&mut self, width: usize) -> Option<&str> {
         let text = self.item.text.as_deref()?;
         let needs_refresh = !matches!(&self.plain_text_cache, Some((w, _)) if *w == width);
@@ -77,6 +79,8 @@ impl FlatComment {
 /// loads complete.
 #[derive(Default)]
 pub struct CommentTreeState {
+    /// Flat pre-order comment list. Mutated through [`Self::set_comments`]
+    /// (replace) and [`Self::insert_children`] (splice).
     pub comments: Vec<FlatComment>,
     /// Row-based scroll offset, updated by the renderer.
     pub scroll: usize,
@@ -85,7 +89,10 @@ pub struct CommentTreeState {
     /// Collapsed-subtree comment IDs; their descendants are hidden from
     /// `visible_comments()`.
     pub collapsed: HashSet<CommentId>,
+    /// True while async comment fetches are still in flight; cleared on
+    /// [`crate::app::AppMessage::CommentsDone`].
     pub loading: bool,
+    /// The story whose comments are loaded. `None` between selections.
     pub story: Option<Item>,
     /// Root-comment IDs whose subtrees are still being fetched.
     pub pending_root_ids: HashSet<CommentId>,
@@ -107,8 +114,9 @@ impl CommentTreeState {
     }
 
     /// Returns the plain-text rendering of the current story's text at
-    /// `width`, reusing the last-rendered result if the story and width
-    /// match.
+    /// `width.max(20)` (html2text refuses very narrow widths), reusing
+    /// the last-rendered result if the story and `width` match the
+    /// cached key.
     pub fn story_plain_text(&mut self, width: usize) -> Option<&str> {
         let story = self.story.as_ref()?;
         let text = story.text.as_deref()?;
@@ -140,7 +148,8 @@ impl CommentTreeState {
         self.filter = CommentFilter::All;
     }
 
-    /// Insert child comments right after their parent in the flattened list.
+    /// Inserts child comments right after their parent in the flattened
+    /// list.
     pub fn insert_children(&mut self, parent_id: CommentId, children: Vec<CommentWithDepth>) {
         let insert_pos = self
             .comments
@@ -252,6 +261,9 @@ impl CommentTreeState {
             .collect()
     }
 
+    /// Advances the cursor by one visible row, saturating at the last
+    /// visible comment. Honors collapse and filter state via
+    /// [`Self::visible_len`].
     pub fn select_next(&mut self) {
         let len = self.visible_len();
         if len > 0 {
@@ -259,15 +271,19 @@ impl CommentTreeState {
         }
     }
 
+    /// Moves the cursor up by one row, saturating at zero.
     pub fn select_prev(&mut self) {
         self.selected = self.selected.saturating_sub(1);
     }
 
+    /// Jumps the cursor to the first visible comment and resets scroll.
     pub fn jump_top(&mut self) {
         self.selected = 0;
         self.scroll = 0;
     }
 
+    /// Jumps the cursor to the last visible comment. No-op when no
+    /// comments are visible.
     pub fn jump_bottom(&mut self) {
         let len = self.visible_len();
         if len > 0 {
@@ -275,6 +291,8 @@ impl CommentTreeState {
         }
     }
 
+    /// Advances the cursor by `page_size` visible rows, saturating at
+    /// the last visible comment. No-op when no comments are visible.
     pub fn page_down(&mut self, page_size: usize) {
         let len = self.visible_len();
         if len > 0 {
@@ -282,6 +300,7 @@ impl CommentTreeState {
         }
     }
 
+    /// Moves the cursor up by `page_size` rows, saturating at zero.
     pub fn page_up(&mut self, page_size: usize) {
         self.selected = self.selected.saturating_sub(page_size);
     }
@@ -300,6 +319,10 @@ impl CommentTreeState {
         }
     }
 
+    /// Clears the comment list, collapse set, pending-roots set, row
+    /// map, loading flag, and loaded story; resets the filter to
+    /// [`CommentFilter::All`]. Called from `App::dispatch_normal` on
+    /// `Back` from the comments pane and from `App::reset_panes_and_reload`.
     pub fn reset(&mut self) {
         self.comments.clear();
         self.scroll = 0;

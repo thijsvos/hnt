@@ -57,6 +57,7 @@ impl LinkRegistry {
         Self::default()
     }
 
+    /// Whether the registry contains zero links.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.links.is_empty()

@@ -2,7 +2,7 @@
 //!
 //! [`StoryList`] renders numbered story rows with badge, title, and
 //! domain, scrolling to keep the selected row in view. Also exposes
-//! [`format_time_ago`], used by the comment-tree widget for author
+//! [`format_time_ago_since`], used by the comment-tree widget for author
 //! timestamps.
 
 use crate::api::types::{Item, StoryId};
