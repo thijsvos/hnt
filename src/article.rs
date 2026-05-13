@@ -73,6 +73,71 @@ fn is_private_ip(ip: std::net::IpAddr) -> bool {
     }
 }
 
+/// Synchronous portion of the SSRF guard. Returns `Ok(true)` if `url`'s
+/// host is a public IP literal (no DNS work needed), `Ok(false)` if it's
+/// a hostname (caller must still resolve), or `Err` if the host is a
+/// private/loopback IP literal or the URL is unusable.
+///
+/// Split out from [`check_host_is_public`] so the literal-IP path can be
+/// unit-tested without hitting DNS.
+fn check_literal_host_ip(parsed: &url::Url) -> anyhow::Result<bool> {
+    use anyhow::{anyhow, bail};
+    let host = parsed.host().ok_or_else(|| anyhow!("URL has no host"))?;
+    let ip = match host {
+        url::Host::Ipv4(v4) => std::net::IpAddr::V4(v4),
+        url::Host::Ipv6(v6) => std::net::IpAddr::V6(v6),
+        url::Host::Domain(_) => return Ok(false),
+    };
+    if is_private_ip(ip) {
+        bail!("refusing private/loopback host: {}", ip);
+    }
+    Ok(true)
+}
+
+/// Rejects URLs whose host resolves to a private/loopback/link-local IP
+/// before the initial fetch. The redirect callback in [`article_client`]
+/// already blocks these for redirect targets; this closes the matching
+/// gap on the *initial* request, where an HN submission of
+/// `http://169.254.169.254/...` or `http://192.168.1.1/admin` would
+/// otherwise probe the user's internal network from inside their own
+/// machine and render the response in the reader.
+///
+/// Handles both literal IP hosts and hostnames (resolved via
+/// [`tokio::net::lookup_host`]). This is best-effort against DNS
+/// rebinding — reqwest will re-resolve at connect time, so a hostname
+/// whose authoritative server flips its A-record between this check and
+/// the actual connection could still slip through. A custom DNS resolver
+/// wired into the reqwest builder would close that gap; this guard
+/// closes the straightforward and high-impact cases.
+async fn check_host_is_public(url: &str) -> anyhow::Result<()> {
+    use anyhow::{bail, Context};
+    let parsed = url::Url::parse(url).context("invalid URL")?;
+    if check_literal_host_ip(&parsed)? {
+        return Ok(());
+    }
+    // `check_literal_host_ip` returned Ok(false), i.e. host is a Domain.
+    // `host_str` for Domain hosts returns the plain hostname without
+    // brackets, which is the form `lookup_host` expects.
+    let host = parsed
+        .host_str()
+        .expect("check_literal_host_ip ensures host is present");
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let target = format!("{}:{}", host, port);
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host(target.as_str())
+        .await
+        .with_context(|| format!("failed to resolve {}", host))?
+        .collect();
+    if addrs.is_empty() {
+        bail!("no addresses resolved for {}", host);
+    }
+    for addr in &addrs {
+        if is_private_ip(addr.ip()) {
+            bail!("refusing private/loopback host: {} -> {}", host, addr.ip());
+        }
+    }
+    Ok(())
+}
+
 /// For GitHub/GitLab repo pages, tries to fetch the raw README instead of
 /// the JS-heavy HTML shell (the README content is loaded dynamically by JS).
 async fn try_fetch_readme(client: &reqwest::Client, url: &str) -> Option<(String, bool)> {
@@ -270,10 +335,13 @@ fn markdown_to_styled_lines(text: &str, width: usize) -> Vec<Vec<StyledFragment>
 ///
 /// # Errors
 ///
-/// Propagates errors from the HTTP fetch (network, TLS, timeout) and
-/// `bail!`s when the response is non-success, exceeds 5 MB, or has a
-/// non-HTML/plain content-type. Readability and html2text errors
-/// propagate from the `spawn_blocking` join.
+/// Returns an error before any network I/O when `url`'s host resolves
+/// to a private/loopback/link-local IP (SSRF guard — see
+/// [`check_host_is_public`]). Otherwise propagates errors from the HTTP
+/// fetch (network, TLS, timeout) and `bail!`s when the response is
+/// non-success, exceeds 5 MB, or has a non-HTML/plain content-type.
+/// Readability and html2text errors propagate from the `spawn_blocking`
+/// join.
 pub async fn fetch_and_extract_article(
     url: &str,
     width: usize,
@@ -281,6 +349,13 @@ pub async fn fetch_and_extract_article(
     use anyhow::{anyhow, bail, Context};
 
     let client = article_client();
+
+    // SSRF guard: reject literal private IPs and reject hostnames that
+    // resolve to private IPs. Runs before `try_fetch_readme` so the
+    // github.com / gitlab.com special-case path is also covered (those
+    // hosts are public so they pass, but applying the check uniformly
+    // means a future repo-host addition doesn't silently regress).
+    check_host_is_public(url).await?;
 
     // For GitHub/GitLab repo pages, try fetching the README directly
     if let Some((readme_text, is_markdown)) = try_fetch_readme(client, url).await {
@@ -743,5 +818,139 @@ mod tests {
         let (lines, links) = html_to_styled_lines(b"", 80);
         assert!(lines.is_empty());
         assert!(links.is_empty());
+    }
+
+    // --- check_literal_host_ip ---
+
+    fn parsed(url: &str) -> url::Url {
+        url::Url::parse(url).expect("test URL must parse")
+    }
+
+    #[test]
+    fn literal_host_ip_rejects_loopback_v4() {
+        let err = check_literal_host_ip(&parsed("http://127.0.0.1/")).unwrap_err();
+        assert!(
+            err.to_string().contains("127.0.0.1"),
+            "error mentions the rejected host: {err}"
+        );
+    }
+
+    #[test]
+    fn literal_host_ip_rejects_loopback_v6() {
+        assert!(check_literal_host_ip(&parsed("http://[::1]/")).is_err());
+    }
+
+    #[test]
+    fn literal_host_ip_rejects_rfc1918() {
+        assert!(check_literal_host_ip(&parsed("http://10.0.0.1/")).is_err());
+        assert!(check_literal_host_ip(&parsed("http://172.16.0.1/")).is_err());
+        assert!(check_literal_host_ip(&parsed("http://192.168.1.1/admin")).is_err());
+    }
+
+    #[test]
+    fn literal_host_ip_rejects_aws_imds() {
+        // The canonical SSRF target — 169.254.169.254 is link-local.
+        assert!(check_literal_host_ip(&parsed(
+            "http://169.254.169.254/latest/meta-data/iam/security-credentials/"
+        ))
+        .is_err());
+    }
+
+    #[test]
+    fn literal_host_ip_rejects_unspecified() {
+        assert!(check_literal_host_ip(&parsed("http://0.0.0.0/")).is_err());
+    }
+
+    #[test]
+    fn literal_host_ip_rejects_ipv6_ula() {
+        assert!(check_literal_host_ip(&parsed("http://[fd00::1]/")).is_err());
+    }
+
+    #[test]
+    fn literal_host_ip_rejects_ipv6_link_local() {
+        assert!(check_literal_host_ip(&parsed("http://[fe80::1]/")).is_err());
+    }
+
+    #[test]
+    fn literal_host_ip_accepts_public_v4() {
+        assert_eq!(
+            check_literal_host_ip(&parsed("http://8.8.8.8/")).unwrap(),
+            true
+        );
+    }
+
+    #[test]
+    fn literal_host_ip_accepts_public_v6() {
+        assert_eq!(
+            check_literal_host_ip(&parsed("http://[2606:4700:4700::1111]/")).unwrap(),
+            true
+        );
+    }
+
+    #[test]
+    fn literal_host_ip_returns_false_for_hostnames() {
+        // Public hostnames return Ok(false) to signal that DNS work is
+        // still required; the resolution itself happens in the async
+        // `check_host_is_public` wrapper.
+        assert_eq!(
+            check_literal_host_ip(&parsed("https://news.ycombinator.com/")).unwrap(),
+            false
+        );
+        assert_eq!(
+            check_literal_host_ip(&parsed("https://example.com/path?q=1")).unwrap(),
+            false
+        );
+    }
+
+    #[test]
+    fn literal_host_ip_userinfo_does_not_confuse_host_parse() {
+        // `host_str` returns the host without userinfo, so credentials
+        // in the URL don't sneak past the IP-literal check.
+        assert!(check_literal_host_ip(&parsed("http://user:pass@127.0.0.1/")).is_err());
+        assert_eq!(
+            check_literal_host_ip(&parsed("http://user@example.com/")).unwrap(),
+            false
+        );
+    }
+
+    // --- check_host_is_public (async wrapper) ---
+
+    #[tokio::test]
+    async fn check_host_is_public_rejects_literal_private_ip() {
+        // Literal-IP branch is reached before any DNS resolution, so this
+        // test runs offline.
+        let err = check_host_is_public("http://192.168.1.1/admin")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("192.168.1.1"));
+    }
+
+    #[tokio::test]
+    async fn check_host_is_public_rejects_imds() {
+        let err = check_host_is_public("http://169.254.169.254/latest/meta-data/")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("169.254.169.254"));
+    }
+
+    #[tokio::test]
+    async fn check_host_is_public_accepts_literal_public_ip() {
+        // Public literal IPs short-circuit without DNS, so this is offline.
+        check_host_is_public("http://8.8.8.8/")
+            .await
+            .expect("8.8.8.8 is public and should be accepted");
+    }
+
+    #[tokio::test]
+    async fn check_host_is_public_rejects_invalid_url() {
+        assert!(check_host_is_public("not a url").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn check_host_is_public_rejects_url_without_host() {
+        // `data:` URLs parse but have no host. `validate_http_url`
+        // upstream should have already filtered this, but the guard
+        // refuses defensively.
+        assert!(check_host_is_public("data:text/plain,hello").await.is_err());
     }
 }
