@@ -55,6 +55,14 @@ chmod +x hnt
 
 > **Windows**: not currently in the release matrix. Build from source — `crossterm` (the terminal layer) supports Windows, so the only blocker is that the release workflow doesn't cross-build for it yet.
 
+### Install via cargo
+
+```bash
+cargo install --git https://github.com/thijsvos/hnt
+```
+
+The crate isn't on crates.io yet, so the `--git` form is the idiomatic install path.
+
 ### Build from source
 
 Requires [Rust](https://rustup.rs/) 1.88+.
