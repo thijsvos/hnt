@@ -12,7 +12,11 @@ use ratatui::{
 /// Top header: brand, feed tabs (highlighting `current_feed` unless a
 /// search is active), and a "Search" chip when `search_active`.
 pub struct Header {
+    /// Highlighted feed tab — ignored when `search_active` is true so
+    /// the "Search" chip wins the active highlight.
     pub current_feed: FeedKind,
+    /// Whether to paint the "Search" indicator and suppress the feed
+    /// tab highlight.
     pub search_active: bool,
 }
 

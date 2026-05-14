@@ -20,13 +20,23 @@ use std::sync::Arc;
 /// Stateless widget that renders the left pane. Composed from borrowed
 /// app state; rebuilt each frame.
 pub struct StoryList<'a> {
+    /// Loaded stories — borrowed for the frame's lifetime; rebuilt per
+    /// draw. `Arc<Item>` matches the cache shape so no deep clone is
+    /// needed to render.
     pub stories: &'a [Arc<Item>],
     /// Pre-computed `Item::domain()` results, parallel to `stories`.
     /// Avoids a per-frame `url::Url::parse` per visible row.
     pub domains: &'a [Option<String>],
+    /// Index into `stories` of the highlighted row.
     pub selected: usize,
+    /// Whether the pane currently has keyboard focus (drives border
+    /// accent).
     pub focused: bool,
+    /// True while the first batch is still in flight — paints
+    /// "Loading stories..." instead of the empty-list placeholder.
     pub loading: bool,
+    /// Active search query, when one is set — used in the pane title
+    /// (`" Search: <q> "`) in place of `" Stories "`.
     pub search_query: Option<&'a str>,
     /// Persisted read-state: stories present here render dimmed, and those
     /// whose comment count has grown since the last visit get a `+N` badge.

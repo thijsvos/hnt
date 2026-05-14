@@ -25,13 +25,26 @@ use std::sync::Arc;
 /// increments) instead of 30 deep `Item` clones.
 #[derive(Default)]
 pub struct StoryListState {
+    /// Currently loaded story window. Mutate only through
+    /// [`Self::replace_stories`] / [`Self::append_stories`] so
+    /// `domains` stays in sync.
     pub stories: Vec<Arc<Item>>,
     /// Pre-computed `story.domain()` for each story at the same index.
     /// Avoids the per-frame `url::Url::parse` that
     /// [`StoryList`](crate::ui::story_list::StoryList) used to do.
     pub domains: Vec<Option<String>>,
+    /// Full ID list from the initial feed fetch — used as a stable
+    /// pagination index so a feed that gains stories mid-session
+    /// doesn't shift the offset. Refreshed only on Replace; appended
+    /// pages reuse the snapshot.
     pub all_ids: Vec<u64>,
+    /// Cursor row, indexing into `stories`. Clamped by every nav
+    /// method so it never points past the loaded tail.
     pub selected: usize,
+    /// True while a feed-page fetch is in flight; flipped on by
+    /// `App::spawn_load_stories` before spawn (so the
+    /// "Loading stories..." placeholder appears immediately) and off
+    /// in `apply_loaded_stories`.
     pub loading: bool,
 }
 

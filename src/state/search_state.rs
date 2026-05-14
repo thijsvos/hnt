@@ -11,10 +11,20 @@
 /// why pagination anchors to `query`.
 #[derive(Default)]
 pub struct SearchState {
+    /// Committed search query — what pagination spawns send to Algolia.
+    /// Empty until `App::submit_search` copies from `input`.
     pub query: String,
+    /// In-progress typed input buffer. Driven by
+    /// `App::search_input_char` / `_backspace` while
+    /// [`crate::keys::InputMode::SearchInput`] is active.
     pub input: String,
+    /// Last-fetched Algolia page index (0-based). Bumped by
+    /// `App::check_lazy_load` when the user nears the loaded tail.
     pub current_page: usize,
+    /// Total pages reported by the most recent Algolia response —
+    /// drives the lazy-pagination cap.
     pub total_pages: usize,
+    /// Total hit count from Algolia — surfaced in the status bar.
     pub total_hits: usize,
 }
 

@@ -45,10 +45,21 @@ fn build_block_title_label(story: &Item) -> String {
 /// non-zero — the number of prior HN submissions of the loaded story's URL
 /// that the [`crate::ui::prior_overlay`] overlay (bound to `h`) will surface.
 pub struct CommentTree<'a> {
+    /// Mutable handle to the comment-pane state — rendering populates
+    /// `row_map` and may advance `scroll` to keep the selection in view.
     pub state: &'a mut CommentTreeState,
+    /// Pre-walked visible-comment indices (from
+    /// [`CommentTreeState::visible_indices`]); shared with the status
+    /// bar so the two stay in sync within a single frame.
     pub visible: &'a [usize],
+    /// True when the comments pane has keyboard focus — drives the
+    /// border accent.
     pub focused: bool,
+    /// Monotonic tick counter; indexes into the loading-spinner glyph
+    /// sequence.
     pub tick: u64,
+    /// Prior-discussions count for the loaded story; rendered as the
+    /// `· N prior (h)` title suffix when non-zero.
     pub prior_count: usize,
     /// Wall-clock timestamp captured once per frame in [`crate::ui::render`]
     /// so the `Ns/Nm/Nh` ago column doesn't `clock_gettime` per visible

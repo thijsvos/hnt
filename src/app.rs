@@ -1698,7 +1698,11 @@ impl App {
 /// this guard, the user would be unable to reopen prior-discussions for
 /// that story for the rest of the session.
 struct PriorInFlightGuard {
+    /// Shared in-flight set — refcount-cloned from `App::prior_in_flight`
+    /// so the guard outlives the spawn and can still reach the set on
+    /// drop.
     set: Arc<Mutex<HashSet<StoryId>>>,
+    /// The story ID this guard is responsible for clearing on drop.
     id: StoryId,
 }
 

@@ -14,6 +14,9 @@ const ALPHABET: &[u8] = b"asdfweiou";
 /// One labeled hyperlink within a rendered surface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkRef {
+    /// Target URL, scrubbed through `sanitize_terminal` at
+    /// registry-build time so the hint overlay can't reflect attacker
+    /// bytes back to the terminal.
     pub url: String,
     /// Line index within the rendered `Vec<Vec<StyledFragment>>`.
     pub line: usize,
@@ -47,6 +50,8 @@ pub enum MatchResult<'a> {
 /// by the input-mode dispatch on every keypress.
 #[derive(Debug, Default)]
 pub struct LinkRegistry {
+    /// Insertion-ordered list of registered links. Labels are assigned
+    /// uniformly once by [`Self::assign_labels`] and not after.
     pub links: Vec<LinkRef>,
 }
 

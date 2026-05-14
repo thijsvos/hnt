@@ -17,7 +17,12 @@ use std::fmt;
 /// stories and counts the total transitive comment count.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Item {
+    /// HN item ID — unique across all item kinds. Stays as raw `u64`
+    /// for serde simplicity; [`StoryId`] / [`CommentId`] wrap it at app
+    /// boundaries where mixing IDs would be a bug.
     pub id: u64,
+    /// Story headline / job title. `None` on comments (the body lives
+    /// in `text`).
     #[serde(default)]
     pub title: Option<String>,
     /// Story URL — only populated for `http`/`https` schemes. Other
@@ -26,22 +31,40 @@ pub struct Item {
     /// [`validate_http_url`].
     #[serde(default, deserialize_with = "deserialize_http_url")]
     pub url: Option<String>,
+    /// HTML-formatted comment body, or HN-native post body (Ask HN,
+    /// Show HN text, job description). `None` for URL stories.
     #[serde(default)]
     pub text: Option<String>,
+    /// Submitter's HN username. `None` for deleted authors.
     #[serde(default)]
     pub by: Option<String>,
+    /// Net score (upvotes − downvotes). `None` on items that aren't
+    /// scored (comments, polls in some cases).
     #[serde(default)]
     pub score: Option<i64>,
+    /// Submission timestamp in Unix seconds. `None` only on the rare
+    /// malformed item.
     #[serde(default)]
     pub time: Option<i64>,
+    /// Direct child IDs — top-level comment IDs for a story, reply IDs
+    /// for a comment. HN-supplied order (roughly chronological with
+    /// moderator reshuffles).
     #[serde(default)]
     pub kids: Option<Vec<u64>>,
+    /// Total transitive comment count. Only set on stories — `None` on
+    /// comments and (typically) jobs.
     #[serde(default)]
     pub descendants: Option<i64>,
+    /// Firebase `type` field (`story` / `comment` / `job` / `poll` /
+    /// `pollopt`). Unknown future strings collapse to
+    /// [`ItemType::Unknown`] via `#[serde(other)]` so wire-format
+    /// evolution doesn't crash the app.
     #[serde(rename = "type", default)]
     pub item_type: Option<ItemType>,
+    /// Killed by moderators — see [`Self::is_dead_or_deleted`].
     #[serde(default)]
     pub dead: Option<bool>,
+    /// Removed by the author — see [`Self::is_dead_or_deleted`].
     #[serde(default)]
     pub deleted: Option<bool>,
 }
@@ -187,23 +210,38 @@ impl StoryBadge {
 /// of "is this id real" guards).
 #[derive(Debug, Deserialize)]
 pub struct SearchHit {
+    /// Algolia's object identifier — a stringified u64 HN item ID.
+    /// Parsed back to `u64` by `TryFrom<SearchHit> for Item`.
     #[serde(rename = "objectID")]
     pub object_id: String,
+    /// Story title at index time.
     pub title: Option<String>,
+    /// Story URL — `None` for HN-native posts. Re-validated through
+    /// `validate_http_url` inside `TryFrom` before reaching `Item::url`.
     pub url: Option<String>,
+    /// Submitter's HN username. Maps to `Item::by`.
     pub author: Option<String>,
+    /// Net score at index time. Maps to `Item::score`.
     pub points: Option<i64>,
+    /// Comment count at index time. Maps to `Item::descendants`.
     pub num_comments: Option<i64>,
+    /// Submission time in Unix seconds (integer form — the `_i` suffix
+    /// is the Algolia wire-side naming). Maps to `Item::time`.
     pub created_at_i: Option<i64>,
+    /// HN-native post body. Maps to `Item::text`.
     pub story_text: Option<String>,
 }
 
 /// Top-level envelope of an Algolia search response.
 #[derive(Debug, Deserialize)]
 pub struct SearchResponse {
+    /// Result entries for the requested page, in Algolia-relevance order.
     pub hits: Vec<SearchHit>,
+    /// Total page count for the query — drives the lazy-pagination cap
+    /// in `App::check_lazy_load`.
     #[serde(rename = "nbPages")]
     pub nb_pages: usize,
+    /// Total hit count across all pages — surfaced in the status bar.
     #[serde(rename = "nbHits")]
     pub nb_hits: usize,
 }
