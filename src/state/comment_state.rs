@@ -9,7 +9,16 @@
 #[cfg(test)]
 use crate::api::types::ItemType;
 use crate::api::types::{CommentId, CommentWithDepth, Item};
+use std::cell::RefCell;
 use std::collections::HashSet;
+use std::rc::Rc;
+
+/// Cached `(filter, comments.len())` keyed visible-set, owned by
+/// [`CommentTreeState::filter_cache`]. Outer `Option` is the cache
+/// itself (empty before the first call or after a key mismatch);
+/// inner `Option` follows [`CommentTreeState::filter_visible_set`]
+/// semantics (`None` ↔ `CommentFilter::All`, "everything passes").
+type FilterCache = Option<((CommentFilter, usize), Option<Rc<HashSet<usize>>>)>;
 
 /// Comment-pane visibility filter. Composes with the collapse state so the
 /// user can fold subtrees and narrow to "what's new" simultaneously.
@@ -105,6 +114,13 @@ pub struct CommentTreeState {
     /// Cached plain-text rendering of the current story's text (id, width, text).
     /// Invalidated automatically when story id or width changes.
     story_text_cache: Option<(u64, usize, String)>,
+    /// Memoised output of [`Self::filter_visible_set`], keyed by the
+    /// pair `(filter, comments.len())`. Cleared lazily on key mismatch
+    /// inside [`Self::filter_visible_set`] itself. `Rc<HashSet<_>>` so
+    /// [`Self::visible_indices_iter`] can grab a cheap clone and move
+    /// it into its inner closure without re-running the O(n) path-stack
+    /// walk every frame.
+    filter_cache: RefCell<FilterCache>,
 }
 
 impl CommentTreeState {
@@ -172,10 +188,28 @@ impl CommentTreeState {
     /// coherently. Returns `None` for [`CommentFilter::All`] — callers
     /// treat that as "everything passes."
     ///
-    /// O(n) using a single forward pass: maintains a `path` stack of
-    /// ancestor indices at strictly-decreasing depths, then unions the
-    /// current path into `keep` whenever a comment passes the filter.
-    fn filter_visible_set(&self) -> Option<HashSet<usize>> {
+    /// O(n) on a cache miss: maintains a `path` stack of ancestor indices
+    /// at strictly-decreasing depths, unions the current path into `keep`
+    /// whenever a comment passes the filter, and stores the result keyed
+    /// by `(filter, comments.len())`. Cache hits return an `Rc` clone
+    /// (the only allocation, ~O(1)) so the comments pane render path
+    /// doesn't pay O(n) per frame when the filter sits unchanged.
+    fn filter_visible_set(&self) -> Option<Rc<HashSet<usize>>> {
+        let key = (self.filter, self.comments.len());
+        {
+            let cache = self.filter_cache.borrow();
+            if let Some((cached_key, cached_set)) = cache.as_ref() {
+                if *cached_key == key {
+                    return cached_set.clone();
+                }
+            }
+        }
+        let computed = self.compute_filter_visible_set().map(Rc::new);
+        *self.filter_cache.borrow_mut() = Some((key, computed.clone()));
+        computed
+    }
+
+    fn compute_filter_visible_set(&self) -> Option<HashSet<usize>> {
         let threshold = match self.filter {
             CommentFilter::All => return None,
             CommentFilter::NewSince(t) | CommentFilter::Recent(t) => t,
@@ -206,8 +240,10 @@ impl CommentTreeState {
     /// comment and (when `self.filter` is non-default) any comment that
     /// neither matches the filter nor is an ancestor of a match. Yields
     /// the indices (into `self.comments`) that should be shown.
-    /// Allocation-free for the common [`CommentFilter::All`] case; one
-    /// `HashSet` allocation otherwise. Prefer this for `.count()` /
+    /// Allocation-free for the common [`CommentFilter::All`] case;
+    /// the non-default case pulls a memoised `Rc<HashSet>` from
+    /// [`Self::filter_visible_set`] so repeated frames pay an `Rc` clone
+    /// (~O(1)) instead of an O(n) rebuild. Prefer this for `.count()` /
     /// `.nth(...)` over the `Vec`-returning [`Self::visible_indices`].
     pub fn visible_indices_iter(&self) -> impl Iterator<Item = usize> + '_ {
         let filter_set = self.filter_visible_set();
@@ -783,5 +819,70 @@ mod tests {
         state.filter = CommentFilter::NewSince(123);
         state.set_comments(sample_tree());
         assert_eq!(state.filter, CommentFilter::All);
+    }
+
+    // --- filter_visible_set memoisation (closes #137) ---
+
+    #[test]
+    fn filter_cache_returns_same_rc_for_repeated_calls() {
+        let mut state = CommentTreeState::new();
+        state.set_comments(vec![cwd_at(1, 0, 100), cwd_at(2, 1, 500), cwd_at(3, 0, 50)]);
+        state.filter = CommentFilter::NewSince(200);
+        let a = state.filter_visible_set().expect("set computed");
+        let b = state.filter_visible_set().expect("set on cache hit");
+        // Same allocation — `Rc::ptr_eq` is the canonical "no rebuild
+        // happened" signal because a recomputation would have produced
+        // a fresh `Rc`.
+        assert!(
+            Rc::ptr_eq(&a, &b),
+            "second call must hit the cache and return the same Rc"
+        );
+    }
+
+    #[test]
+    fn filter_cache_invalidates_when_filter_changes() {
+        let mut state = CommentTreeState::new();
+        state.set_comments(vec![cwd_at(1, 0, 100), cwd_at(2, 0, 500)]);
+        state.filter = CommentFilter::NewSince(200);
+        let first = state.filter_visible_set().expect("set");
+        state.filter = CommentFilter::Recent(400);
+        let second = state.filter_visible_set().expect("set");
+        assert!(
+            !Rc::ptr_eq(&first, &second),
+            "filter change must invalidate the cache"
+        );
+        // Recent(400) keeps only items with time > 400 → just id=2.
+        assert!(second.contains(&1));
+        // (Index 1, i.e. the second comment, passes; index 0 is its
+        // sibling and would only show as an ancestor, which root
+        // comments don't have.)
+    }
+
+    #[test]
+    fn filter_cache_invalidates_when_insert_children_grows_list() {
+        let mut state = CommentTreeState::new();
+        state.set_comments(vec![cwd_at(1, 0, 500), cwd_at(2, 0, 50)]);
+        state.filter = CommentFilter::NewSince(200);
+        let before = state.filter_visible_set().expect("set");
+        state.insert_children(cid(1), vec![cwd_at(3, 1, 600)]);
+        let after = state.filter_visible_set().expect("set");
+        assert!(
+            !Rc::ptr_eq(&before, &after),
+            "insert_children grows comments.len(), invalidating cache key"
+        );
+        assert!(after.contains(&1), "newly inserted child at idx 1");
+    }
+
+    #[test]
+    fn filter_cache_returns_none_for_filter_all() {
+        let mut state = CommentTreeState::new();
+        state.set_comments(sample_tree());
+        // filter defaults to All after set_comments — set_comments
+        // resets it.
+        assert_eq!(state.filter, CommentFilter::All);
+        assert!(
+            state.filter_visible_set().is_none(),
+            "All filter returns None (everything passes)"
+        );
     }
 }
