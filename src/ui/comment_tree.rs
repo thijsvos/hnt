@@ -6,7 +6,8 @@
 //! populates `CommentTreeState::row_map` so mouse clicks can map rows
 //! back to comment indices.
 
-use crate::api::types::CommentId;
+use crate::api::types::{CommentId, Item};
+use crate::sanitize::sanitize_terminal;
 use crate::state::comment_state::{CommentFilter, CommentTreeState, FlatComment};
 use crate::ui::spinner;
 use crate::ui::story_list::format_time_ago_since;
@@ -17,6 +18,24 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Widget},
 };
+
+/// Builds the block-title label for the comments pane.
+///
+/// `story.display_title()` is attacker-controlled (the HN Firebase API
+/// returns titles as plain strings, not HTML, so they bypass
+/// `html2text`'s entity-decode path). Running it through
+/// [`sanitize_terminal`] before interpolation prevents a story title
+/// containing `\x1b]0;OWNED\x07` from rewriting the user's terminal
+/// tab title or otherwise injecting escape sequences when the comments
+/// pane is opened.
+fn build_block_title_label(story: &Item) -> String {
+    let safe_title = sanitize_terminal(story.display_title());
+    if let Some(badge) = story.badge() {
+        format!(" [{}] {} ", badge.label(), safe_title)
+    } else {
+        format!(" {} ", safe_title)
+    }
+}
 
 /// Stateless widget that renders the right pane. Takes a mutable reference
 /// to [`CommentTreeState`] because rendering populates the `row_map` and
@@ -64,12 +83,7 @@ impl<'a> Widget for CommentTree<'a> {
         };
 
         let title_span = if let Some(story) = &self.state.story {
-            let label = if let Some(badge) = story.badge() {
-                format!(" [{}] {} ", badge.label(), story.display_title())
-            } else {
-                format!(" {} ", story.display_title())
-            };
-            Span::styled(label, theme::title_style())
+            Span::styled(build_block_title_label(story), theme::title_style())
         } else {
             Span::styled(" Comments ", theme::title_style())
         };
@@ -492,4 +506,117 @@ const INDENTS: [&str; 11] = [
 
 fn indent_for(depth: usize) -> &'static str {
     INDENTS[depth.min(INDENTS.len() - 1)]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::types::ItemType;
+
+    fn make_story(title: Option<&str>, item_type: Option<ItemType>) -> Item {
+        Item {
+            id: 1,
+            title: title.map(String::from),
+            url: None,
+            text: None,
+            by: None,
+            score: None,
+            time: None,
+            kids: None,
+            descendants: None,
+            item_type,
+            dead: None,
+            deleted: None,
+        }
+    }
+
+    // --- build_block_title_label ---
+
+    #[test]
+    fn block_title_neutralises_osc_window_title_escape() {
+        // OSC-0 ("set window title") — the primary attack vector for
+        // C2. Make sure neither ESC nor BEL survive the label build.
+        let story = make_story(Some("Cool tool\x1b]0;OWNED\x07"), None);
+        let label = build_block_title_label(&story);
+        assert!(!label.contains('\x1b'), "ESC must not appear: {label:?}");
+        assert!(!label.contains('\x07'), "BEL must not appear: {label:?}");
+        assert!(label.contains("Cool tool"));
+    }
+
+    #[test]
+    fn block_title_neutralises_csi_clear_screen() {
+        let story = make_story(Some("Title\x1b[2Jcleared"), None);
+        let label = build_block_title_label(&story);
+        assert!(!label.contains('\x1b'));
+        assert!(label.contains("Title"));
+        assert!(label.contains("cleared"));
+    }
+
+    #[test]
+    fn block_title_neutralises_c1_range_bytes() {
+        // 0x9B is the 8-bit CSI introducer; rendered through a Latin-1
+        // terminal it kicks off a control sequence on its own.
+        let story = make_story(Some("a\u{009b}b"), None);
+        let label = build_block_title_label(&story);
+        assert!(!label.contains('\u{009b}'));
+        assert!(label.contains('a'));
+        assert!(label.contains('b'));
+    }
+
+    #[test]
+    fn block_title_preserves_plain_title() {
+        let story = make_story(Some("My cool tool"), None);
+        let label = build_block_title_label(&story);
+        assert_eq!(label, " My cool tool ");
+    }
+
+    #[test]
+    fn block_title_preserves_unicode_letters() {
+        let story = make_story(Some("café résumé 日本語"), None);
+        let label = build_block_title_label(&story);
+        assert!(label.contains("café"));
+        assert!(label.contains("日本語"));
+    }
+
+    #[test]
+    fn block_title_includes_badge_for_ask_hn() {
+        let story = make_story(Some("Ask HN: How do I X?"), None);
+        let label = build_block_title_label(&story);
+        // `display_title` strips the "Ask HN:" prefix; the label
+        // re-introduces the badge from `Item::badge`.
+        assert!(
+            label.contains("[Ask HN]"),
+            "expected badge in label: {label:?}"
+        );
+        assert!(label.contains("How do I X?"));
+        assert!(!label.contains("Ask HN: How do I X?"));
+    }
+
+    #[test]
+    fn block_title_includes_badge_for_job_item_type() {
+        let story = make_story(Some("We are hiring"), Some(ItemType::Job));
+        let label = build_block_title_label(&story);
+        assert!(label.contains("[Job]"));
+        assert!(label.contains("We are hiring"));
+    }
+
+    #[test]
+    fn block_title_no_badge_for_plain_story() {
+        let story = make_story(Some("Just a regular story"), None);
+        let label = build_block_title_label(&story);
+        assert!(
+            !label.contains('['),
+            "plain story should not carry a badge: {label:?}"
+        );
+    }
+
+    #[test]
+    fn block_title_handles_missing_title() {
+        // Item with `title = None` falls back to "[no title]" via
+        // `display_title`. Make sure the label still builds and the
+        // sanitiser doesn't choke on the literal brackets.
+        let story = make_story(None, None);
+        let label = build_block_title_label(&story);
+        assert!(label.contains("[no title]"));
+    }
 }
