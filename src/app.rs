@@ -422,9 +422,19 @@ impl App {
 
     /// Shared body for [`Self::try_advance_resume`] (in-progress) and
     /// [`Self::finalize_pending_resume`] (final pass after `CommentsDone`).
-    /// Returns silently with the resume still pending when the loaded
-    /// tree hasn't grown enough yet — except in the final pass, where
-    /// past-end targets clamp to `visible_len - 1` and the resume clears.
+    ///
+    /// Five outcomes:
+    /// - No pending resume → returns silently.
+    /// - `comment_state.story` is `None` → clears the resume (the user
+    ///   left the comments pane).
+    /// - Loaded `story_id` doesn't match the pending target → clears
+    ///   the resume (the user moved to a different story).
+    /// - Visible-tree empty → leaves the resume pending, or clears
+    ///   when `clamp_to_end` is set (final pass — no clamp possible).
+    /// - Target inside visible range → places the cursor and clears.
+    /// - Target past visible range → leaves the resume pending, except
+    ///   in the final pass where it clamps to `visible_len - 1` and
+    ///   clears.
     fn apply_pending_resume(&mut self, clamp_to_end: bool) {
         let Some(target) = self.pending_pinned_resume else {
             return;
@@ -1291,8 +1301,14 @@ impl App {
     /// Opens the reader overlay for the story in the focused pane.
     ///
     /// For text-only posts (Ask HN, etc.) renders the inline `text`
-    /// locally. For URL stories, validates the http(s) scheme and then
-    /// spawns a fetch + readability extraction task.
+    /// locally via [`html_to_styled_lines`] — no network I/O. For URL
+    /// stories, validates the http(s) scheme and then spawns a fetch
+    /// + readability extraction task.
+    ///
+    /// Bumps [`Self::article_gen`] before spawning so any in-flight
+    /// fetch from a previously-opened reader (or from
+    /// [`Self::open_url_in_reader`]) is invalidated and its result
+    /// dropped by [`Self::process_messages`].
     fn open_article_reader(&mut self) {
         let Some(story) = (match self.focus {
             Pane::Stories => self.story_state.selected_story().cloned(),
@@ -1425,11 +1441,12 @@ impl App {
 
     /// Handles a mouse left-click at the given terminal cell.
     ///
-    /// Maps the cell to a pane via `build_layout`: in the stories pane,
-    /// selects the clicked story (triggering lazy load + comment fetch);
-    /// in the comments pane, selects the clicked comment, treating a second
-    /// click on the same row within 400ms as a double-click to toggle
-    /// collapse. No-op when the reader overlay is open.
+    /// Routes through [`Self::pane_at`] (which calls `build_layout`
+    /// internally): in the stories pane, selects the clicked story
+    /// (triggering lazy load + comment fetch); in the comments pane,
+    /// selects the clicked comment, treating a second click on the
+    /// same row within 400ms as a double-click to toggle collapse.
+    /// No-op when the reader overlay is open.
     pub fn handle_click(&mut self, column: u16, row: u16) {
         // When reader is open, consume clicks
         if self.reader_state.is_some() {

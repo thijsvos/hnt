@@ -201,10 +201,12 @@ impl CommentTreeState {
     ///
     /// For a pre-order flat tree, each comment's descendants are the
     /// contiguous suffix starting at the next index whose depth stays
-    /// strictly greater than the comment's own depth. Outer loop is
-    /// O(n); inner scan is bounded by the tree depth (capped at
-    /// `crate::app::MAX_COMMENT_DEPTH` = 10), so total cost is
-    /// O(n × MAX_DEPTH) — essentially linear. Called from
+    /// strictly greater than the comment's own depth. The inner `while`
+    /// loop walks every descendant of the current comment, so total
+    /// cost is the sum of all subtree sizes — O(n²) worst case on a
+    /// single tall chain, but effectively linear on real HN threads
+    /// which stay shallow (capped at `crate::app::MAX_COMMENT_DEPTH`
+    /// = 10) and broad rather than tall. Called from
     /// [`Self::set_comments`] and [`Self::insert_children`]; the count
     /// stays current with every tree mutation so
     /// `crate::ui::comment_tree::count_hidden_children` can return
