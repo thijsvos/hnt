@@ -5,6 +5,74 @@ All notable changes to `hnt` are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] — 2026-05-14
+
+Repository-hygiene + CI-hardening patch release. A `/github-audit`
+pass surfaced ten recommendations; all ten are applied here. No
+behavioural change to the binary; the changes harden the
+supply-chain posture, broaden test coverage, and improve
+discoverability.
+
+### Security & supply chain
+
+- **Dependabot vulnerability alerts, secret scanning, secret-scanning
+  push protection, Dependabot security updates, and private
+  vulnerability reporting** all enabled on the repo. Closes
+  [#168](https://github.com/thijsvos/hnt/issues/168).
+- **Branch protection** on `main` tightened: `enforce_admins=true` so
+  admin pushes go through CI; `required_linear_history=true` to match
+  the established squash-merge style. Closes
+  [#172](https://github.com/thijsvos/hnt/issues/172).
+- **Dependabot auto-merge** restricted to the `cargo` ecosystem.
+  GitHub Actions and Docker base-image bumps now require manual
+  review — a compromised action gets full `GITHUB_TOKEN` access.
+  Closes [#176](https://github.com/thijsvos/hnt/issues/176) via
+  [PR #183](https://github.com/thijsvos/hnt/pull/183).
+
+### CI/CD
+
+- **`cargo doc -D warnings`** added to the Check & Lint job. Prevents
+  intra-doc-link rot at PR time. Closes
+  [#169](https://github.com/thijsvos/hnt/issues/169) via
+  [PR #179](https://github.com/thijsvos/hnt/pull/179).
+- **`cargo audit` (RUSTSEC)** new job in the CI pipeline.
+  Complements Dependabot vuln alerts — Dependabot catches
+  registry-level CVEs, `audit-check` catches them at PR time before
+  the lockfile lands. Same closing PR as above.
+- **macOS now runs `cargo test`** (not just `cargo build --release`),
+  and both targets use `--locked` for Cargo.lock reproducibility.
+  Closes [#170](https://github.com/thijsvos/hnt/issues/170) via
+  [PR #181](https://github.com/thijsvos/hnt/pull/181).
+- **Weekly scheduled CI run** added (Mondays 06:00 UTC) so ecosystem
+  drift surfaces before a user PR does. Closes
+  [#174](https://github.com/thijsvos/hnt/issues/174) via
+  [PR #186](https://github.com/thijsvos/hnt/pull/186).
+
+### Documentation
+
+- **README**: status callout (pre-1.0, actively developed),
+  Configuration & state section documenting per-platform persisted
+  paths (XDG / macOS Application Support / Windows AppData), Changelog
+  link, Windows install note. Closes
+  [#171](https://github.com/thijsvos/hnt/issues/171) via
+  [PR #180](https://github.com/thijsvos/hnt/pull/180).
+- **`cargo install --git`** install path documented as the idiomatic
+  Rust install for a not-yet-on-crates.io crate. Closes
+  [#173](https://github.com/thijsvos/hnt/issues/173) via
+  [PR #185](https://github.com/thijsvos/hnt/pull/185). Homepage URL
+  also set to `/releases/latest` via `gh repo edit`.
+- **PR template** now leads with `Closes #` and includes an optional
+  Screenshots / before-after section for visual changes. Closes
+  [#175](https://github.com/thijsvos/hnt/issues/175) via
+  [PR #182](https://github.com/thijsvos/hnt/pull/182).
+- **`docs/` tree** added with `docs/configuration.md` (persisted-state
+  reference) and `docs/internals.md` (load-bearing-but-non-obvious
+  mechanisms: tokio/MPSC architecture, generation-counter result
+  gating, SSRF guard, terminal-escape sanitisation paths, Quickjump
+  labels, comment-tree memoisation). Closes
+  [#177](https://github.com/thijsvos/hnt/issues/177) via
+  [PR #184](https://github.com/thijsvos/hnt/pull/184).
+
 ## [0.4.1] — 2026-05-14
 
 Documentation-only patch release. A full `/docstring-check` sweep over
@@ -204,6 +272,7 @@ eighteen and adds ~150 new tests along the way.
 Final 0.3.x release. See `git log` for individual commits; the 0.3.x
 series predates this changelog file.
 
+[0.4.2]: https://github.com/thijsvos/hnt/releases/tag/v0.4.2
 [0.4.1]: https://github.com/thijsvos/hnt/releases/tag/v0.4.1
 [0.4.0]: https://github.com/thijsvos/hnt/releases/tag/v0.4.0
 [0.3.13]: https://github.com/thijsvos/hnt/releases/tag/v0.3.13
