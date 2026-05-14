@@ -179,18 +179,39 @@ pub enum AppMessage {
 /// reach the input buffers verbatim. All async results flow through
 /// [`App::process_messages`].
 pub struct App {
+    /// Main-loop guard; cleared by `Action::Quit` and by an `Esc` from
+    /// the root context. The loop in `main.rs` exits when this flips
+    /// to `false`.
     pub running: bool,
+    /// Active feed. Mutated by `Action::SwitchFeed(...)`; drives both
+    /// the header label and which spawn branch `spawn_load_stories`
+    /// takes.
     pub current_feed: FeedKind,
+    /// Which pane has keyboard focus. Navigation arms route here.
     pub focus: Pane,
+    /// Left-pane state (stories list, selection, lazy-load bookkeeping).
     pub story_state: StoryListState,
+    /// Right-pane state (flattened comment tree, collapse set, filter).
     pub comment_state: CommentTreeState,
+    /// Article-reader overlay state. `Some` while the overlay is open;
+    /// every spawn captures [`Self::article_gen`] for race-safety.
     pub reader_state: Option<ReaderState>,
+    /// Search-mode state. `Some` between `/` and `Esc` / `cancel_search`.
     pub search_state: Option<SearchState>,
+    /// Keymap mode — drives the keymap branch in `main.rs`; see
+    /// [`crate::keys::InputMode`].
     pub input_mode: InputMode,
+    /// Whether the help overlay (`?`) is open.
     pub show_help: bool,
+    /// Last user-facing error from a feed/search/comment spawn. Rendered
+    /// by [`crate::ui::status_bar`]; sanitised at the render boundary.
     pub error: Option<String>,
+    /// Cached terminal height in rows. Updated on `Event::Resize`.
     pub terminal_height: u16,
+    /// Cached terminal width in columns. Updated on `Event::Resize`.
     pub terminal_width: u16,
+    /// Monotonic frame counter used by [`crate::ui::spinner::frame`];
+    /// wraps on overflow (so the spinner sequence is u64-cyclic).
     pub tick_count: u64,
 
     /// Prior-discussions overlay state. `Some` while the overlay is open;
