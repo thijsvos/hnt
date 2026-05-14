@@ -287,39 +287,45 @@ fn markdown_to_styled_lines(text: &str, width: usize) -> Vec<Vec<StyledFragment>
                         .add_modifier(Modifier::ITALIC),
                 },
             ]);
-        } else {
-            // Word-wrap long lines
-            if raw_line.chars().count() > width && width > 0 {
-                let mut remaining = raw_line;
-                while !remaining.is_empty() {
-                    if remaining.chars().count() <= width {
-                        lines.push(vec![StyledFragment {
-                            text: remaining.to_string(),
-                            style: Style::default().fg(theme::TEXT),
-                        }]);
-                        break;
-                    }
-                    let byte_pos = remaining
-                        .char_indices()
-                        .nth(width)
-                        .map(|(i, _)| i)
-                        .unwrap_or(remaining.len());
-                    let split_at = remaining[..byte_pos]
-                        .rfind(' ')
-                        .map(|p| p + 1)
-                        .unwrap_or(byte_pos);
+        } else if width == 0 {
+            // No usable width to wrap into. The overlay guard at
+            // `article_reader.rs:37` hides the reader below width 10
+            // anyway, but caching an unwrapped full-width fragment
+            // here would render incorrectly on a subsequent resize.
+            // Emit an empty placeholder so the line count is preserved
+            // for the resize path's eventual re-wrap.
+            lines.push(vec![]);
+        } else if raw_line.chars().count() > width {
+            // Word-wrap long lines.
+            let mut remaining = raw_line;
+            while !remaining.is_empty() {
+                if remaining.chars().count() <= width {
                     lines.push(vec![StyledFragment {
-                        text: remaining[..split_at].to_string(),
+                        text: remaining.to_string(),
                         style: Style::default().fg(theme::TEXT),
                     }]);
-                    remaining = &remaining[split_at..];
+                    break;
                 }
-            } else {
+                let byte_pos = remaining
+                    .char_indices()
+                    .nth(width)
+                    .map(|(i, _)| i)
+                    .unwrap_or(remaining.len());
+                let split_at = remaining[..byte_pos]
+                    .rfind(' ')
+                    .map(|p| p + 1)
+                    .unwrap_or(byte_pos);
                 lines.push(vec![StyledFragment {
-                    text: raw_line.to_string(),
+                    text: remaining[..split_at].to_string(),
                     style: Style::default().fg(theme::TEXT),
                 }]);
+                remaining = &remaining[split_at..];
             }
+        } else {
+            lines.push(vec![StyledFragment {
+                text: raw_line.to_string(),
+                style: Style::default().fg(theme::TEXT),
+            }]);
         }
     }
 
@@ -694,6 +700,31 @@ mod tests {
         let lines = markdown_to_styled_lines("```rust", 80);
         assert_eq!(lines[0][0].text, "```rust");
         assert_eq!(lines[0][0].style.fg, Some(theme::DIM));
+    }
+
+    #[test]
+    fn markdown_width_zero_emits_empty_placeholder_per_line() {
+        // Pre-fix this fell through to the else branch and pushed the
+        // full unwrapped line as a single fragment, which then cached
+        // wrong-width content that a subsequent resize would render.
+        // Now: empty placeholders preserve the line count so the
+        // resize path's eventual re-wrap stays aligned.
+        let lines = markdown_to_styled_lines("hello world\nsecond line", 0);
+        assert_eq!(lines.len(), 2);
+        assert!(
+            lines[0].is_empty(),
+            "first line should be empty placeholder"
+        );
+        assert!(
+            lines[1].is_empty(),
+            "second line should be empty placeholder"
+        );
+    }
+
+    #[test]
+    fn markdown_width_zero_does_not_panic_on_empty_input() {
+        let lines = markdown_to_styled_lines("", 0);
+        assert!(lines.is_empty());
     }
 
     #[test]
