@@ -14,7 +14,7 @@ Browse stories, read threaded comments, and open links — all from your termina
 
 - **Dark theme** — Catppuccin Mocha-inspired colors with HN orange accents
 - **Split-pane layout** — Stories on the left, comments on the right
-- **6 feeds** — Top, New, Best, Ask HN, Show HN, Jobs
+- **7 feeds** — Top, New, Best, Ask HN, Show HN, Jobs, Pinned (your starred stories with resume position)
 - **Story type badges** — Visual labels for Ask HN, Show HN, and Jobs posts
 - **Threaded comments** — Depth-colored bars for visual tracking, collapse/expand
 - **Vim-style navigation** — `j`/`k`, `g`/`G`, `Ctrl+d`/`Ctrl+u`
@@ -70,11 +70,12 @@ cargo build --release
 | `Enter` | Select story / toggle collapse |
 | `o` | Open URL in browser |
 | `p` | Open reader mode |
-| `f` / `F` / `y` | (in reader) Quickjump label hints — open in browser / open in reader / copy to clipboard |
+| `f` / `F` / `y` | In reader: Quickjump label hints — open in browser / open in reader / copy to clipboard |
+| `b` | Pin / unpin focused story (★) |
 | `h` | Show prior HN submissions of this URL |
 | `/` | Search stories |
 | `Tab` | Switch pane focus |
-| `1`-`6` | Switch feed (Top/New/Best/Ask/Show/Jobs) |
+| `1`-`7` | Switch feed (Top/New/Best/Ask/Show/Jobs/Pinned) |
 | `r` | Refresh |
 | `n` | Cycle "What's New" filter (comments pane) |
 | `g` / `G` | Jump to top / bottom |
