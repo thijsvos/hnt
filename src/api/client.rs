@@ -135,10 +135,14 @@ impl HnClient {
     /// Fetches multiple items concurrently (up to `CONCURRENT_REQUESTS`
     /// in flight) and returns them in the order of `ids` — `result[i]`
     /// corresponds to `ids[i]`, and is `None` when the item was missing
-    /// or its fetch failed. Owned `Item`s are returned — deref-cloned from
-    /// the cached `Arc<Item>` at the boundary because every downstream
-    /// consumer needs mutable ownership to stash in state.
-    pub async fn fetch_items(&self, ids: &[u64]) -> Vec<Option<Item>> {
+    /// or its fetch failed.
+    ///
+    /// Returns `Arc<Item>` per slot so the cached pointer travels
+    /// end-to-end into [`crate::state::story_state::StoryListState`]
+    /// (closes #140 on the story side). The comment-tree's
+    /// `FlatComment::item` still owns `Item` directly; that conversion
+    /// is a separate refactor.
+    pub async fn fetch_items(&self, ids: &[u64]) -> Vec<Option<Arc<Item>>> {
         let results: Vec<Option<Arc<Item>>> = stream::iter(ids.iter().copied())
             .map(|id| {
                 let client = self.clone();
@@ -157,9 +161,7 @@ impl HnClient {
             .map(|arc| (arc.id, arc))
             .collect();
 
-        ids.iter()
-            .map(|id| result_map.get(id).map(|arc| (**arc).clone()))
-            .collect()
+        ids.iter().map(|id| result_map.get(id).cloned()).collect()
     }
 
     /// Fetches a page of items from a pre-fetched ID list. Used for pagination
@@ -177,7 +179,7 @@ impl HnClient {
         ids: &[u64],
         offset: usize,
         count: usize,
-    ) -> Result<Vec<Item>> {
+    ) -> Result<Vec<Arc<Item>>> {
         if offset >= ids.len() {
             return Ok(Vec::new());
         }
@@ -205,7 +207,7 @@ impl HnClient {
         feed: FeedKind,
         offset: usize,
         count: usize,
-    ) -> Result<(Vec<Item>, Vec<u64>)> {
+    ) -> Result<(Vec<Arc<Item>>, Vec<u64>)> {
         let all_ids = self.fetch_story_ids(feed).await?;
         let items = self.fetch_items_page(&all_ids, offset, count).await?;
         Ok((items, all_ids))
@@ -301,10 +303,16 @@ impl HnClient {
 
             let items = self.fetch_items(ids).await;
 
-            for mut item in items.into_iter().flatten() {
-                if item.is_dead_or_deleted() {
+            for arc in items.into_iter().flatten() {
+                if arc.is_dead_or_deleted() {
                     continue;
                 }
+                // `FlatComment::item` still owns `Item` directly; unwrap
+                // the cached `Arc` here. `try_unwrap` only succeeds when
+                // the LRU has evicted this entry — fallback to a deep
+                // clone in the common path. Future refactor: thread
+                // `Arc<Item>` into `FlatComment` and avoid this clone.
+                let mut item = Arc::try_unwrap(arc).unwrap_or_else(|a| (*a).clone());
                 // Move kids out of `item` before pushing — avoids a Vec<u64>
                 // clone per comment per recursion level.
                 let item_kids = std::mem::take(&mut item.kids);

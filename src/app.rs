@@ -103,10 +103,12 @@ struct PendingResume {
 #[non_exhaustive]
 pub enum AppMessage {
     /// Initial or paginated batch of stories finished loading. Gated by
-    /// [`App::feed_gen`].
+    /// [`App::feed_gen`]. Items arrive as `Arc<Item>` so the cached
+    /// pointer travels straight into the story list with no deep clone
+    /// at the boundary (closes #140 on the story side).
     StoriesLoaded {
         gen: u64,
-        stories: Vec<Item>,
+        stories: Vec<Arc<Item>>,
         /// Only populated on initial load; subsequent paginated loads
         /// reuse the cached ID list to avoid drift when the feed changes
         /// mid-session.
@@ -114,14 +116,14 @@ pub enum AppMessage {
         mode: LoadMode,
     },
     /// Root-level comments for a story are available; deeper descendants
-    /// still pending. `story` is boxed so this variant doesn't dominate
-    /// the enum's size — `Vec<CommentWithDepth>` and `HashSet<CommentId>`
-    /// only contribute their headers (24/48 bytes), not their contents,
-    /// so an inline `Item` (~150 bytes) would trip
-    /// `clippy::large_enum_variant`. Gated by [`App::story_gen`].
+    /// still pending. `story` arrives as `Arc<Item>` — the cached
+    /// pointer travels straight into `comment_state.story` with no
+    /// deep clone (`Arc<Item>` is one pointer = 8 bytes so the variant
+    /// stays small and `clippy::large_enum_variant` is happy). Gated
+    /// by [`App::story_gen`].
     CommentsLoaded {
         gen: u64,
-        story: Box<Item>,
+        story: Arc<Item>,
         comments: Vec<CommentWithDepth>,
         pending_roots: HashSet<CommentId>,
     },
@@ -144,10 +146,13 @@ pub enum AppMessage {
         links: LinkRegistry,
     },
     /// Algolia search returned a page of results. Gated by
-    /// [`App::feed_gen`].
+    /// [`App::feed_gen`]. Items arrive as `Arc<Item>` to match the
+    /// `StoriesLoaded` shape, even though search results are
+    /// constructed locally (the `Arc` is fresh in this path; the
+    /// downstream `StoryListState` doesn't care).
     SearchResultsLoaded {
         gen: u64,
-        stories: Vec<Item>,
+        stories: Vec<Arc<Item>>,
         total_pages: usize,
         total_hits: usize,
         mode: LoadMode,
@@ -492,7 +497,7 @@ impl App {
     /// install/append the new stories, clear the loading flag, clear the
     /// error banner. Auto-load and search-pagination bookkeeping are
     /// caller-specific and stay at the call sites.
-    fn apply_loaded_stories(&mut self, stories: Vec<Item>, mode: LoadMode) {
+    fn apply_loaded_stories(&mut self, stories: Vec<Arc<Item>>, mode: LoadMode) {
         match mode {
             LoadMode::Append => self.story_state.append_stories(stories),
             LoadMode::Replace => self.story_state.replace_stories(stories),
@@ -572,7 +577,7 @@ impl App {
                         continue;
                     }
                     let story_id = StoryId(story.id);
-                    self.comment_state.story = Some(*story);
+                    self.comment_state.story = Some(story);
                     self.comment_state.set_comments(comments);
                     self.comment_state.pending_root_ids = pending_roots;
                     self.error = None;
@@ -990,7 +995,7 @@ impl App {
         tokio::spawn(run_comment_load(
             self.client.clone(),
             self.msg_tx.clone(),
-            item,
+            Arc::new(item),
             needs_full_fetch,
             gen,
         ));
@@ -1073,6 +1078,10 @@ impl App {
         tokio::spawn(async move {
             match client.search_stories(&query, page, page_size).await {
                 Ok((stories, total_pages, total_hits)) => {
+                    // Algolia returns owned `Item`s; wrap each so the
+                    // downstream `StoryListState::stories: Vec<Arc<Item>>`
+                    // contract is uniform across both load paths.
+                    let stories = stories.into_iter().map(Arc::new).collect();
                     let _ = tx.send(AppMessage::SearchResultsLoaded {
                         gen,
                         stories,
@@ -1699,7 +1708,7 @@ impl Drop for PriorInFlightGuard {
 async fn run_comment_load(
     client: HnClient,
     tx: mpsc::UnboundedSender<AppMessage>,
-    story: Item,
+    story: Arc<Item>,
     needs_full_fetch: bool,
     gen: u64,
 ) {
@@ -1719,11 +1728,20 @@ async fn run_comment_load(
     };
 
     let root_items = client.fetch_items(&kids).await;
+    // `FlatComment::item` still owns `Item` directly, so unwrap the
+    // cached `Arc` here. `try_unwrap` would only succeed when the
+    // cache has already evicted the entry, so fall through to a deep
+    // clone — same cost as the pre-#140 boundary, just expressed
+    // explicitly. Future refactor: propagate `Arc<Item>` into
+    // FlatComment so this clone disappears too.
     let root_comments: Vec<CommentWithDepth> = root_items
         .into_iter()
         .flatten()
         .filter(|item| !item.is_dead_or_deleted())
-        .map(|item| CommentWithDepth { item, depth: 0 })
+        .map(|arc| CommentWithDepth {
+            item: Arc::try_unwrap(arc).unwrap_or_else(|a| (*a).clone()),
+            depth: 0,
+        })
         .collect();
 
     let pending_roots: HashSet<CommentId> = root_comments
@@ -1745,7 +1763,7 @@ async fn run_comment_load(
 
     let _ = tx.send(AppMessage::CommentsLoaded {
         gen,
-        story: Box::new(story),
+        story,
         comments: root_comments,
         pending_roots,
     });
@@ -1813,10 +1831,14 @@ mod tests {
         }
     }
 
-    fn fake_story_with_kids(id: u64, kids: Vec<u64>) -> Item {
+    fn fake_arc(id: u64) -> Arc<Item> {
+        Arc::new(fake_item(id))
+    }
+
+    fn fake_arc_with_kids(id: u64, kids: Vec<u64>) -> Arc<Item> {
         let mut s = fake_item(id);
         s.kids = Some(kids);
-        s
+        Arc::new(s)
     }
 
     fn fake_comment(id: u64) -> CommentWithDepth {
@@ -1875,7 +1897,7 @@ mod tests {
         app.msg_tx
             .send(AppMessage::StoriesLoaded {
                 gen,
-                stories: vec![fake_item(1), fake_item(2)],
+                stories: vec![fake_arc(1), fake_arc(2)],
                 all_ids: Some(vec![1, 2]),
                 mode: LoadMode::Replace,
             })
@@ -1893,7 +1915,7 @@ mod tests {
         app.msg_tx
             .send(AppMessage::StoriesLoaded {
                 gen: stale_gen,
-                stories: vec![fake_item(99)],
+                stories: vec![fake_arc(99)],
                 all_ids: Some(vec![99]),
                 mode: LoadMode::Replace,
             })
@@ -1920,7 +1942,7 @@ mod tests {
         app.msg_tx
             .send(AppMessage::StoriesLoaded {
                 gen: gen_feed_one,
-                stories: vec![fake_item(101), fake_item(102)],
+                stories: vec![fake_arc(101), fake_arc(102)],
                 all_ids: Some(vec![101, 102]),
                 mode: LoadMode::Replace,
             })
@@ -1929,7 +1951,7 @@ mod tests {
         app.msg_tx
             .send(AppMessage::StoriesLoaded {
                 gen: gen_feed_two,
-                stories: vec![fake_item(201), fake_item(202)],
+                stories: vec![fake_arc(201), fake_arc(202)],
                 all_ids: Some(vec![201, 202]),
                 mode: LoadMode::Replace,
             })
@@ -1949,7 +1971,7 @@ mod tests {
         app.msg_tx
             .send(AppMessage::SearchResultsLoaded {
                 gen: stale_gen,
-                stories: vec![fake_item(5)],
+                stories: vec![fake_arc(5)],
                 total_pages: 7,
                 total_hits: 42,
                 mode: LoadMode::Replace,
@@ -1968,7 +1990,7 @@ mod tests {
         app.msg_tx
             .send(AppMessage::CommentsLoaded {
                 gen,
-                story: Box::new(fake_story_with_kids(10, vec![100, 101])),
+                story: fake_arc_with_kids(10, vec![100, 101]),
                 comments: vec![fake_comment(100), fake_comment(101)],
                 pending_roots: HashSet::new(),
             })
@@ -1992,7 +2014,7 @@ mod tests {
         app.msg_tx
             .send(AppMessage::CommentsLoaded {
                 gen: stale_gen,
-                story: Box::new(fake_story_with_kids(999, vec![])),
+                story: fake_arc_with_kids(999, vec![]),
                 comments: vec![],
                 pending_roots: HashSet::new(),
             })
@@ -2242,11 +2264,11 @@ mod tests {
     #[test]
     fn apply_loaded_stories_replace_installs_fresh_list() {
         let mut app = App::new(80, 24);
-        app.story_state.stories = vec![fake_item(99), fake_item(98)];
+        app.story_state.stories = vec![fake_arc(99), fake_arc(98)];
         app.story_state.selected = 1;
         app.story_state.loading = true;
         app.error = Some("old".into());
-        app.apply_loaded_stories(vec![fake_item(1), fake_item(2)], LoadMode::Replace);
+        app.apply_loaded_stories(vec![fake_arc(1), fake_arc(2)], LoadMode::Replace);
         let ids: Vec<u64> = app.story_state.stories.iter().map(|s| s.id).collect();
         assert_eq!(ids, vec![1, 2], "Replace installs the new list");
         assert!(!app.story_state.loading, "loading cleared");
@@ -2256,9 +2278,9 @@ mod tests {
     #[test]
     fn apply_loaded_stories_append_extends_existing_list() {
         let mut app = App::new(80, 24);
-        app.story_state.stories = vec![fake_item(1), fake_item(2)];
+        app.story_state.stories = vec![fake_arc(1), fake_arc(2)];
         app.story_state.loading = true;
-        app.apply_loaded_stories(vec![fake_item(3), fake_item(4)], LoadMode::Append);
+        app.apply_loaded_stories(vec![fake_arc(3), fake_arc(4)], LoadMode::Append);
         let ids: Vec<u64> = app.story_state.stories.iter().map(|s| s.id).collect();
         assert_eq!(ids, vec![1, 2, 3, 4], "Append extends");
         assert!(!app.story_state.loading);
@@ -2269,7 +2291,7 @@ mod tests {
     fn loaded_story(app: &mut App, id: u64) {
         // Minimal fixture for cycle_comment_filter: a loaded story so
         // `comment_state.story.is_some()` short-circuits don't fire.
-        app.comment_state.story = Some(fake_item(id));
+        app.comment_state.story = Some(fake_arc(id));
     }
 
     #[test]

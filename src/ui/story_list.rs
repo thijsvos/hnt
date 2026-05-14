@@ -15,11 +15,12 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Widget},
 };
+use std::sync::Arc;
 
 /// Stateless widget that renders the left pane. Composed from borrowed
 /// app state; rebuilt each frame.
 pub struct StoryList<'a> {
-    pub stories: &'a [Item],
+    pub stories: &'a [Arc<Item>],
     /// Pre-computed `Item::domain()` results, parallel to `stories`.
     /// Avoids a per-frame `url::Url::parse` per visible row.
     pub domains: &'a [Option<String>],

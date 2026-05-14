@@ -6,6 +6,7 @@
 //! pagination when the cursor approaches the end.
 
 use crate::api::types::Item;
+use std::sync::Arc;
 
 /// State for the story-list pane.
 ///
@@ -17,9 +18,14 @@ use crate::api::types::Item;
 /// once when stories load so per-frame rendering doesn't re-parse URLs.
 /// Mutate `stories` only through [`Self::replace_stories`] /
 /// [`Self::append_stories`] so the cache stays in sync.
+///
+/// Items are owned through `Arc<Item>` end-to-end with the
+/// [`crate::api::client::HnClient`] LRU cache — see #94 / #140 — so a
+/// feed page that returns 30 items adds 30 Arc clones (~30 atomic
+/// increments) instead of 30 deep `Item` clones.
 #[derive(Default)]
 pub struct StoryListState {
-    pub stories: Vec<Item>,
+    pub stories: Vec<Arc<Item>>,
     /// Pre-computed `story.domain()` for each story at the same index.
     /// Avoids the per-frame `url::Url::parse` that
     /// [`StoryList`](crate::ui::story_list::StoryList) used to do.
@@ -39,14 +45,14 @@ impl StoryListState {
     /// Replaces the loaded stories and refreshes the parallel domain
     /// cache. Use instead of `state.stories = ...` so per-frame rendering
     /// can keep using the cache.
-    pub fn replace_stories(&mut self, stories: Vec<Item>) {
-        self.domains = stories.iter().map(Item::domain).collect();
+    pub fn replace_stories(&mut self, stories: Vec<Arc<Item>>) {
+        self.domains = stories.iter().map(|s| s.domain()).collect();
         self.stories = stories;
     }
 
     /// Appends a paginated batch and extends the parallel domain cache.
-    pub fn append_stories(&mut self, stories: Vec<Item>) {
-        self.domains.extend(stories.iter().map(Item::domain));
+    pub fn append_stories(&mut self, stories: Vec<Arc<Item>>) {
+        self.domains.extend(stories.iter().map(|s| s.domain()));
         self.stories.extend(stories);
     }
 
@@ -90,7 +96,7 @@ impl StoryListState {
     }
 
     #[must_use]
-    pub fn selected_story(&self) -> Option<&Item> {
+    pub fn selected_story(&self) -> Option<&Arc<Item>> {
         self.stories.get(self.selected)
     }
 
@@ -142,7 +148,7 @@ mod tests {
     fn state_with_stories(n: usize) -> StoryListState {
         let mut s = StoryListState::new();
         for i in 0..n {
-            s.stories.push(make_item(i as u64));
+            s.stories.push(Arc::new(make_item(i as u64)));
         }
         s
     }
