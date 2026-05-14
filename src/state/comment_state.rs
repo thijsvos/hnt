@@ -12,6 +12,7 @@ use crate::api::types::{CommentId, CommentWithDepth, Item};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// Cached `(filter, comments.len())` keyed visible-set, owned by
 /// [`CommentTreeState::filter_cache`]. Outer `Option` is the cache
@@ -111,7 +112,9 @@ pub struct CommentTreeState {
     /// [`crate::app::AppMessage::CommentsDone`].
     pub loading: bool,
     /// The story whose comments are loaded. `None` between selections.
-    pub story: Option<Item>,
+    /// Held as `Arc<Item>` so the cached pointer travels in from
+    /// `AppMessage::CommentsLoaded` without a deep clone (#140).
+    pub story: Option<Arc<Item>>,
     /// Root-comment IDs whose subtrees are still being fetched.
     pub pending_root_ids: HashSet<CommentId>,
     /// Maps screen row (relative to inner area top) → visible comment index.
@@ -200,11 +203,11 @@ impl CommentTreeState {
     /// contiguous suffix starting at the next index whose depth stays
     /// strictly greater than the comment's own depth. Outer loop is
     /// O(n); inner scan is bounded by the tree depth (capped at
-    /// [`crate::app::MAX_COMMENT_DEPTH`] = 10), so total cost is
+    /// `crate::app::MAX_COMMENT_DEPTH` = 10), so total cost is
     /// O(n × MAX_DEPTH) — essentially linear. Called from
     /// [`Self::set_comments`] and [`Self::insert_children`]; the count
     /// stays current with every tree mutation so
-    /// [`crate::ui::comment_tree::count_hidden_children`] can return
+    /// `crate::ui::comment_tree::count_hidden_children` can return
     /// the value in O(1) (closes #138).
     fn recompute_descendant_counts(&mut self) {
         let n = self.comments.len();
@@ -705,7 +708,7 @@ mod tests {
         state.collapsed.insert(cid(1));
         state.selected = 2;
         state.loading = true;
-        state.story = Some(make_item(99));
+        state.story = Some(Arc::new(make_item(99)));
         state.pending_root_ids.insert(cid(1));
         state.reset();
         assert!(state.comments.is_empty());
