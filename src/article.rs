@@ -222,14 +222,24 @@ async fn try_fetch_readme(client: &reqwest::Client, url: &str) -> Option<(String
 /// Handles h1/h2/h3 headings, bullet lists, blockquotes, fenced code
 /// markers, and 4-space/tab indented code blocks. Long lines are
 /// word-wrapped at `width`.
+///
+/// All text fragments from the input are routed through
+/// [`sanitize_terminal`] — README bytes come from raw GitHub /
+/// GitLab URLs (`raw.githubusercontent.com` and friends) which serve
+/// arbitrary attacker-controlled content with no server-side scrub,
+/// so a malicious project README could otherwise embed OSC/CSI
+/// escape sequences directly into the reader. Static glyphs (the
+/// bullet `•` and the quote bar `│`) are constants and skip the
+/// scrub.
 fn markdown_to_styled_lines(text: &str, width: usize) -> Vec<Vec<StyledFragment>> {
     let mut lines: Vec<Vec<StyledFragment>> = Vec::new();
+    let safe = |s: &str| sanitize_terminal(s).into_owned();
 
     for raw_line in text.lines() {
         // Heading detection
         if let Some(rest) = raw_line.strip_prefix("# ") {
             lines.push(vec![StyledFragment {
-                text: rest.to_string(),
+                text: safe(rest),
                 style: Style::default()
                     .fg(theme::HN_ORANGE)
                     .add_modifier(Modifier::BOLD),
@@ -237,7 +247,7 @@ fn markdown_to_styled_lines(text: &str, width: usize) -> Vec<Vec<StyledFragment>
             lines.push(vec![]);
         } else if let Some(rest) = raw_line.strip_prefix("## ") {
             lines.push(vec![StyledFragment {
-                text: rest.to_string(),
+                text: safe(rest),
                 style: Style::default()
                     .fg(theme::YELLOW)
                     .add_modifier(Modifier::BOLD),
@@ -245,7 +255,7 @@ fn markdown_to_styled_lines(text: &str, width: usize) -> Vec<Vec<StyledFragment>
             lines.push(vec![]);
         } else if let Some(rest) = raw_line.strip_prefix("### ") {
             lines.push(vec![StyledFragment {
-                text: rest.to_string(),
+                text: safe(rest),
                 style: Style::default()
                     .fg(theme::GREEN)
                     .add_modifier(Modifier::BOLD),
@@ -254,13 +264,13 @@ fn markdown_to_styled_lines(text: &str, width: usize) -> Vec<Vec<StyledFragment>
         } else if raw_line.starts_with("```") {
             // Code fence marker — just skip the marker line
             lines.push(vec![StyledFragment {
-                text: raw_line.to_string(),
+                text: safe(raw_line),
                 style: Style::default().fg(theme::DIM),
             }]);
         } else if raw_line.starts_with("    ") || raw_line.starts_with('\t') {
             // Indented code
             lines.push(vec![StyledFragment {
-                text: raw_line.to_string(),
+                text: safe(raw_line),
                 style: Style::default().fg(theme::GREEN).bg(theme::SURFACE),
             }]);
         } else if raw_line.starts_with("- ") || raw_line.starts_with("* ") {
@@ -270,7 +280,7 @@ fn markdown_to_styled_lines(text: &str, width: usize) -> Vec<Vec<StyledFragment>
                     style: Style::default().fg(theme::HN_ORANGE),
                 },
                 StyledFragment {
-                    text: raw_line[2..].to_string(),
+                    text: safe(&raw_line[2..]),
                     style: Style::default().fg(theme::TEXT),
                 },
             ]);
@@ -281,7 +291,7 @@ fn markdown_to_styled_lines(text: &str, width: usize) -> Vec<Vec<StyledFragment>
                     style: Style::default().fg(theme::DIM),
                 },
                 StyledFragment {
-                    text: rest.to_string(),
+                    text: safe(rest),
                     style: Style::default()
                         .fg(theme::SUBTEXT)
                         .add_modifier(Modifier::ITALIC),
@@ -301,7 +311,7 @@ fn markdown_to_styled_lines(text: &str, width: usize) -> Vec<Vec<StyledFragment>
             while !remaining.is_empty() {
                 if remaining.chars().count() <= width {
                     lines.push(vec![StyledFragment {
-                        text: remaining.to_string(),
+                        text: safe(remaining),
                         style: Style::default().fg(theme::TEXT),
                     }]);
                     break;
@@ -316,14 +326,14 @@ fn markdown_to_styled_lines(text: &str, width: usize) -> Vec<Vec<StyledFragment>
                     .map(|p| p + 1)
                     .unwrap_or(byte_pos);
                 lines.push(vec![StyledFragment {
-                    text: remaining[..split_at].to_string(),
+                    text: safe(&remaining[..split_at]),
                     style: Style::default().fg(theme::TEXT),
                 }]);
                 remaining = &remaining[split_at..];
             }
         } else {
             lines.push(vec![StyledFragment {
-                text: raw_line.to_string(),
+                text: safe(raw_line),
                 style: Style::default().fg(theme::TEXT),
             }]);
         }
@@ -371,12 +381,15 @@ pub async fn fetch_and_extract_article(
                 LinkRegistry::new(),
             ))
         } else {
-            // RST / plain text — render as plain styled lines
+            // RST / plain text — render as plain styled lines.
+            // Sanitize each line so a malicious README can't smuggle
+            // terminal control bytes through the plain-text fallback
+            // (markdown_to_styled_lines handles the .md case).
             let lines = readme_text
                 .lines()
                 .map(|line| {
                     vec![StyledFragment {
-                        text: line.to_string(),
+                        text: sanitize_terminal(line).into_owned(),
                         style: Style::default().fg(theme::TEXT),
                     }]
                 })
@@ -700,6 +713,76 @@ mod tests {
         let lines = markdown_to_styled_lines("```rust", 80);
         assert_eq!(lines[0][0].text, "```rust");
         assert_eq!(lines[0][0].style.fg, Some(theme::DIM));
+    }
+
+    #[test]
+    fn markdown_neutralises_escape_in_heading() {
+        // raw.githubusercontent.com serves arbitrary attacker-controlled
+        // bytes — a malicious project README can drop OSC into its
+        // headings or body text.
+        let lines = markdown_to_styled_lines("# Welcome\x1b]0;owned\x07\n", 80);
+        let combined: String = lines
+            .iter()
+            .flat_map(|l| l.iter())
+            .map(|f| f.text.as_str())
+            .collect();
+        assert!(!combined.contains('\x1b'));
+        assert!(!combined.contains('\x07'));
+        assert!(combined.contains("Welcome"));
+    }
+
+    #[test]
+    fn markdown_neutralises_escape_in_body_text() {
+        let lines = markdown_to_styled_lines("hello\x1b[2J world", 80);
+        let combined: String = lines
+            .iter()
+            .flat_map(|l| l.iter())
+            .map(|f| f.text.as_str())
+            .collect();
+        assert!(!combined.contains('\x1b'));
+        assert!(combined.contains("hello"));
+        assert!(combined.contains("world"));
+    }
+
+    #[test]
+    fn markdown_neutralises_escape_in_bullet_list_item() {
+        let lines = markdown_to_styled_lines("- item\x1b]0;x\x07 one\n- safe two", 80);
+        let combined: String = lines
+            .iter()
+            .flat_map(|l| l.iter())
+            .map(|f| f.text.as_str())
+            .collect();
+        assert!(!combined.contains('\x1b'));
+        assert!(!combined.contains('\x07'));
+        assert!(combined.contains("safe two"));
+    }
+
+    #[test]
+    fn markdown_neutralises_escape_in_blockquote() {
+        let lines = markdown_to_styled_lines("> said\x1b[31m red", 80);
+        let combined: String = lines
+            .iter()
+            .flat_map(|l| l.iter())
+            .map(|f| f.text.as_str())
+            .collect();
+        assert!(!combined.contains('\x1b'));
+        assert!(combined.contains("said"));
+        assert!(combined.contains("red"));
+    }
+
+    #[test]
+    fn markdown_neutralises_escape_in_wrapped_long_line() {
+        // 60-char content split at width 20; verify scrubbing applies
+        // to every wrapped fragment.
+        let payload = "a\x1b]0;owned\x07 ".repeat(8); // ~64 chars with escapes
+        let lines = markdown_to_styled_lines(&payload, 20);
+        let combined: String = lines
+            .iter()
+            .flat_map(|l| l.iter())
+            .map(|f| f.text.as_str())
+            .collect();
+        assert!(!combined.contains('\x1b'));
+        assert!(!combined.contains('\x07'));
     }
 
     #[test]
