@@ -84,10 +84,22 @@ struct PendingResume {
 /// `ArticleLoaded`, `PriorDiscussionsLoaded`), a multi-step progressive
 /// load (`CommentsLoaded` → zero or more `CommentsAppended` →
 /// `CommentsDone`), or a terminal error (`Error`, `ArticleError`).
+///
+/// Each variant that depends on App state still being the one that
+/// scheduled the spawn carries a `gen: u64` field: a snapshot of
+/// `App::feed_gen` / `App::story_gen` / `App::article_gen` captured at
+/// spawn time. [`App::process_messages`] compares the message gen to
+/// the current generation and drops the message when they disagree —
+/// closing the race where a switch-feed (or restart-story, or
+/// open-different-article) happens while the prior fetch is still in
+/// flight. `PriorDiscussionsLoaded` is exempt because it carries
+/// `story_id` directly and is gated by overlay state instead.
 #[non_exhaustive]
 pub enum AppMessage {
-    /// Initial or paginated batch of stories finished loading.
+    /// Initial or paginated batch of stories finished loading. Gated by
+    /// [`App::feed_gen`].
     StoriesLoaded {
+        gen: u64,
         stories: Vec<Item>,
         /// Only populated on initial load; subsequent paginated loads
         /// reuse the cached ID list to avoid drift when the feed changes
@@ -100,37 +112,47 @@ pub enum AppMessage {
     /// the enum's size — `Vec<CommentWithDepth>` and `HashSet<CommentId>`
     /// only contribute their headers (24/48 bytes), not their contents,
     /// so an inline `Item` (~150 bytes) would trip
-    /// `clippy::large_enum_variant`.
+    /// `clippy::large_enum_variant`. Gated by [`App::story_gen`].
     CommentsLoaded {
+        gen: u64,
         story: Box<Item>,
         comments: Vec<CommentWithDepth>,
         pending_roots: HashSet<CommentId>,
     },
     /// Progressive update — append more child comments into the tree.
+    /// Gated by [`App::story_gen`].
     CommentsAppended {
+        gen: u64,
         parent_id: CommentId,
         children: Vec<CommentWithDepth>,
     },
     /// All outstanding comment fetches finished; clear any "loading"
-    /// spinners.
-    CommentsDone,
+    /// spinners. Gated by [`App::story_gen`].
+    CommentsDone { gen: u64 },
     /// Article reader content extracted and ready to render. `links`
     /// carries every hyperlink in the body (with assigned hint labels)
-    /// for Quickjump.
+    /// for Quickjump. Gated by [`App::article_gen`].
     ArticleLoaded {
+        gen: u64,
         lines: Vec<Vec<StyledFragment>>,
         links: LinkRegistry,
     },
-    /// Algolia search returned a page of results.
+    /// Algolia search returned a page of results. Gated by
+    /// [`App::feed_gen`].
     SearchResultsLoaded {
+        gen: u64,
         stories: Vec<Item>,
         total_pages: usize,
         total_hits: usize,
         mode: LoadMode,
     },
     /// Article fetch/extract failed; surface in the reader overlay.
-    ArticleError(String),
-    /// Generic error to surface in the status bar.
+    /// Gated by [`App::article_gen`].
+    ArticleError { gen: u64, msg: String },
+    /// Generic error to surface in the status bar. Ungated — late
+    /// errors from stale spawns are mildly confusing but never
+    /// dangerous, and the wider blast radius of dropping them is worse
+    /// than surfacing them.
     Error(String),
     /// Carries prior HN submissions of the selected story's URL returned
     /// by Algolia. `story_id` identifies the originating query so stale
@@ -213,6 +235,22 @@ pub struct App {
 
     last_comment_click: Option<(std::time::Instant, usize)>,
 
+    /// Monotonic generation counter for feed/search loads. Bumped on
+    /// every feed switch, refresh, search submit, and search cancel.
+    /// [`AppMessage::StoriesLoaded`] / [`AppMessage::SearchResultsLoaded`]
+    /// carry the gen captured at spawn time; [`Self::process_messages`]
+    /// drops messages whose gen no longer matches.
+    feed_gen: u64,
+    /// Monotonic generation counter for comment loads. Bumped whenever
+    /// the loaded story changes (new selection, Back-out-of-comments,
+    /// pane reset). Gates [`AppMessage::CommentsLoaded`],
+    /// [`AppMessage::CommentsAppended`], [`AppMessage::CommentsDone`].
+    story_gen: u64,
+    /// Monotonic generation counter for article-reader fetches. Bumped
+    /// when the reader overlay opens or closes. Gates
+    /// [`AppMessage::ArticleLoaded`] and [`AppMessage::ArticleError`].
+    article_gen: u64,
+
     client: HnClient,
     msg_tx: mpsc::UnboundedSender<AppMessage>,
     msg_rx: mpsc::UnboundedReceiver<AppMessage>,
@@ -252,10 +290,40 @@ impl App {
             pending_pinned_resume: None,
             hint_state: None,
             last_comment_click: None,
+            feed_gen: 0,
+            story_gen: 0,
+            article_gen: 0,
             client: HnClient::new(),
             msg_tx,
             msg_rx,
         }
+    }
+
+    /// Bumps [`Self::feed_gen`] and returns the new value, invalidating
+    /// any in-flight feed or search spawn. Called whenever the user
+    /// changes which story list is on screen (feed switch, refresh,
+    /// search submit / cancel).
+    fn bump_feed_gen(&mut self) -> u64 {
+        self.feed_gen = self.feed_gen.wrapping_add(1);
+        self.feed_gen
+    }
+
+    /// Bumps [`Self::story_gen`] and returns the new value, invalidating
+    /// any in-flight comment-tree walk. Called when the user selects a
+    /// different story, backs out of the comments pane, or resets the
+    /// panes for any reason.
+    fn bump_story_gen(&mut self) -> u64 {
+        self.story_gen = self.story_gen.wrapping_add(1);
+        self.story_gen
+    }
+
+    /// Bumps [`Self::article_gen`] and returns the new value,
+    /// invalidating any in-flight article fetch. Called when the reader
+    /// overlay opens (to discard a still-loading prior article) or
+    /// closes (so a result that lands afterward does not re-open it).
+    fn bump_article_gen(&mut self) -> u64 {
+        self.article_gen = self.article_gen.wrapping_add(1);
+        self.article_gen
     }
 
     /// How many stories to fetch per page — enough to fill the screen.
@@ -365,12 +433,19 @@ impl App {
     /// both panes' state plus the HN client cache, drop any pending
     /// resume target, and kick off a fresh feed fetch. Used by
     /// `Action::SwitchFeed`, `Action::Refresh`, and [`Self::cancel_search`].
+    ///
+    /// Bumps all three generation counters so any in-flight feed,
+    /// comment, or article fetch lands as a no-op rather than as a
+    /// stale overlay on the freshly reset state.
     fn reset_panes_and_reload(&mut self) {
         self.snapshot_pinned_resume_if_any();
         self.story_state.reset();
         self.comment_state.reset();
         self.pending_pinned_resume = None;
         self.client.clear_cache();
+        self.bump_feed_gen();
+        self.bump_story_gen();
+        self.bump_article_gen();
         self.spawn_load_stories(LoadMode::Replace);
     }
 
@@ -396,14 +471,25 @@ impl App {
     }
 
     /// Processes any pending async messages (non-blocking).
+    ///
+    /// Each gated variant carries the `gen` captured at spawn time;
+    /// when it doesn't match the current generation, the message is
+    /// silently dropped. This is the receiver half of the
+    /// fire-and-forget race fix — see [`Self::bump_feed_gen`],
+    /// [`Self::bump_story_gen`], [`Self::bump_article_gen`] and the
+    /// docs on [`AppMessage`].
     pub fn process_messages(&mut self) {
         while let Ok(msg) = self.msg_rx.try_recv() {
             match msg {
                 AppMessage::StoriesLoaded {
+                    gen,
                     stories,
                     all_ids,
                     mode,
                 } => {
+                    if gen != self.feed_gen {
+                        continue;
+                    }
                     self.apply_loaded_stories(stories, mode);
                     if let Some(ids) = all_ids {
                         self.story_state.all_ids = ids;
@@ -418,11 +504,15 @@ impl App {
                     }
                 }
                 AppMessage::SearchResultsLoaded {
+                    gen,
                     stories,
                     total_pages,
                     total_hits,
                     mode,
                 } => {
+                    if gen != self.feed_gen {
+                        continue;
+                    }
                     self.apply_loaded_stories(stories, mode);
                     if let Some(ref mut ss) = self.search_state {
                         ss.total_pages = total_pages;
@@ -434,10 +524,14 @@ impl App {
                     }
                 }
                 AppMessage::CommentsLoaded {
+                    gen,
                     story,
                     comments,
                     pending_roots,
                 } => {
+                    if gen != self.story_gen {
+                        continue;
+                    }
                     let story_id = StoryId(story.id);
                     self.comment_state.story = Some(*story);
                     self.comment_state.set_comments(comments);
@@ -463,28 +557,41 @@ impl App {
                     }
                 }
                 AppMessage::CommentsAppended {
+                    gen,
                     parent_id,
                     children,
                 } => {
+                    if gen != self.story_gen {
+                        continue;
+                    }
                     self.comment_state.insert_children(parent_id, children);
                     self.comment_state.pending_root_ids.remove(&parent_id);
                     // The freshly-spliced rows may now have made the resume
                     // target reachable.
                     self.try_advance_resume();
                 }
-                AppMessage::CommentsDone => {
+                AppMessage::CommentsDone { gen } => {
+                    if gen != self.story_gen {
+                        continue;
+                    }
                     self.comment_state.loading = false;
                     self.comment_state.pending_root_ids.clear();
                     // Final attempt — clamp past-end targets to the last
                     // visible row of the now-complete tree.
                     self.finalize_pending_resume();
                 }
-                AppMessage::ArticleLoaded { lines, links } => {
+                AppMessage::ArticleLoaded { gen, lines, links } => {
+                    if gen != self.article_gen {
+                        continue;
+                    }
                     if let Some(ref mut reader) = self.reader_state {
                         reader.set_content(lines, links);
                     }
                 }
-                AppMessage::ArticleError(msg) => {
+                AppMessage::ArticleError { gen, msg } => {
+                    if gen != self.article_gen {
+                        continue;
+                    }
                     if let Some(ref mut reader) = self.reader_state {
                         reader.set_error(msg);
                     }
@@ -555,9 +662,11 @@ impl App {
     /// by [`Self::dispatch`]. Unmapped actions are silently consumed.
     fn dispatch_reader(&mut self, action: Action) {
         // Back mutates the Option itself, so handle it before borrowing
-        // the inner state.
+        // the inner state. Bumping article_gen ensures a still-in-flight
+        // fetch's result won't pop the reader back open after close.
         if matches!(action, Action::Back) {
             self.reader_state = None;
+            self.bump_article_gen();
             return;
         }
         let Some(r) = self.reader_state.as_mut() else {
@@ -615,6 +724,10 @@ impl App {
                     self.comment_state.reset();
                     self.pending_pinned_resume = None;
                     self.focus = Pane::Stories;
+                    // The previous story's in-flight comment walk may
+                    // still land — drop those results so they don't
+                    // re-install the story we just left.
+                    self.bump_story_gen();
                 } else if self.search_state.is_some() {
                     self.cancel_search();
                 } else {
@@ -831,11 +944,13 @@ impl App {
         self.comment_state.loading = true;
 
         let needs_full_fetch = item.kids.is_none();
+        let gen = self.bump_story_gen();
         tokio::spawn(run_comment_load(
             self.client.clone(),
             self.msg_tx.clone(),
             item,
             needs_full_fetch,
+            gen,
         ));
     }
 
@@ -868,6 +983,11 @@ impl App {
         self.input_mode = InputMode::Normal;
         self.story_state.reset();
         self.comment_state.reset();
+        // Invalidate any in-flight feed-page or comment walk from before
+        // the search submit — the panes have been reset and stale
+        // results would smear the new search context.
+        self.bump_feed_gen();
+        self.bump_story_gen();
         self.spawn_search(query, 0, LoadMode::Replace);
     }
 
@@ -896,16 +1016,23 @@ impl App {
     /// current result list (lazy pagination); [`LoadMode::Replace`] replaces it.
     /// Takes `query: String` by value so callers can hand ownership in once
     /// instead of cloning at the call site and again inside this function.
+    ///
+    /// Captures the current [`Self::feed_gen`] at spawn time; if the user
+    /// changes the active feed or query before the result arrives, the
+    /// [`AppMessage::SearchResultsLoaded`] is dropped in
+    /// [`Self::process_messages`].
     fn spawn_search(&mut self, query: String, page: usize, mode: LoadMode) {
         self.story_state.loading = true;
         let client = self.client.clone();
         let tx = self.msg_tx.clone();
         let page_size = self.page_size();
+        let gen = self.feed_gen;
 
         tokio::spawn(async move {
             match client.search_stories(&query, page, page_size).await {
                 Ok((stories, total_pages, total_hits)) => {
                     let _ = tx.send(AppMessage::SearchResultsLoaded {
+                        gen,
                         stories,
                         total_pages,
                         total_hits,
@@ -926,10 +1053,16 @@ impl App {
     /// Branches on [`FeedKind::endpoint`] to source IDs: feeds with a
     /// remote endpoint hit Firebase; the [`FeedKind::Pinned`] virtual
     /// feed reads from [`Self::pin_store`] directly.
+    ///
+    /// Captures the current [`Self::feed_gen`] at spawn time; the result
+    /// message carries that gen and is dropped by
+    /// [`Self::process_messages`] if the user has since switched feeds
+    /// or refreshed.
     fn spawn_load_stories(&self, mode: LoadMode) {
         let client = self.client.clone();
         let tx = self.msg_tx.clone();
         let page_size = self.page_size();
+        let gen = self.feed_gen;
 
         if matches!(mode, LoadMode::Append) {
             // Reuse the ID list from the initial load so offsets stay stable
@@ -943,6 +1076,7 @@ impl App {
                 {
                     Ok(stories) => {
                         let _ = tx.send(AppMessage::StoriesLoaded {
+                            gen,
                             stories,
                             all_ids: None,
                             mode: LoadMode::Append,
@@ -962,6 +1096,7 @@ impl App {
                 match client.fetch_items_page(&pinned_ids, 0, page_size).await {
                     Ok(stories) => {
                         let _ = tx.send(AppMessage::StoriesLoaded {
+                            gen,
                             stories,
                             all_ids: Some(pinned_ids),
                             mode: LoadMode::Replace,
@@ -978,6 +1113,7 @@ impl App {
                 match client.fetch_stories(feed, 0, page_size).await {
                     Ok((stories, all_ids)) => {
                         let _ = tx.send(AppMessage::StoriesLoaded {
+                            gen,
                             stories,
                             all_ids: Some(all_ids),
                             mode: LoadMode::Replace,
@@ -1043,6 +1179,10 @@ impl App {
     /// (2) walks each root's subtree depth-first and appends children via
     ///     [`AppMessage::CommentsAppended`] as they arrive.
     /// For search results (kids missing), fetches the full item first.
+    ///
+    /// Bumps [`Self::story_gen`] so any in-flight comment walk for the
+    /// previously selected story is invalidated before the new one
+    /// starts.
     fn load_selected_comments(&mut self) {
         if let Some(story) = self.story_state.selected_story().cloned() {
             // Snapshot the outgoing pinned story's reading position before
@@ -1063,11 +1203,13 @@ impl App {
             }
 
             let needs_full_fetch = story.kids.is_none();
+            let gen = self.bump_story_gen();
             tokio::spawn(run_comment_load(
                 self.client.clone(),
                 self.msg_tx.clone(),
                 story,
                 needs_full_fetch,
+                gen,
             ));
         }
     }
@@ -1112,14 +1254,18 @@ impl App {
         let tx = self.msg_tx.clone();
         let width = self.terminal_width.saturating_sub(6) as usize;
         let url = url.unwrap();
+        let gen = self.bump_article_gen();
 
         tokio::spawn(async move {
             match fetch_and_extract_article(&url, width).await {
                 Ok((lines, links)) => {
-                    let _ = tx.send(AppMessage::ArticleLoaded { lines, links });
+                    let _ = tx.send(AppMessage::ArticleLoaded { gen, lines, links });
                 }
                 Err(e) => {
-                    let _ = tx.send(AppMessage::ArticleError(format!("{e:#}")));
+                    let _ = tx.send(AppMessage::ArticleError {
+                        gen,
+                        msg: format!("{e:#}"),
+                    });
                 }
             }
         });
@@ -1395,13 +1541,17 @@ impl App {
         let tx = self.msg_tx.clone();
         let width = self.terminal_width.saturating_sub(6) as usize;
         let url_owned = url.to_string();
+        let gen = self.bump_article_gen();
         tokio::spawn(async move {
             match fetch_and_extract_article(&url_owned, width).await {
                 Ok((lines, links)) => {
-                    let _ = tx.send(AppMessage::ArticleLoaded { lines, links });
+                    let _ = tx.send(AppMessage::ArticleLoaded { gen, lines, links });
                 }
                 Err(e) => {
-                    let _ = tx.send(AppMessage::ArticleError(format!("{e:#}")));
+                    let _ = tx.send(AppMessage::ArticleError {
+                        gen,
+                        msg: format!("{e:#}"),
+                    });
                 }
             }
         });
@@ -1475,11 +1625,18 @@ impl Drop for PriorInFlightGuard {
 /// `CommentsLoaded`, drives subtree walks concurrently, then sends
 /// `CommentsDone`. A failed `fetch_item` surfaces as `AppMessage::Error`
 /// instead of silently rendering an empty thread.
+///
+/// `gen` is the [`App::story_gen`] snapshot captured at spawn time;
+/// every `CommentsLoaded` / `CommentsAppended` / `CommentsDone`
+/// produced here forwards it so [`App::process_messages`] can drop the
+/// result if the user has since selected a different story or backed
+/// out of the comments pane.
 async fn run_comment_load(
     client: HnClient,
     tx: mpsc::UnboundedSender<AppMessage>,
     story: Item,
     needs_full_fetch: bool,
+    gen: u64,
 ) {
     use futures::stream::{self, StreamExt};
 
@@ -1522,6 +1679,7 @@ async fn run_comment_load(
         .collect();
 
     let _ = tx.send(AppMessage::CommentsLoaded {
+        gen,
         story: Box::new(story),
         comments: root_comments,
         pending_roots,
@@ -1541,6 +1699,7 @@ async fn run_comment_load(
                     .await;
                 if !children.is_empty() {
                     let _ = tx.send(AppMessage::CommentsAppended {
+                        gen,
                         parent_id,
                         children,
                     });
@@ -1549,7 +1708,7 @@ async fn run_comment_load(
         })
         .await;
 
-    let _ = tx.send(AppMessage::CommentsDone);
+    let _ = tx.send(AppMessage::CommentsDone { gen });
 }
 
 /// Opens `url` in the system browser — but only when it parses as an
@@ -1564,5 +1723,379 @@ fn open_http_url(url: Option<&str>) {
     };
     if matches!(parsed.scheme(), "http" | "https") {
         let _ = open::that(parsed.as_str());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::link_registry::LinkRegistry;
+
+    fn fake_item(id: u64) -> Item {
+        Item {
+            id,
+            title: Some(format!("Story {}", id)),
+            url: None,
+            text: None,
+            by: None,
+            score: None,
+            time: None,
+            kids: None,
+            descendants: None,
+            item_type: None,
+            dead: None,
+            deleted: None,
+        }
+    }
+
+    fn fake_story_with_kids(id: u64, kids: Vec<u64>) -> Item {
+        let mut s = fake_item(id);
+        s.kids = Some(kids);
+        s
+    }
+
+    fn fake_comment(id: u64) -> CommentWithDepth {
+        CommentWithDepth {
+            item: fake_item(id),
+            depth: 0,
+        }
+    }
+
+    // --- gen counters: construction and bumps ---
+
+    #[test]
+    fn new_app_starts_with_zero_gens() {
+        let app = App::new(80, 24);
+        assert_eq!(app.feed_gen, 0);
+        assert_eq!(app.story_gen, 0);
+        assert_eq!(app.article_gen, 0);
+    }
+
+    #[test]
+    fn bump_feed_gen_increments_and_returns_new_value() {
+        let mut app = App::new(80, 24);
+        assert_eq!(app.bump_feed_gen(), 1);
+        assert_eq!(app.feed_gen, 1);
+        assert_eq!(app.bump_feed_gen(), 2);
+        assert_eq!(app.feed_gen, 2);
+    }
+
+    #[test]
+    fn bump_story_gen_is_independent_of_feed_gen() {
+        let mut app = App::new(80, 24);
+        app.bump_feed_gen();
+        app.bump_feed_gen();
+        assert_eq!(app.bump_story_gen(), 1);
+        assert_eq!(app.feed_gen, 2);
+        assert_eq!(app.story_gen, 1);
+    }
+
+    #[test]
+    fn bump_article_gen_is_independent() {
+        let mut app = App::new(80, 24);
+        assert_eq!(app.bump_article_gen(), 1);
+        assert_eq!(app.feed_gen, 0);
+        assert_eq!(app.story_gen, 0);
+    }
+
+    // --- StoriesLoaded gating ---
+
+    #[tokio::test]
+    async fn stories_loaded_with_current_gen_installs() {
+        // `#[tokio::test]` because `process_messages` will call
+        // `load_selected_comments` (which `tokio::spawn`s) when the
+        // Replace branch installs onto an empty comment_state.
+        let mut app = App::new(80, 24);
+        let gen = app.feed_gen;
+        app.msg_tx
+            .send(AppMessage::StoriesLoaded {
+                gen,
+                stories: vec![fake_item(1), fake_item(2)],
+                all_ids: Some(vec![1, 2]),
+                mode: LoadMode::Replace,
+            })
+            .unwrap();
+        app.process_messages();
+        assert_eq!(app.story_state.stories.len(), 2);
+        assert_eq!(app.story_state.all_ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn stale_stories_loaded_is_dropped() {
+        let mut app = App::new(80, 24);
+        let stale_gen = app.feed_gen;
+        app.bump_feed_gen(); // simulate a feed switch since spawn
+        app.msg_tx
+            .send(AppMessage::StoriesLoaded {
+                gen: stale_gen,
+                stories: vec![fake_item(99)],
+                all_ids: Some(vec![99]),
+                mode: LoadMode::Replace,
+            })
+            .unwrap();
+        app.process_messages();
+        assert!(
+            app.story_state.stories.is_empty(),
+            "stale feed-load must not install onto the new feed"
+        );
+        assert!(app.story_state.all_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stale_stories_loaded_followed_by_current_one_installs_only_current() {
+        // Reproduces the bug from #130: feed 1 → 2 → feed-1 result lands.
+        // Then feed-2 result arrives. We should see *only* feed-2's items.
+        // `#[tokio::test]` because the current-gen branch falls through
+        // into `load_selected_comments` (spawns).
+        let mut app = App::new(80, 24);
+        let gen_feed_one = app.feed_gen;
+        app.bump_feed_gen(); // user pressed `2`
+        let gen_feed_two = app.feed_gen;
+        // feed-1's late result lands first…
+        app.msg_tx
+            .send(AppMessage::StoriesLoaded {
+                gen: gen_feed_one,
+                stories: vec![fake_item(101), fake_item(102)],
+                all_ids: Some(vec![101, 102]),
+                mode: LoadMode::Replace,
+            })
+            .unwrap();
+        // …followed by feed-2's.
+        app.msg_tx
+            .send(AppMessage::StoriesLoaded {
+                gen: gen_feed_two,
+                stories: vec![fake_item(201), fake_item(202)],
+                all_ids: Some(vec![201, 202]),
+                mode: LoadMode::Replace,
+            })
+            .unwrap();
+        app.process_messages();
+        let ids: Vec<u64> = app.story_state.stories.iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec![201, 202], "only feed-2's stories install");
+    }
+
+    // --- SearchResultsLoaded gating ---
+
+    #[test]
+    fn stale_search_results_is_dropped() {
+        let mut app = App::new(80, 24);
+        let stale_gen = app.feed_gen;
+        app.bump_feed_gen();
+        app.msg_tx
+            .send(AppMessage::SearchResultsLoaded {
+                gen: stale_gen,
+                stories: vec![fake_item(5)],
+                total_pages: 7,
+                total_hits: 42,
+                mode: LoadMode::Replace,
+            })
+            .unwrap();
+        app.process_messages();
+        assert!(app.story_state.stories.is_empty());
+    }
+
+    // --- CommentsLoaded / CommentsAppended / CommentsDone gating ---
+
+    #[test]
+    fn comments_loaded_with_current_gen_installs() {
+        let mut app = App::new(80, 24);
+        let gen = app.story_gen;
+        app.msg_tx
+            .send(AppMessage::CommentsLoaded {
+                gen,
+                story: Box::new(fake_story_with_kids(10, vec![100, 101])),
+                comments: vec![fake_comment(100), fake_comment(101)],
+                pending_roots: HashSet::new(),
+            })
+            .unwrap();
+        app.process_messages();
+        assert_eq!(
+            app.comment_state.story.as_ref().map(|s| s.id),
+            Some(10),
+            "current-gen CommentsLoaded must install"
+        );
+    }
+
+    #[test]
+    fn stale_comments_loaded_does_not_overwrite_story() {
+        // User selects story A, comment walk starts; user selects story B
+        // before A's CommentsLoaded lands. A's result must not replace B's
+        // story.
+        let mut app = App::new(80, 24);
+        let stale_gen = app.story_gen;
+        app.bump_story_gen(); // user moved to a new story selection
+        app.msg_tx
+            .send(AppMessage::CommentsLoaded {
+                gen: stale_gen,
+                story: Box::new(fake_story_with_kids(999, vec![])),
+                comments: vec![],
+                pending_roots: HashSet::new(),
+            })
+            .unwrap();
+        app.process_messages();
+        assert!(
+            app.comment_state.story.is_none(),
+            "stale CommentsLoaded must not install a new story"
+        );
+    }
+
+    #[test]
+    fn stale_comments_done_does_not_clear_loading_flag() {
+        // User selects story A (sets loading=true), user navigates away
+        // (resets), selects story B (loading=true again). A's late
+        // CommentsDone arrives — it must NOT clear B's loading spinner.
+        let mut app = App::new(80, 24);
+        let stale_gen = app.story_gen;
+        app.bump_story_gen();
+        app.comment_state.loading = true;
+        app.msg_tx
+            .send(AppMessage::CommentsDone { gen: stale_gen })
+            .unwrap();
+        app.process_messages();
+        assert!(
+            app.comment_state.loading,
+            "stale CommentsDone must not turn off the loading flag"
+        );
+    }
+
+    #[test]
+    fn current_comments_done_clears_loading_flag() {
+        let mut app = App::new(80, 24);
+        app.comment_state.loading = true;
+        let gen = app.story_gen;
+        app.msg_tx.send(AppMessage::CommentsDone { gen }).unwrap();
+        app.process_messages();
+        assert!(!app.comment_state.loading);
+    }
+
+    // --- ArticleLoaded / ArticleError gating ---
+
+    #[test]
+    fn stale_article_loaded_does_not_set_content_on_reopened_reader() {
+        // User opens article A (gen 1), closes it (gen 2), reopens with
+        // article B (gen 3). Late ArticleLoaded for A (gen=1) arrives —
+        // must not populate B's reader content.
+        let mut app = App::new(80, 24);
+        let stale_gen = app.bump_article_gen(); // gen 1 — pretend A opened
+                                                // close
+        app.bump_article_gen(); // gen 2
+        app.bump_article_gen(); // gen 3 — pretend B opened
+        app.reader_state = Some(ReaderState::new_loading(
+            "B".into(),
+            Some("b.example".into()),
+            Some("http://b.example".into()),
+        ));
+        app.msg_tx
+            .send(AppMessage::ArticleLoaded {
+                gen: stale_gen,
+                lines: vec![vec![StyledFragment {
+                    text: "stale".into(),
+                    style: ratatui::style::Style::default(),
+                }]],
+                links: LinkRegistry::new(),
+            })
+            .unwrap();
+        app.process_messages();
+        let r = app.reader_state.as_ref().unwrap();
+        assert!(r.loading, "B's reader must remain loading");
+        assert!(r.lines.is_empty(), "stale content must not populate B");
+    }
+
+    #[test]
+    fn current_article_loaded_installs_content() {
+        let mut app = App::new(80, 24);
+        let gen = app.bump_article_gen();
+        app.reader_state = Some(ReaderState::new_loading(
+            "T".into(),
+            None,
+            Some("http://example.com".into()),
+        ));
+        app.msg_tx
+            .send(AppMessage::ArticleLoaded {
+                gen,
+                lines: vec![vec![StyledFragment {
+                    text: "hi".into(),
+                    style: ratatui::style::Style::default(),
+                }]],
+                links: LinkRegistry::new(),
+            })
+            .unwrap();
+        app.process_messages();
+        let r = app.reader_state.as_ref().unwrap();
+        assert!(!r.loading);
+        assert_eq!(r.lines.len(), 1);
+    }
+
+    #[test]
+    fn stale_article_error_is_dropped() {
+        let mut app = App::new(80, 24);
+        let stale_gen = app.article_gen;
+        app.bump_article_gen();
+        app.reader_state = Some(ReaderState::new_loading(
+            "T".into(),
+            None,
+            Some("http://example.com".into()),
+        ));
+        app.msg_tx
+            .send(AppMessage::ArticleError {
+                gen: stale_gen,
+                msg: "stale error".into(),
+            })
+            .unwrap();
+        app.process_messages();
+        let r = app.reader_state.as_ref().unwrap();
+        assert!(r.error.is_none(), "stale error must not surface");
+    }
+
+    // --- ungated variants pass through ---
+
+    #[test]
+    fn error_is_ungated_and_passes_through() {
+        let mut app = App::new(80, 24);
+        // Bump every gen to simulate "ages have passed since the spawn"
+        // and confirm Error is not gated.
+        app.bump_feed_gen();
+        app.bump_story_gen();
+        app.bump_article_gen();
+        app.msg_tx.send(AppMessage::Error("oops".into())).unwrap();
+        app.process_messages();
+        assert_eq!(app.error.as_deref(), Some("oops"));
+    }
+
+    #[test]
+    fn prior_discussions_loaded_is_keyed_by_story_id_not_gen() {
+        let mut app = App::new(80, 24);
+        // Bump all gens — PriorDiscussionsLoaded has no gen field, so
+        // the message must still apply. It's gated by overlay state at
+        // the call site rather than by a generation.
+        app.bump_feed_gen();
+        app.bump_story_gen();
+        app.bump_article_gen();
+        let sid = StoryId(42);
+        app.msg_tx
+            .send(AppMessage::PriorDiscussionsLoaded {
+                story_id: sid,
+                submissions: vec![fake_item(7)],
+            })
+            .unwrap();
+        app.process_messages();
+        let cached = app.prior_results.get(&sid).expect("cached");
+        assert_eq!(cached.len(), 1);
+    }
+
+    // --- end-to-end state change ---
+
+    #[tokio::test]
+    async fn reset_panes_and_reload_bumps_all_three_gens() {
+        // `#[tokio::test]` because `reset_panes_and_reload` spawns the
+        // initial feed-page fetch via `spawn_load_stories`.
+        let mut app = App::new(80, 24);
+        let f0 = app.feed_gen;
+        let s0 = app.story_gen;
+        let a0 = app.article_gen;
+        app.reset_panes_and_reload();
+        assert!(app.feed_gen > f0);
+        assert!(app.story_gen > s0);
+        assert!(app.article_gen > a0);
     }
 }
