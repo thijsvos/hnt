@@ -17,9 +17,15 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Enable auto-merge
+        # Auto-merge only `cargo` ecosystem bumps. `github-actions` and
+        # `docker` updates carry elevated supply-chain risk (a compromised
+        # action gets the full GITHUB_TOKEN; a poisoned base image runs
+        # at build time), so they stay manual.
         if: |
-          steps.meta.outputs.update-type == 'version-update:semver-patch' ||
-          steps.meta.outputs.update-type == 'version-update:semver-minor'
+          steps.meta.outputs.package-ecosystem == 'cargo' && (
+            steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+            steps.meta.outputs.update-type == 'version-update:semver-minor'
+          )
         run: gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
