@@ -5,6 +5,32 @@ All notable changes to `hnt` are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.5] — 2026-05-14
+
+Adds Windows to the release matrix. The release workflow now produces
+six platform binaries instead of four: x86_64 and ARM64 Windows
+binaries (Surface Pro X / Copilot+ PCs) ship alongside the existing
+Linux + macOS builds.
+
+### Added
+
+- **`hnt-x86_64-pc-windows-msvc.exe`** — native x86_64 Windows binary,
+  produced on `windows-latest`.
+- **`hnt-aarch64-pc-windows-msvc.exe`** — ARM64 Windows binary,
+  cross-compiled from `windows-latest` (uses the ARM64 MSVC linker
+  that ships with Visual Studio Build Tools — no extra setup
+  required). The ARM64 binary is built but not smoke-tested in CI
+  (no ARM64 Windows runner used).
+- README install snippets for both Windows binaries.
+
+### Changed
+
+- `.github/workflows/release.yml`: matrix grows from 4 to 6 entries;
+  each entry now carries a `binary_suffix` column so the rename step
+  picks up `.exe` on Windows. Rename step uses `shell: bash` to keep
+  the same syntax across all runners (Windows hosted runners ship Git
+  Bash, so this is portable).
+
 ## [0.4.4] — 2026-05-14
 
 Bug-fix release for the prior-discussions overlay (the `h` overlay on a
