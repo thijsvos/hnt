@@ -124,12 +124,19 @@ impl ReaderState {
         self.scroll = self.max_scroll();
     }
 
-    /// Position as a percentage of `max_scroll`, clamped 0..=100. Returns
-    /// 100 when the content is empty or fits on one line.
+    /// Position as a percentage of `max_scroll`, clamped 0..=100.
+    ///
+    /// Returns 0 when the content is empty or fits on a single line —
+    /// reporting 100% in that case is misleading UX (the entire article
+    /// is already in view, "scrolling" is a no-op). A perfectly accurate
+    /// reading would need the viewport height plumbed in to compute
+    /// `lines.len().saturating_sub(viewport_height)`; the 0 fallback is
+    /// the cheap version that fixes the obvious wrong reading without
+    /// the wider refactor.
     pub fn scroll_percent(&self) -> u16 {
         let max = self.max_scroll();
         if max == 0 {
-            100
+            0
         } else {
             ((self.scroll as f64 / max as f64) * 100.0) as u16
         }
@@ -253,16 +260,20 @@ mod tests {
     }
 
     #[test]
-    fn scroll_percent_empty_returns_100() {
+    fn scroll_percent_empty_returns_0() {
+        // No content → no scroll position → 0%, not 100% (closes #141).
         let r = ReaderState::new_loading("T".into(), None, None);
-        assert_eq!(r.scroll_percent(), 100);
+        assert_eq!(r.scroll_percent(), 0);
     }
 
     #[test]
-    fn scroll_percent_single_line() {
+    fn scroll_percent_single_line_returns_0() {
+        // A one-line article fits in any viewport, so the footer
+        // showing "100%" was misleading. We now return 0 in this
+        // unscrollable-content case.
         let mut r = ReaderState::new_loading("T".into(), None, None);
         r.set_content(make_lines(1), LinkRegistry::new());
-        assert_eq!(r.scroll_percent(), 100); // max_scroll is 0
+        assert_eq!(r.scroll_percent(), 0);
     }
 
     // --- new_loading sanitises untrusted title / domain inputs ---
