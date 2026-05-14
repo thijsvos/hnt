@@ -41,7 +41,7 @@ pub fn render_prior_overlay(frame: &mut Frame, area: Rect, state: &PriorDiscussi
     );
 
     let footer = Line::from(Span::styled(
-        " j/k:navigate  Enter:load comments  o:browser  Esc:close ",
+        " j/k:navigate  Enter:load comments  o:open HN page  Esc:close ",
         theme::dim_style(),
     ))
     .centered();
