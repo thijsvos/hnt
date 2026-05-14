@@ -31,9 +31,16 @@ type FilterCache = Option<((CommentFilter, usize), Option<Rc<HashSet<usize>>>)>;
 /// thread reads coherently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CommentFilter {
+    /// No filter — every comment in the loaded tree is visible (modulo
+    /// collapse). Default state and reset target on `set_comments`.
     #[default]
     All,
+    /// Show comments newer than the user's previous visit (Unix seconds
+    /// from `read_store.last_seen_at`). Ancestors of passing comments
+    /// stay visible so reply context survives.
     NewSince(i64),
+    /// Show comments newer than `now - 24h - 60s skew` (Unix seconds).
+    /// Same ancestor-keep rule as [`Self::NewSince`].
     Recent(i64),
 }
 

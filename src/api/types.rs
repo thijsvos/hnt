@@ -115,11 +115,19 @@ pub struct CommentId(pub u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ItemType {
+    /// User-submitted link or HN-native text post.
     Story,
+    /// Reply within a comment thread.
     Comment,
+    /// YC "Who's hiring" / "Who wants to be hired" entry.
     Job,
+    /// Multiple-choice poll question.
     Poll,
+    /// One option of a [`Self::Poll`].
     Pollopt,
+    /// Forward-compat catch-all for tags this build doesn't recognise —
+    /// keeps the app decoding rather than crashing when HN adds a new
+    /// variant.
     #[serde(other)]
     Unknown,
 }
@@ -129,11 +137,19 @@ pub enum ItemType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StoryBadge {
+    /// "Ask HN:" — a question post.
     Ask,
+    /// "Show HN:" — a project / work-in-progress reveal.
     Show,
+    /// "Tell HN:" — a narrative or anecdote post (rare).
     Tell,
+    /// "Launch HN:" — a YC company launch announcement.
     Launch,
+    /// Item type was [`ItemType::Job`] — derived from `item_type`, not
+    /// title prefix.
     Job,
+    /// Item type was [`ItemType::Poll`] — derived from `item_type`, not
+    /// title prefix.
     Poll,
 }
 
@@ -258,11 +274,17 @@ fn url_domain(raw: &str) -> Option<String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FeedKind {
+    /// Front-page stories — Firebase `topstories` endpoint.
     Top,
+    /// Newest submissions — Firebase `newstories`.
     New,
+    /// Best-of recent — Firebase `beststories`.
     Best,
+    /// Ask HN posts — Firebase `askstories`.
     Ask,
+    /// Show HN posts — Firebase `showstories`.
     Show,
+    /// Job postings — Firebase `jobstories`.
     Jobs,
     /// Locally-curated stories saved by the user (`b` to toggle). Aggregated
     /// by [`crate::state::pin_store::PinStore`], not fetched over HTTP.

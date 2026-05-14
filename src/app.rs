@@ -43,7 +43,9 @@ const PROCESS_MESSAGES_BUDGET: usize = 32;
 /// Which content pane currently has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
+    /// Left pane — the story list.
     Stories,
+    /// Right pane — the comment tree.
     Comments,
 }
 
@@ -53,7 +55,10 @@ pub enum Pane {
 /// `false`) and prevent flipped-arg bugs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadMode {
+    /// Discard the current story list and install the new one — used on
+    /// initial load, feed switch, refresh, and search submit.
     Replace,
+    /// Extend the current list with a new page — lazy-pagination tail.
     Append,
 }
 

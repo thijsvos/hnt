@@ -15,7 +15,12 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 /// characters for the search-query input or a Quickjump hint label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
+    /// Default navigation mode — `main.rs` routes keys through
+    /// [`map_key`] to produce [`Action`]s.
     Normal,
+    /// Active while the user is typing a search query — `main.rs`
+    /// routes raw chars to `App::search_input_char` and Enter to
+    /// `App::submit_search`.
     SearchInput,
     /// Active during Quickjump label selection — `main.rs` routes raw
     /// chars to [`Action::HintKey`] and Esc to [`Action::ExitHintMode`].
@@ -30,21 +35,46 @@ pub enum InputMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Action {
+    /// Tear down the main loop on the next iteration (`App::running = false`).
     Quit,
+    /// Move the cursor up one row in the focused pane or overlay.
     MoveUp,
+    /// Move the cursor down one row in the focused pane or overlay.
     MoveDown,
+    /// Stories pane → load the focused story's comments. Comments pane →
+    /// toggle the focused subtree's collapse. Prior-discussions overlay
+    /// → load the selected submission as if it had been opened from the
+    /// stories pane.
     Select,
+    /// Open the focused story's URL in the system browser. Falls back
+    /// to `https://news.ycombinator.com/item?id=<id>` for HN-native
+    /// posts (Ask HN, etc.) that don't carry an external URL.
     OpenInBrowser,
+    /// Open the focused story in the inline article-reader overlay.
     OpenReader,
+    /// Cycle keyboard focus between the stories and comments panes.
     SwitchPane,
+    /// Switch the active feed by index into [`crate::api::types::FeedKind::ALL`]
+    /// (0..=6). Out-of-range indices are silently ignored.
     SwitchFeed(usize),
+    /// Reload the current feed (or rerun the current search). Bumps
+    /// every generation counter so in-flight spawns land as no-ops and
+    /// clears the prior-discussions LRU.
     Refresh,
+    /// Jump the cursor / scroll to the top of the focused pane or overlay.
     JumpTop,
+    /// Jump the cursor / scroll to the bottom of the focused pane or overlay.
     JumpBottom,
+    /// Advance by one page (`SCROLL_PAGE` rows) in the focused pane or
+    /// overlay.
     PageDown,
+    /// Move up by one page in the focused pane or overlay.
     PageUp,
+    /// Show or hide the modal keybindings overlay.
     ToggleHelp,
+    /// Show or hide the prior-discussions overlay for the loaded story.
     TogglePriorDiscussions,
+    /// Enter search-input mode with an empty query buffer.
     EnterSearch,
     /// Cycle the comment-pane "what's new" filter: All → New since last
     /// visit → Recent 24h → All. Falls through to All when the story has
@@ -63,6 +93,10 @@ pub enum Action {
     HintKey(char),
     /// Cancel hint-label selection and return to the prior input mode.
     ExitHintMode,
+    /// Context-sensitive cancel: close the current overlay if one is
+    /// open → cancel a search if one is active → leave the comments
+    /// pane back to stories → quit. The comments-pane back path also
+    /// snapshots any pinned-resume state and bumps `story_gen`.
     Back,
 }
 

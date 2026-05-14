@@ -24,7 +24,11 @@ pub enum HintAction {
 /// user enters hint mode there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HintContext {
+    /// The labels overlay sits over the article reader's hyperlinks.
     Reader,
+    /// The labels overlay sits over comment-body hyperlinks — currently
+    /// a stub (the comments registry isn't wired yet; see
+    /// `App::active_link_registry`).
     Comments,
 }
 
