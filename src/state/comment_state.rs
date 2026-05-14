@@ -31,9 +31,16 @@ type FilterCache = Option<((CommentFilter, usize), Option<Rc<HashSet<usize>>>)>;
 /// thread reads coherently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CommentFilter {
+    /// No filter — every comment in the loaded tree is visible (modulo
+    /// collapse). Default state and reset target on `set_comments`.
     #[default]
     All,
+    /// Show comments newer than the user's previous visit (Unix seconds
+    /// from `read_store.last_seen_at`). Ancestors of passing comments
+    /// stay visible so reply context survives.
     NewSince(i64),
+    /// Show comments newer than `now - 24h - 60s skew` (Unix seconds).
+    /// Same ancestor-keep rule as [`Self::NewSince`].
     Recent(i64),
 }
 
@@ -201,10 +208,12 @@ impl CommentTreeState {
     ///
     /// For a pre-order flat tree, each comment's descendants are the
     /// contiguous suffix starting at the next index whose depth stays
-    /// strictly greater than the comment's own depth. Outer loop is
-    /// O(n); inner scan is bounded by the tree depth (capped at
-    /// `crate::app::MAX_COMMENT_DEPTH` = 10), so total cost is
-    /// O(n × MAX_DEPTH) — essentially linear. Called from
+    /// strictly greater than the comment's own depth. The inner `while`
+    /// loop walks every descendant of the current comment, so total
+    /// cost is the sum of all subtree sizes — O(n²) worst case on a
+    /// single tall chain, but effectively linear on real HN threads
+    /// which stay shallow (capped at `crate::app::MAX_COMMENT_DEPTH`
+    /// = 10) and broad rather than tall. Called from
     /// [`Self::set_comments`] and [`Self::insert_children`]; the count
     /// stays current with every tree mutation so
     /// `crate::ui::comment_tree::count_hidden_children` can return

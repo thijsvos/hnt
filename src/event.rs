@@ -16,9 +16,15 @@ use tokio::sync::mpsc;
 /// (e.g. the loading spinner).
 #[derive(Debug)]
 pub enum Event {
+    /// A crossterm keypress (modifiers + code), forwarded verbatim.
     Key(KeyEvent),
+    /// A crossterm mouse event — click, scroll, or motion.
     Mouse(MouseEvent),
+    /// Terminal resize. New dimensions are cached on `App` via
+    /// `App::set_terminal_size`; widgets pick them up on the next draw.
     Resize { width: u16, height: u16 },
+    /// Fixed-rate timer pulse; drives the loading-spinner animation.
+    /// Does not imply user activity.
     Tick,
 }
 

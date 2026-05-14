@@ -26,8 +26,19 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
+/// Floor for `page_size()` so a tiny terminal still requests a useful
+/// batch — fewer than ~30 items per fetch would round-trip the Firebase
+/// list endpoint more than necessary on lazy-load pagination.
 const MIN_PAGE_SIZE: usize = 30;
+/// Rows per `PageDown` / `PageUp` action. Smaller than a literal
+/// terminal page so the user keeps two-thirds of the prior context in
+/// view across each jump.
 const SCROLL_PAGE: usize = 10;
+/// Hard cap on comment-subtree depth walked by
+/// `HnClient::fetch_children_recursive`. Deeper threads exist on HN but
+/// rendering and navigation in the TUI degrade past ~10 levels of
+/// indent, and the bound prevents pathological recursion on adversarial
+/// input.
 const MAX_COMMENT_DEPTH: usize = 10;
 /// Maximum prior-discussions results retained across a session. Long
 /// browse sessions otherwise grow this cache unboundedly (one entry per
@@ -43,7 +54,9 @@ const PROCESS_MESSAGES_BUDGET: usize = 32;
 /// Which content pane currently has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
+    /// Left pane — the story list.
     Stories,
+    /// Right pane — the comment tree.
     Comments,
 }
 
@@ -53,7 +66,10 @@ pub enum Pane {
 /// `false`) and prevent flipped-arg bugs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadMode {
+    /// Discard the current story list and install the new one — used on
+    /// initial load, feed switch, refresh, and search submit.
     Replace,
+    /// Extend the current list with a new page — lazy-pagination tail.
     Append,
 }
 
@@ -365,7 +381,11 @@ impl App {
         visible.max(MIN_PAGE_SIZE)
     }
 
-    /// Updates cached terminal dimensions after a resize event.
+    /// Caches the new terminal dimensions after `Event::Resize`. Read
+    /// by [`Self::page_size`] (story pagination batch sizing) and by
+    /// `open_article_reader` / `open_url_in_reader` for the
+    /// `width.saturating_sub(6)` text-wrap width. Rendered widgets pick
+    /// the change up on the next draw.
     pub fn set_terminal_size(&mut self, w: u16, h: u16) {
         self.terminal_width = w;
         self.terminal_height = h;
@@ -422,9 +442,19 @@ impl App {
 
     /// Shared body for [`Self::try_advance_resume`] (in-progress) and
     /// [`Self::finalize_pending_resume`] (final pass after `CommentsDone`).
-    /// Returns silently with the resume still pending when the loaded
-    /// tree hasn't grown enough yet — except in the final pass, where
-    /// past-end targets clamp to `visible_len - 1` and the resume clears.
+    ///
+    /// Five outcomes:
+    /// - No pending resume → returns silently.
+    /// - `comment_state.story` is `None` → clears the resume (the user
+    ///   left the comments pane).
+    /// - Loaded `story_id` doesn't match the pending target → clears
+    ///   the resume (the user moved to a different story).
+    /// - Visible-tree empty → leaves the resume pending, or clears
+    ///   when `clamp_to_end` is set (final pass — no clamp possible).
+    /// - Target inside visible range → places the cursor and clears.
+    /// - Target past visible range → leaves the resume pending, except
+    ///   in the final pass where it clamps to `visible_len - 1` and
+    ///   clears.
     fn apply_pending_resume(&mut self, clamp_to_end: bool) {
         let Some(target) = self.pending_pinned_resume else {
             return;
@@ -1001,7 +1031,10 @@ impl App {
         ));
     }
 
-    /// Transitions into search-input mode, showing an empty search prompt.
+    /// Transitions into search-input mode, showing an empty search
+    /// prompt. Also forces focus back to the Stories pane so the
+    /// user's first character of input doesn't land on a
+    /// focused-Comments keymap.
     pub fn enter_search_mode(&mut self) {
         self.input_mode = InputMode::SearchInput;
         self.search_state = Some(SearchState::new());
@@ -1291,8 +1324,14 @@ impl App {
     /// Opens the reader overlay for the story in the focused pane.
     ///
     /// For text-only posts (Ask HN, etc.) renders the inline `text`
-    /// locally. For URL stories, validates the http(s) scheme and then
-    /// spawns a fetch + readability extraction task.
+    /// locally via [`html_to_styled_lines`] — no network I/O. For URL
+    /// stories, validates the http(s) scheme and then spawns a fetch
+    /// + readability extraction task.
+    ///
+    /// Bumps [`Self::article_gen`] before spawning so any in-flight
+    /// fetch from a previously-opened reader (or from
+    /// [`Self::open_url_in_reader`]) is invalidated and its result
+    /// dropped by [`Self::process_messages`].
     fn open_article_reader(&mut self) {
         let Some(story) = (match self.focus {
             Pane::Stories => self.story_state.selected_story().cloned(),
@@ -1425,11 +1464,12 @@ impl App {
 
     /// Handles a mouse left-click at the given terminal cell.
     ///
-    /// Maps the cell to a pane via `build_layout`: in the stories pane,
-    /// selects the clicked story (triggering lazy load + comment fetch);
-    /// in the comments pane, selects the clicked comment, treating a second
-    /// click on the same row within 400ms as a double-click to toggle
-    /// collapse. No-op when the reader overlay is open.
+    /// Routes through [`Self::pane_at`] (which calls `build_layout`
+    /// internally): in the stories pane, selects the clicked story
+    /// (triggering lazy load + comment fetch); in the comments pane,
+    /// selects the clicked comment, treating a second click on the
+    /// same row within 400ms as a double-click to toggle collapse.
+    /// No-op when the reader overlay is open.
     pub fn handle_click(&mut self, column: u16, row: u16) {
         // When reader is open, consume clicks
         if self.reader_state.is_some() {
@@ -1676,7 +1716,11 @@ impl App {
 /// this guard, the user would be unable to reopen prior-discussions for
 /// that story for the rest of the session.
 struct PriorInFlightGuard {
+    /// Shared in-flight set — refcount-cloned from `App::prior_in_flight`
+    /// so the guard outlives the spawn and can still reach the set on
+    /// drop.
     set: Arc<Mutex<HashSet<StoryId>>>,
+    /// The story ID this guard is responsible for clearing on drop.
     id: StoryId,
 }
 

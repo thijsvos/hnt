@@ -22,12 +22,25 @@ use ratatui::{
 /// rebuilt per-frame and consumed immediately, so ownership is
 /// unnecessary — cloning the same strings every frame was wasted work.
 pub struct StatusBar<'a> {
+    /// Currently selected feed — drives the `[<Feed>]` chip on the
+    /// left.
     pub feed: FeedKind,
+    /// Pre-formatted "N/total" counter for the focused pane, built by
+    /// `ui::render`.
     pub position: &'a str,
+    /// Last error to surface (sanitised at render time). `None` paints
+    /// the normal keybinding hint line instead.
     pub error: Option<&'a str>,
+    /// Pane label for the right-aligned `[Stories]` / `[Comments]` tag.
     pub focus_pane: &'static str,
+    /// Current input mode — drives the search-input vs normal layout
+    /// branch.
     pub input_mode: InputMode,
+    /// In-progress search input — rendered with a block cursor when
+    /// `input_mode == SearchInput`.
     pub search_input: Option<&'a str>,
+    /// Committed search query — rendered as the `Search: "<q>"` chip
+    /// while results are shown.
     pub search_query: Option<&'a str>,
 }
 
