@@ -43,6 +43,14 @@ pub enum CommentFilter {
 pub struct FlatComment {
     pub item: Item,
     pub depth: usize,
+    /// Number of descendants — the count of contiguously-following
+    /// comments at strictly greater depth. Precomputed by
+    /// [`CommentTreeState::recompute_descendant_counts`] after every
+    /// tree mutation so [`crate::ui::comment_tree`]'s collapsed-row
+    /// "(N hidden)" annotation reads it in O(1) instead of re-scanning
+    /// the tail of the comments slice per visible comment per frame
+    /// (closes #138).
+    pub descendant_count: usize,
     /// Cached plain-text rendering of `item.text` at the given width.
     /// Populated on first render; invalidated by a width change.
     plain_text_cache: Option<(usize, String)>,
@@ -54,6 +62,7 @@ impl FlatComment {
         Self {
             item,
             depth,
+            descendant_count: 0,
             plain_text_cache: None,
         }
     }
@@ -162,6 +171,7 @@ impl CommentTreeState {
         self.scroll = 0;
         self.selected = 0;
         self.filter = CommentFilter::All;
+        self.recompute_descendant_counts();
     }
 
     /// Inserts child comments right after their parent in the flattened
@@ -180,6 +190,32 @@ impl CommentTreeState {
                 .collect();
             // Splice them in after the parent
             self.comments.splice(pos..pos, new_comments);
+            self.recompute_descendant_counts();
+        }
+    }
+
+    /// One-pass recompute of every comment's `descendant_count`.
+    ///
+    /// For a pre-order flat tree, each comment's descendants are the
+    /// contiguous suffix starting at the next index whose depth stays
+    /// strictly greater than the comment's own depth. Outer loop is
+    /// O(n); inner scan is bounded by the tree depth (capped at
+    /// [`crate::app::MAX_COMMENT_DEPTH`] = 10), so total cost is
+    /// O(n × MAX_DEPTH) — essentially linear. Called from
+    /// [`Self::set_comments`] and [`Self::insert_children`]; the count
+    /// stays current with every tree mutation so
+    /// [`crate::ui::comment_tree::count_hidden_children`] can return
+    /// the value in O(1) (closes #138).
+    fn recompute_descendant_counts(&mut self) {
+        let n = self.comments.len();
+        let depths: Vec<usize> = self.comments.iter().map(|c| c.depth).collect();
+        for i in 0..n {
+            let d = depths[i];
+            let mut j = i + 1;
+            while j < n && depths[j] > d {
+                j += 1;
+            }
+            self.comments[i].descendant_count = j - i - 1;
         }
     }
 
@@ -884,5 +920,55 @@ mod tests {
             state.filter_visible_set().is_none(),
             "All filter returns None (everything passes)"
         );
+    }
+
+    // --- descendant_count precompute (closes #138) ---
+
+    #[test]
+    fn descendant_counts_after_set_comments() {
+        // Tree:
+        //   root(1) depth 0
+        //     child(2) depth 1
+        //       grandchild(3) depth 2
+        //   sibling(4) depth 0
+        // Expected: counts = [2, 1, 0, 0]
+        let mut state = CommentTreeState::new();
+        state.set_comments(sample_tree());
+        assert_eq!(
+            state.comments[0].descendant_count, 2,
+            "root has 2 descendants"
+        );
+        assert_eq!(
+            state.comments[1].descendant_count, 1,
+            "child has 1 grandchild"
+        );
+        assert_eq!(state.comments[2].descendant_count, 0, "leaf has none");
+        assert_eq!(state.comments[3].descendant_count, 0, "sibling has none");
+    }
+
+    #[test]
+    fn descendant_counts_after_insert_children_grow_correctly() {
+        let mut state = CommentTreeState::new();
+        state.set_comments(vec![cwd(1, 0), cwd(4, 0)]);
+        // Both leaves originally.
+        assert_eq!(state.comments[0].descendant_count, 0);
+        assert_eq!(state.comments[1].descendant_count, 0);
+        // Now insert 2 and 3 under root 1.
+        state.insert_children(cid(1), vec![cwd(2, 1), cwd(3, 2)]);
+        assert_eq!(
+            state.comments[0].descendant_count, 2,
+            "1 gained 2 descendants"
+        );
+        assert_eq!(state.comments[1].descendant_count, 1, "2 has grandchild 3");
+        assert_eq!(state.comments[2].descendant_count, 0, "leaf");
+        assert_eq!(state.comments[3].descendant_count, 0, "sibling unchanged");
+    }
+
+    #[test]
+    fn descendant_count_handles_empty_tree() {
+        let mut state = CommentTreeState::new();
+        state.set_comments(vec![]);
+        // No comments → no counts to verify, just no panic.
+        assert!(state.comments.is_empty());
     }
 }

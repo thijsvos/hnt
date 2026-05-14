@@ -477,15 +477,14 @@ fn measure_comments(
 
 /// Counts descendants of `all[parent_idx]` in the flat list — the
 /// contiguous run of comments with strictly greater depth that follow it.
-/// The caller already has the index from its own iteration, so we take
-/// it directly instead of re-scanning for it (which was quadratic when
-/// many siblings were collapsed).
+///
+/// O(1): reads the precomputed `descendant_count` field maintained by
+/// [`crate::state::comment_state::CommentTreeState::recompute_descendant_counts`].
+/// Pre-fix this re-scanned the comments tail per call, which was
+/// effectively O(n²) on a thread with many collapsed deep subtrees
+/// rendered every frame (closes #138).
 fn count_hidden_children(all: &[FlatComment], parent_idx: usize) -> usize {
-    let parent_depth = all[parent_idx].depth;
-    all[parent_idx + 1..]
-        .iter()
-        .take_while(|c| c.depth > parent_depth)
-        .count()
+    all[parent_idx].descendant_count
 }
 
 /// Precomputed indentation strings for comment depths 0..=MAX_COMMENT_DEPTH.
