@@ -1075,9 +1075,21 @@ impl App {
         let gen = self.feed_gen;
 
         if matches!(mode, LoadMode::Append) {
-            // Reuse the ID list from the initial load so offsets stay stable
-            // even if new stories have been posted to the feed since.
-            let cached_ids = self.story_state.all_ids.clone();
+            // For remote feeds, reuse the ID list from the initial load
+            // so offsets stay stable even if new stories have been posted
+            // since. For Pinned — a virtual feed sourced from the local
+            // pin store — refetch the list because pins added or removed
+            // since the initial load would otherwise be missed (closes
+            // #135). The offset stays at `stories.len()`; if pins shifted
+            // significantly the user may see a couple of duplicates or
+            // gaps, but the next scroll round-trips back to a consistent
+            // view.
+            let pinned_branch = matches!(self.current_feed, FeedKind::Pinned);
+            let cached_ids = if pinned_branch {
+                self.pin_store.pinned_ids_newest_first()
+            } else {
+                self.story_state.all_ids.clone()
+            };
             let offset = self.story_state.stories.len();
             tokio::spawn(async move {
                 match client
@@ -1088,7 +1100,12 @@ impl App {
                         let _ = tx.send(AppMessage::StoriesLoaded {
                             gen,
                             stories,
-                            all_ids: None,
+                            // For Pinned, ship the freshly-fetched ID
+                            // list so process_messages updates the
+                            // backing `all_ids` — that way subsequent
+                            // pages see the same list this page used.
+                            // Remote feeds keep their stable cached list.
+                            all_ids: pinned_branch.then(|| cached_ids.clone()),
                             mode: LoadMode::Append,
                         });
                     }
