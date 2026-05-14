@@ -8,6 +8,7 @@
 //! shared line-fragment type used by both article extraction and HTML
 //! comment rendering.
 
+use crate::sanitize::sanitize_terminal;
 use crate::state::link_registry::LinkRegistry;
 use ratatui::style::Style;
 
@@ -49,7 +50,17 @@ impl ReaderState {
     /// Starts in the loading state; the overlay renders a placeholder until
     /// [`set_content`](Self::set_content) or [`set_error`](Self::set_error)
     /// is called.
+    ///
+    /// `title` and `domain` originate from untrusted HN content
+    /// (`Item::title`, the host of `Item::url`). Both are scrubbed through
+    /// [`sanitize_terminal`] here so the overlay header cannot smuggle
+    /// terminal control bytes through ratatui to the user's terminal. The
+    /// `url` itself is not sanitized because it is only used for the
+    /// HTTP fetch and OSC-52 copy paths, both of which apply their own
+    /// safeguards (the SSRF guard for the fetch, base64 for OSC 52).
     pub fn new_loading(title: String, domain: Option<String>, url: Option<String>) -> Self {
+        let title = sanitize_terminal(&title).into_owned();
+        let domain = domain.map(|d| sanitize_terminal(&d).into_owned());
         Self {
             title,
             domain,
@@ -252,5 +263,65 @@ mod tests {
         let mut r = ReaderState::new_loading("T".into(), None, None);
         r.set_content(make_lines(1), LinkRegistry::new());
         assert_eq!(r.scroll_percent(), 100); // max_scroll is 0
+    }
+
+    // --- new_loading sanitises untrusted title / domain inputs ---
+
+    #[test]
+    fn new_loading_sanitises_escape_in_title() {
+        // OSC-0 ("set window title") plus its terminator — the most
+        // damaging escape an HN submitter can land in a title.
+        let r = ReaderState::new_loading("\x1b]0;OWNED\x07hello".into(), None, None);
+        assert!(!r.title.contains('\x1b'));
+        assert!(!r.title.contains('\x07'));
+        assert!(r.title.contains("hello"));
+    }
+
+    #[test]
+    fn new_loading_sanitises_csi_in_title() {
+        let r = ReaderState::new_loading("clear\x1b[2Jhere".into(), None, None);
+        assert!(!r.title.contains('\x1b'));
+        assert!(r.title.contains("clear"));
+        assert!(r.title.contains("here"));
+    }
+
+    #[test]
+    fn new_loading_sanitises_domain() {
+        // Domains come from `url::Url::host_str` so this is defence in
+        // depth — but we still scrub since a future code path could
+        // route a less-trusted value in.
+        let r = ReaderState::new_loading(
+            "Title".into(),
+            Some("example.com\x1b]0;owned\x07".into()),
+            None,
+        );
+        let domain = r.domain.expect("domain set");
+        assert!(!domain.contains('\x1b'));
+        assert!(!domain.contains('\x07'));
+        assert!(domain.contains("example.com"));
+    }
+
+    #[test]
+    fn new_loading_preserves_safe_title_unchanged() {
+        let r = ReaderState::new_loading("Just a normal title".into(), None, None);
+        assert_eq!(r.title, "Just a normal title");
+    }
+
+    #[test]
+    fn new_loading_preserves_unicode_letters_in_title() {
+        let r = ReaderState::new_loading("café résumé 日本語".into(), None, None);
+        assert_eq!(r.title, "café résumé 日本語");
+    }
+
+    #[test]
+    fn new_loading_does_not_sanitise_url() {
+        // The URL field feeds the HTTP fetch (which has its own SSRF
+        // guard) and OSC 52 copy (base64-encoded); it is never spliced
+        // back into a `Span`. Verify it is preserved verbatim so escape
+        // characters in a percent-decoded URL don't trigger surprising
+        // mutation here.
+        let url = "https://example.com/path?q=1".to_string();
+        let r = ReaderState::new_loading("T".into(), None, Some(url.clone()));
+        assert_eq!(r.url.as_deref(), Some(url.as_str()));
     }
 }
