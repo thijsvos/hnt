@@ -5,6 +5,30 @@ All notable changes to `hnt` are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] — 2026-05-14
+
+Bug-fix release for the prior-discussions overlay (the `h` overlay on a
+story that has prior HN submissions of the same URL).
+
+### Fixed
+
+- **Enter on a selected prior submission no longer shows "No comments".**
+  `run_comment_load` now substitutes the partial Algolia hit with the
+  freshly-fetched Firebase record when a full fetch is required, so
+  `comment_state.story` reflects authoritative `kids`/`title`/
+  `descendants` after picking a prior submission. The non-prior path
+  is unchanged. Closes
+  [#189](https://github.com/thijsvos/hnt/issues/189) via
+  [PR #190](https://github.com/thijsvos/hnt/pull/190).
+- **`o` from the prior-discussions overlay now opens the prior post's
+  HN discussion page** (`https://news.ycombinator.com/item?id={id}`)
+  instead of the article URL. Prior submissions by definition share
+  the parent's article URL (`HnClient::search_by_url` filters to
+  same-URL matches), so the old behaviour always re-opened the
+  parent's target; the new behaviour is the unique-per-submission HN
+  thread. Same closing issue/PR as above.
+- Overlay footer hint updated from `o:browser` to `o:open HN page`.
+
 ## [0.4.3] — 2026-05-14
 
 Hotfix for a `cargo audit` CI regression introduced by the audit job
