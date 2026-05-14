@@ -381,7 +381,11 @@ impl App {
         visible.max(MIN_PAGE_SIZE)
     }
 
-    /// Updates cached terminal dimensions after a resize event.
+    /// Caches the new terminal dimensions after `Event::Resize`. Read
+    /// by [`Self::page_size`] (story pagination batch sizing) and by
+    /// `open_article_reader` / `open_url_in_reader` for the
+    /// `width.saturating_sub(6)` text-wrap width. Rendered widgets pick
+    /// the change up on the next draw.
     pub fn set_terminal_size(&mut self, w: u16, h: u16) {
         self.terminal_width = w;
         self.terminal_height = h;
@@ -1027,7 +1031,10 @@ impl App {
         ));
     }
 
-    /// Transitions into search-input mode, showing an empty search prompt.
+    /// Transitions into search-input mode, showing an empty search
+    /// prompt. Also forces focus back to the Stories pane so the
+    /// user's first character of input doesn't land on a
+    /// focused-Comments keymap.
     pub fn enter_search_mode(&mut self) {
         self.input_mode = InputMode::SearchInput;
         self.search_state = Some(SearchState::new());
