@@ -84,8 +84,14 @@ impl ReaderState {
     }
 
     /// Transitions from loading to error state with the given message.
+    ///
+    /// `msg` is scrubbed through [`sanitize_terminal`] before storage —
+    /// fetch errors can carry server-controlled bytes (Location-header
+    /// URLs, DNS-resolved hostnames, response bodies surfaced via
+    /// `anyhow` context) so we treat the string as untrusted at this
+    /// boundary.
     pub fn set_error(&mut self, msg: String) {
-        self.error = Some(msg);
+        self.error = Some(sanitize_terminal(&msg).into_owned());
         self.loading = false;
     }
 
@@ -184,6 +190,20 @@ mod tests {
         r.set_error("fail".into());
         assert_eq!(r.error.as_deref(), Some("fail"));
         assert!(!r.loading);
+    }
+
+    #[test]
+    fn set_error_sanitises_escape_bytes() {
+        // Article fetch errors can carry server-supplied bytes (e.g. a
+        // malicious `Location:` header with embedded ESC). Verify they
+        // don't survive into the rendered overlay.
+        let mut r = ReaderState::new_loading("T".into(), None, None);
+        r.set_error("fail\x1b]0;owned\x07after".into());
+        let stored = r.error.expect("error stored");
+        assert!(!stored.contains('\x1b'));
+        assert!(!stored.contains('\x07'));
+        assert!(stored.contains("fail"));
+        assert!(stored.contains("after"));
     }
 
     #[test]
