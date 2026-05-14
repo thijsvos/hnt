@@ -6,6 +6,9 @@
 use indicatif::ProgressStyle;
 use std::sync::OnceLock;
 
+/// Braille glyphs cycled by [`frame`]. Six frames chosen for visual
+/// continuity at the ~4 Hz tick rate — fewer would look stuttery,
+/// more would slow the perceived motion.
 const FRAMES: &[&str] = &["⠾", "⠷", "⠯", "⠟", "⠻", "⠽"];
 
 fn style() -> &'static ProgressStyle {

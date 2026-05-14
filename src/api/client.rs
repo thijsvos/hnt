@@ -15,9 +15,18 @@ use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+/// Firebase HN API root. All non-search requests interpolate this base.
 const BASE_URL: &str = "https://hacker-news.firebaseio.com/v0";
+/// Algolia HN search endpoint. Used by [`HnClient::search_stories`] and
+/// [`HnClient::search_by_url`].
 const ALGOLIA_URL: &str = "https://hn.algolia.com/api/v1/search";
+/// Outstanding-fetch ceiling for [`HnClient::fetch_items`]. Empirically
+/// chosen — above ~20 the HN endpoint has been observed to return
+/// truncated or rate-limited responses.
 const CONCURRENT_REQUESTS: usize = 20;
+/// LRU item-cache capacity. Sized to hold a typical browse session
+/// (several feed pages × their comment trees) without evicting the
+/// stories the user is likely to revisit.
 const CACHE_CAPACITY: usize = 2000;
 
 /// Shared HTTP client for the Hacker News API.

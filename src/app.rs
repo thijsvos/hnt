@@ -26,8 +26,19 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
+/// Floor for `page_size()` so a tiny terminal still requests a useful
+/// batch — fewer than ~30 items per fetch would round-trip the Firebase
+/// list endpoint more than necessary on lazy-load pagination.
 const MIN_PAGE_SIZE: usize = 30;
+/// Rows per `PageDown` / `PageUp` action. Smaller than a literal
+/// terminal page so the user keeps two-thirds of the prior context in
+/// view across each jump.
 const SCROLL_PAGE: usize = 10;
+/// Hard cap on comment-subtree depth walked by
+/// `HnClient::fetch_children_recursive`. Deeper threads exist on HN but
+/// rendering and navigation in the TUI degrade past ~10 levels of
+/// indent, and the bound prevents pathological recursion on adversarial
+/// input.
 const MAX_COMMENT_DEPTH: usize = 10;
 /// Maximum prior-discussions results retained across a session. Long
 /// browse sessions otherwise grow this cache unboundedly (one entry per

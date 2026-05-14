@@ -7,20 +7,40 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
+/// Body background (Mocha "base").
 pub const BG: Color = Color::Rgb(30, 30, 46);
+/// Selected-row, accent-chip, and status-bar background (Mocha
+/// "surface0").
 pub const SURFACE: Color = Color::Rgb(49, 50, 68);
+/// Reserved for future nested-overlay backgrounds; unused today but
+/// kept for parity with the upstream Mocha palette.
 #[allow(dead_code)]
 pub const OVERLAY: Color = Color::Rgb(69, 71, 90);
+/// Primary foreground — body text (Mocha "text").
 pub const TEXT: Color = Color::Rgb(205, 214, 244);
+/// Secondary foreground — metadata, blockquote text (Mocha "subtext0").
 pub const SUBTEXT: Color = Color::Rgb(166, 173, 200);
+/// Dimmed foreground — visited-story titles, hint text (Mocha
+/// "overlay2").
 pub const DIM: Color = Color::Rgb(127, 132, 156);
+/// HN brand orange — accents, active tab, pin glyph, depth-0 comment
+/// thread bar.
 pub const HN_ORANGE: Color = Color::Rgb(255, 102, 0);
+/// "Show HN" badge and code-block foreground (Mocha "green").
 pub const GREEN: Color = Color::Rgb(166, 227, 161);
+/// Error text in the status bar (Mocha "red").
 pub const RED: Color = Color::Rgb(243, 139, 168);
+/// Hyperlink color and "Ask HN" badge (Mocha "blue").
 pub const BLUE: Color = Color::Rgb(137, 180, 250);
+/// "Job" badge and `h2` markdown headings (Mocha "yellow").
 pub const YELLOW: Color = Color::Rgb(249, 226, 175);
+/// "Tell HN" badge and inline-image marker (Mocha "mauve").
 pub const MAUVE: Color = Color::Rgb(203, 166, 247);
+/// "Poll" badge and one of the comment-depth thread bars (Mocha
+/// "teal").
 pub const TEAL: Color = Color::Rgb(148, 226, 213);
+/// "Launch HN" badge and one of the comment-depth thread bars (Mocha
+/// "peach").
 pub const PEACH: Color = Color::Rgb(250, 179, 135);
 
 /// Colors for comment depth levels (cycles through these).

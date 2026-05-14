@@ -13,7 +13,11 @@ use html2text::render::RichAnnotation;
 use ratatui::style::{Modifier, Style};
 use std::sync::OnceLock;
 
-const MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024; // 5MB
+/// Hard cap on article body size — 5 MB. Larger responses are rejected
+/// before allocation so a malicious site can't OOM the reader. Checked
+/// twice: once against `Content-Length` (pre-stream) and once against
+/// the actual byte count (in case the header is absent or wrong).
+const MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024;
 
 /// Shared HTTP client for article fetches. Built once on first use so
 /// connection pools are reused across reader opens (multiple GH README
