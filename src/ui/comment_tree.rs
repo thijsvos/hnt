@@ -372,9 +372,9 @@ fn measure_comments(
     for (vi, &idx) in visible_indices.iter().enumerate() {
         let mut lines = Vec::new();
         let depth = all_comments[idx].depth;
-        let indent = indent_for(depth);
-        let bar = "│ ";
-        let text_width = width.saturating_sub(indent.len() + bar.len() + 2);
+        // `indent_bar_for` returns "<spaces>│ " — see INDENT_BARS — and
+        // its char count drives the body-wrap width below.
+        let text_width = width.saturating_sub(indent_bar_for(depth).chars().count() + 2);
         let is_collapsed = collapsed.contains(&CommentId(all_comments[idx].item.id));
 
         // Populate/refresh the plain-text cache for this comment under a
@@ -412,7 +412,7 @@ fn measure_comments(
         // via Cow::Owned, so it lives to be moved into a Line in the
         // render pass without further cloning.
         let mut header_spans: Vec<Span<'static>> = vec![Span::styled(
-            format!("{}{}", indent, bar),
+            indent_bar_for(depth),
             ratatui::style::Style::default().fg(depth_color),
         )];
         if comment.depth == 0 && pending_root_ids.contains(&CommentId(comment.item.id)) {
@@ -450,7 +450,7 @@ fn measure_comments(
             for line in plain.lines().take(20) {
                 let text_spans: Vec<Span<'static>> = vec![
                     Span::styled(
-                        format!("{}{}", indent, bar),
+                        indent_bar_for(depth),
                         ratatui::style::Style::default().fg(depth_color),
                     ),
                     Span::styled(
@@ -487,24 +487,28 @@ fn count_hidden_children(all: &[FlatComment], parent_idx: usize) -> usize {
     all[parent_idx].descendant_count
 }
 
-/// Precomputed indentation strings for comment depths 0..=MAX_COMMENT_DEPTH.
-/// Avoids a `"  ".repeat(depth)` allocation per visible comment per frame.
-const INDENTS: [&str; 11] = [
-    "",
-    "  ",
-    "    ",
-    "      ",
-    "        ",
-    "          ",
-    "            ",
-    "              ",
-    "                ",
-    "                  ",
-    "                    ",
+/// Precomputed "indent + thread-bar" strings for depths 0..=MAX_COMMENT_DEPTH.
+/// Used by `measure_comments` for every header row and every wrapped body
+/// row, so caching the concatenation here turns the per-comment-per-frame
+/// `format!("{}{}", indent, bar)` allocations into `&'static str` Span
+/// content (zero allocation — `Span::styled(&'static str, ..)` produces a
+/// `Cow::Borrowed`) (closes #136).
+const INDENT_BARS: [&str; 11] = [
+    "│ ",
+    "  │ ",
+    "    │ ",
+    "      │ ",
+    "        │ ",
+    "          │ ",
+    "            │ ",
+    "              │ ",
+    "                │ ",
+    "                  │ ",
+    "                    │ ",
 ];
 
-fn indent_for(depth: usize) -> &'static str {
-    INDENTS[depth.min(INDENTS.len() - 1)]
+fn indent_bar_for(depth: usize) -> &'static str {
+    INDENT_BARS[depth.min(INDENT_BARS.len() - 1)]
 }
 
 #[cfg(test)]
