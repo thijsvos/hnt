@@ -2215,4 +2215,186 @@ mod tests {
             "reset must clear prior_results so refresh refetches"
         );
     }
+
+    // --- apply_loaded_stories (closes #145) ---
+
+    #[test]
+    fn apply_loaded_stories_replace_installs_fresh_list() {
+        let mut app = App::new(80, 24);
+        app.story_state.stories = vec![fake_item(99), fake_item(98)];
+        app.story_state.selected = 1;
+        app.story_state.loading = true;
+        app.error = Some("old".into());
+        app.apply_loaded_stories(vec![fake_item(1), fake_item(2)], LoadMode::Replace);
+        let ids: Vec<u64> = app.story_state.stories.iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec![1, 2], "Replace installs the new list");
+        assert!(!app.story_state.loading, "loading cleared");
+        assert!(app.error.is_none(), "stale error cleared");
+    }
+
+    #[test]
+    fn apply_loaded_stories_append_extends_existing_list() {
+        let mut app = App::new(80, 24);
+        app.story_state.stories = vec![fake_item(1), fake_item(2)];
+        app.story_state.loading = true;
+        app.apply_loaded_stories(vec![fake_item(3), fake_item(4)], LoadMode::Append);
+        let ids: Vec<u64> = app.story_state.stories.iter().map(|s| s.id).collect();
+        assert_eq!(ids, vec![1, 2, 3, 4], "Append extends");
+        assert!(!app.story_state.loading);
+    }
+
+    // --- cycle_comment_filter state machine (closes #145) ---
+
+    fn loaded_story(app: &mut App, id: u64) {
+        // Minimal fixture for cycle_comment_filter: a loaded story so
+        // `comment_state.story.is_some()` short-circuits don't fire.
+        app.comment_state.story = Some(fake_item(id));
+    }
+
+    #[test]
+    fn cycle_comment_filter_all_to_recent_when_never_visited() {
+        let mut app = App::new(80, 24);
+        loaded_story(&mut app, 1);
+        // No prior read_store entry → All transitions to Recent.
+        app.comment_state.filter = CommentFilter::All;
+        app.cycle_comment_filter();
+        assert!(
+            matches!(app.comment_state.filter, CommentFilter::Recent(_)),
+            "unvisited story: All → Recent"
+        );
+    }
+
+    #[test]
+    fn cycle_comment_filter_all_to_new_since_when_visited() {
+        let mut app = App::new(80, 24);
+        loaded_story(&mut app, 1);
+        // Mark visited so last_seen_at returns Some(t).
+        app.read_store.mark(StoryId(1), 0);
+        app.comment_state.filter = CommentFilter::All;
+        app.cycle_comment_filter();
+        assert!(
+            matches!(app.comment_state.filter, CommentFilter::NewSince(_)),
+            "visited story: All → NewSince"
+        );
+    }
+
+    #[test]
+    fn cycle_comment_filter_new_since_to_recent() {
+        let mut app = App::new(80, 24);
+        loaded_story(&mut app, 1);
+        app.comment_state.filter = CommentFilter::NewSince(123);
+        app.cycle_comment_filter();
+        assert!(matches!(app.comment_state.filter, CommentFilter::Recent(_)));
+    }
+
+    #[test]
+    fn cycle_comment_filter_recent_to_all() {
+        let mut app = App::new(80, 24);
+        loaded_story(&mut app, 1);
+        app.comment_state.filter = CommentFilter::Recent(456);
+        app.cycle_comment_filter();
+        assert_eq!(app.comment_state.filter, CommentFilter::All);
+    }
+
+    #[test]
+    fn cycle_comment_filter_noop_without_loaded_story() {
+        let mut app = App::new(80, 24);
+        app.comment_state.filter = CommentFilter::All;
+        app.cycle_comment_filter();
+        assert_eq!(
+            app.comment_state.filter,
+            CommentFilter::All,
+            "no story → no transition"
+        );
+    }
+
+    // --- pane_at rect math (closes #145) ---
+
+    #[test]
+    fn pane_at_returns_none_outside_terminal() {
+        let app = App::new(80, 24);
+        // Way outside the terminal.
+        assert!(app.pane_at(200, 200).is_none());
+    }
+
+    #[test]
+    fn pane_at_returns_none_on_pane_border() {
+        let app = App::new(80, 24);
+        // (0, 0) is the top-left corner of the stories pane — its
+        // border row. Inside rect (after the border) starts at (1, 1).
+        assert!(app.pane_at(0, 0).is_none(), "top-left border excluded");
+    }
+
+    #[test]
+    fn pane_at_inside_stories_pane_resolves_to_stories() {
+        let app = App::new(80, 24);
+        // Row 5, col 5 is firmly inside the left pane's inner rect.
+        let hit = app.pane_at(5, 5);
+        assert!(hit.is_some(), "expected a pane hit at (5,5)");
+        assert_eq!(hit.unwrap().0, Pane::Stories);
+    }
+
+    #[test]
+    fn pane_at_inside_comments_pane_resolves_to_comments() {
+        let app = App::new(80, 24);
+        // Far-right column lives in the comments pane.
+        let hit = app.pane_at(70, 5);
+        assert!(hit.is_some());
+        assert_eq!(hit.unwrap().0, Pane::Comments);
+    }
+
+    // --- PriorInFlightGuard Drop (closes #145) ---
+
+    #[test]
+    fn prior_in_flight_guard_clears_entry_on_drop() {
+        let set = Arc::new(Mutex::new(HashSet::new()));
+        let sid = StoryId(99);
+        set.lock().unwrap().insert(sid);
+        {
+            let _guard = PriorInFlightGuard {
+                set: Arc::clone(&set),
+                id: sid,
+            };
+            // Inside the guard's scope, entry still present.
+            assert!(set.lock().unwrap().contains(&sid));
+        }
+        // Guard dropped — entry must be removed.
+        assert!(
+            !set.lock().unwrap().contains(&sid),
+            "Drop must remove the in-flight entry"
+        );
+    }
+
+    #[test]
+    fn prior_in_flight_guard_drop_recovers_from_poisoned_mutex() {
+        // The guard's Drop impl handles a poisoned mutex via
+        // `lock().or_else(|p| p.into_inner())`. Verify a panic during
+        // a separate lock holder doesn't prevent cleanup.
+        let set = Arc::new(Mutex::new(HashSet::new()));
+        let sid = StoryId(99);
+        set.lock().unwrap().insert(sid);
+
+        let poisoner = {
+            let set = Arc::clone(&set);
+            std::thread::spawn(move || {
+                let _g = set.lock().unwrap();
+                panic!("poison the mutex on purpose");
+            })
+        };
+        let _ = poisoner.join();
+        assert!(set.is_poisoned(), "fixture: mutex must be poisoned");
+        {
+            let _guard = PriorInFlightGuard {
+                set: Arc::clone(&set),
+                id: sid,
+            };
+        }
+        // Even with the mutex poisoned, the guard's Drop cleared the
+        // entry via into_inner().
+        let g = match set.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        assert!(!g.contains(&sid));
+    }
 }
