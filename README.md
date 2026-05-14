@@ -6,6 +6,8 @@
 
 A dark-themed terminal client for [Hacker News](https://news.ycombinator.com), built in Rust.
 
+> **Status**: actively developed, pre-1.0. The 0.4.x line is stable for daily use; expect occasional rough edges around new features.
+
 Browse stories, read threaded comments, and open links — all from your terminal. No more squinting at the orange-and-white website.
 
 ![hnt demo](assets/demo.gif)
@@ -51,6 +53,8 @@ chmod +x hnt
 ./hnt
 ```
 
+> **Windows**: not currently in the release matrix. Build from source — `crossterm` (the terminal layer) supports Windows, so the only blocker is that the release workflow doesn't cross-build for it yet.
+
 ### Build from source
 
 Requires [Rust](https://rustup.rs/) 1.88+.
@@ -83,6 +87,29 @@ cargo build --release
 | `q` | Quit |
 | `Esc` | Back / close |
 | `?` | Help overlay |
+
+## Configuration & state
+
+`hnt` is configuration-free — there's no config file. It persists two pieces of state across runs:
+
+| What | File |
+|---|---|
+| Visited stories + comment counts at last visit (drives the dim styling and `+N` "what's new" badges) | `read.json` |
+| Pinned stories + per-story resume position | `pinned.json` |
+
+The directory is platform-dependent (XDG on Linux, Application Support on macOS, AppData on Windows):
+
+| OS | Path |
+|---|---|
+| Linux | `$XDG_DATA_HOME/hnt/` (defaults to `~/.local/share/hnt/`) |
+| macOS | `~/Library/Application Support/hnt/` |
+| Windows | `%APPDATA%\hnt\` |
+
+Both files are written atomically (tmp + rename) with mode `0600` on Unix; the parent directory is created on first write with mode `0700`. Deleting either file resets the corresponding state — no other side effects.
+
+## Changelog
+
+Per-release notes live in [CHANGELOG.md](CHANGELOG.md). The [latest release](https://github.com/thijsvos/hnt/releases/latest) page mirrors the same content.
 
 ## Contributing
 
