@@ -47,12 +47,22 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            binary_suffix: ""
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
+            binary_suffix: ""
           - target: x86_64-apple-darwin
             os: macos-latest
+            binary_suffix: ""
           - target: aarch64-apple-darwin
             os: macos-latest
+            binary_suffix: ""
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            binary_suffix: ".exe"
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            binary_suffix: ".exe"
 
     steps:
       - uses: actions/checkout@v6
@@ -81,13 +91,14 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Rename binary
-        run: cp target/${{ matrix.target }}/release/hnt hnt-${{ matrix.target }}
+        shell: bash
+        run: cp "target/${{ matrix.target }}/release/hnt${{ matrix.binary_suffix }}" "hnt-${{ matrix.target }}${{ matrix.binary_suffix }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: hnt-${{ matrix.target }}
-          path: hnt-${{ matrix.target }}
+          path: hnt-${{ matrix.target }}${{ matrix.binary_suffix }}
 
   release:
     name: Create Release

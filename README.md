@@ -53,7 +53,15 @@ chmod +x hnt
 ./hnt
 ```
 
-> **Windows**: not currently in the release matrix. Build from source — `crossterm` (the terminal layer) supports Windows, so the only blocker is that the release workflow doesn't cross-build for it yet.
+```powershell
+# Windows (x86_64)
+curl.exe -L https://github.com/thijsvos/hnt/releases/latest/download/hnt-x86_64-pc-windows-msvc.exe -o hnt.exe
+.\hnt.exe
+
+# Windows (ARM64 — Surface Pro X, Copilot+ PCs)
+curl.exe -L https://github.com/thijsvos/hnt/releases/latest/download/hnt-aarch64-pc-windows-msvc.exe -o hnt.exe
+.\hnt.exe
+```
 
 ### Install via cargo
 
