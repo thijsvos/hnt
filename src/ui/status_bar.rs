@@ -5,6 +5,7 @@
 
 use crate::api::types::FeedKind;
 use crate::keys::InputMode;
+use crate::sanitize::sanitize_terminal;
 use crate::ui::theme;
 use ratatui::{
     buffer::Buffer,
@@ -63,8 +64,14 @@ impl<'a> Widget for StatusBar<'a> {
             spans.push(Span::styled(" ", theme::status_style()));
 
             if let Some(err) = self.error {
+                // Errors can carry server-controlled bytes (URLs from
+                // Location headers, hostnames from DNS errors), so scrub
+                // C0/C1/DEL controls before they reach ratatui — same
+                // rationale as the C2 title sanitiser, just on a
+                // lower-bandwidth attack surface.
+                let safe_err = sanitize_terminal(err);
                 spans.push(Span::styled(
-                    format!("Error: {} ", err),
+                    format!("Error: {} ", safe_err),
                     ratatui::style::Style::default()
                         .fg(theme::RED)
                         .bg(theme::SURFACE),
@@ -84,8 +91,14 @@ impl<'a> Widget for StatusBar<'a> {
             spans.push(Span::styled(" ", theme::status_style()));
 
             if let Some(err) = self.error {
+                // Errors can carry server-controlled bytes (URLs from
+                // Location headers, hostnames from DNS errors), so scrub
+                // C0/C1/DEL controls before they reach ratatui — same
+                // rationale as the C2 title sanitiser, just on a
+                // lower-bandwidth attack surface.
+                let safe_err = sanitize_terminal(err);
                 spans.push(Span::styled(
-                    format!("Error: {} ", err),
+                    format!("Error: {} ", safe_err),
                     ratatui::style::Style::default()
                         .fg(theme::RED)
                         .bg(theme::SURFACE),
@@ -111,5 +124,86 @@ impl<'a> Widget for StatusBar<'a> {
 
         let right_span = Span::styled(right_text, theme::accent_style().bg(theme::SURFACE));
         buf.set_span(right_start, area.top(), &right_span, area.width);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    fn render_bar(err: Option<&str>) -> Buffer {
+        let area = Rect::new(0, 0, 120, 1);
+        let mut buf = Buffer::empty(area);
+        StatusBar {
+            feed: FeedKind::Top,
+            position: "1/1",
+            error: err,
+            focus_pane: "Stories",
+            input_mode: InputMode::Normal,
+            search_input: None,
+            search_query: None,
+        }
+        .render(area, &mut buf);
+        buf
+    }
+
+    fn buffer_text(buf: &Buffer) -> String {
+        let mut s = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                s.push_str(buf[(x, y)].symbol());
+            }
+        }
+        s
+    }
+
+    #[test]
+    fn status_bar_renders_normal_mode_without_panic() {
+        let buf = render_bar(None);
+        assert!(buffer_text(&buf).contains("Top"));
+    }
+
+    #[test]
+    fn status_bar_renders_error_message() {
+        let buf = render_bar(Some("network down"));
+        let text = buffer_text(&buf);
+        assert!(text.contains("Error:"));
+        assert!(text.contains("network down"));
+    }
+
+    #[test]
+    fn status_bar_neutralises_escape_in_error_message() {
+        // Reproduces the C-W1 attack: an error string carries embedded
+        // OSC-0 bytes. Confirm none of \x1b, \x07, or other C0/C1
+        // controls reach the rendered buffer cells.
+        let buf = render_bar(Some("oops\x1b]0;OWNED\x07more"));
+        let text = buffer_text(&buf);
+        assert!(!text.contains('\x1b'), "ESC must not survive: {text:?}");
+        assert!(!text.contains('\x07'), "BEL must not survive");
+        assert!(text.contains("oops"));
+        assert!(text.contains("more"));
+    }
+
+    #[test]
+    fn status_bar_neutralises_csi_in_error_message_search_branch() {
+        let area = Rect::new(0, 0, 120, 1);
+        let mut buf = Buffer::empty(area);
+        StatusBar {
+            feed: FeedKind::Top,
+            position: "1/1",
+            error: Some("hit\x1b[2Jclear"),
+            focus_pane: "Stories",
+            input_mode: InputMode::Normal,
+            search_input: None,
+            // Force the search-results error branch.
+            search_query: Some("rust"),
+        }
+        .render(area, &mut buf);
+        let text = buffer_text(&buf);
+        assert!(!text.contains('\x1b'));
+        assert!(text.contains("hit"));
+        assert!(text.contains("clear"));
     }
 }
