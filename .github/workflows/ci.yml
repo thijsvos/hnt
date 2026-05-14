@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    # Mondays 06:00 UTC — catches ecosystem drift (new clippy lints on
+    # stable, registry API changes, fresh RUSTSEC advisories) before a
+    # user-submitted PR is mysteriously broken on Monday morning.
+    - cron: "0 6 * * 1"
 
 env:
   CARGO_TERM_COLOR: always
