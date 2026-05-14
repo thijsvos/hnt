@@ -785,7 +785,15 @@ impl App {
             Action::JumpTop => p.jump_top(),
             Action::JumpBottom => p.jump_bottom(),
             Action::OpenInBrowser => {
-                open_http_url(p.selected_submission().and_then(|i| i.url.as_deref()));
+                // Prior submissions all share the parent's article URL by
+                // construction (search_by_url filters to same-URL matches),
+                // so opening `item.url` would always re-open the parent's
+                // target. The user-meaningful "open the prior post" is its
+                // own HN discussion page, which is unique per submission.
+                if let Some(item) = p.selected_submission() {
+                    let hn_url = format!("https://news.ycombinator.com/item?id={}", item.id);
+                    open_http_url(Some(hn_url.as_str()));
+                }
             }
             _ => {}
         }
@@ -1758,17 +1766,25 @@ async fn run_comment_load(
 ) {
     use futures::stream::{self, StreamExt};
 
-    let kids: Vec<u64> = if needs_full_fetch {
+    // When a full fetch is required (e.g. caller had only an Algolia hit
+    // with `kids: None`), swap the partial `story` for the freshly-fetched
+    // Firebase record so `CommentsLoaded` installs the authoritative Item
+    // (correct title, descendants, kids, item_type) — not the partial hit.
+    let (story, kids): (Arc<Item>, Vec<u64>) = if needs_full_fetch {
         match client.fetch_item(story.id).await {
-            Ok(Some(full_item)) => full_item.kids.as_deref().unwrap_or(&[]).to_vec(),
-            Ok(None) => Vec::new(),
+            Ok(Some(full_item)) => {
+                let kids = full_item.kids.as_deref().unwrap_or(&[]).to_vec();
+                (full_item, kids)
+            }
+            Ok(None) => (story, Vec::new()),
             Err(e) => {
                 let _ = tx.send(AppMessage::Error(format!("Failed to load comments: {}", e)));
                 return;
             }
         }
     } else {
-        story.kids.as_deref().unwrap_or(&[]).to_vec()
+        let kids = story.kids.as_deref().unwrap_or(&[]).to_vec();
+        (story, kids)
     };
 
     let root_items = client.fetch_items(&kids).await;
