@@ -5,6 +5,39 @@ All notable changes to `hnt` are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] — 2026-05-14
+
+Documentation-only patch release. A full `/docstring-check` sweep over
+the 33 source files surfaced 32 findings; all applied across five
+logically-separated commits. No behavioural changes; binary output is
+byte-identical to 0.4.0 modulo the version string.
+
+### Documentation
+
+- **Prose drift** corrected in four internal helpers
+  (`recompute_descendant_counts` complexity claim, `apply_pending_resume`
+  outcome list, `handle_click` now references `pane_at` instead of
+  `build_layout`, `open_article_reader` now documents the
+  `bump_article_gen` invariant).
+- **Enum variants** documented on eight public enums
+  (`Action` — 16 of 21 variants were bare — plus `InputMode`,
+  `FeedKind`, `ItemType`, `StoryBadge`, `CommentFilter`, `Pane`,
+  `LoadMode`, `Event`, `HintContext`).
+- **`pub` struct fields** filled in across `Item` (10 of 11 fields
+  were bare), `SearchHit`, `SearchResponse`, `SearchState`,
+  `StoryListState`, the four ratatui widget structs
+  (`Header`, `StatusBar`, `CommentTree`, `StoryList`), `LinkRef` /
+  `LinkRegistry`, and `PriorInFlightGuard`.
+- **Tuning constants** documented in `app.rs`, `api/client.rs`,
+  `article.rs`, `ui/spinner.rs`, and the full Catppuccin palette in
+  `ui/theme.rs`.
+- **Under-informative public-fn docs** expanded for
+  `App::set_terminal_size` (now names the downstream consumers) and
+  `App::enter_search_mode` (now documents the `focus = Pane::Stories`
+  side effect).
+
+([PR #165](https://github.com/thijsvos/hnt/pull/165))
+
 ## [0.4.0] — 2026-05-14
 
 A security- and stability-focused release. A code-review pass surfaced
@@ -171,5 +204,6 @@ eighteen and adds ~150 new tests along the way.
 Final 0.3.x release. See `git log` for individual commits; the 0.3.x
 series predates this changelog file.
 
+[0.4.1]: https://github.com/thijsvos/hnt/releases/tag/v0.4.1
 [0.4.0]: https://github.com/thijsvos/hnt/releases/tag/v0.4.0
 [0.3.13]: https://github.com/thijsvos/hnt/releases/tag/v0.3.13
