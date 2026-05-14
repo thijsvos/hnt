@@ -436,13 +436,17 @@ impl App {
     ///
     /// Bumps all three generation counters so any in-flight feed,
     /// comment, or article fetch lands as a no-op rather than as a
-    /// stale overlay on the freshly reset state.
+    /// stale overlay on the freshly reset state. Also clears the
+    /// [`Self::prior_results`] LRU so an explicit refresh visibly
+    /// refetches prior-discussions data (which the user pressed `r`
+    /// expecting) instead of serving cached results from before.
     fn reset_panes_and_reload(&mut self) {
         self.snapshot_pinned_resume_if_any();
         self.story_state.reset();
         self.comment_state.reset();
         self.pending_pinned_resume = None;
         self.client.clear_cache();
+        self.prior_results.clear();
         self.bump_feed_gen();
         self.bump_story_gen();
         self.bump_article_gen();
@@ -2097,5 +2101,26 @@ mod tests {
         assert!(app.feed_gen > f0);
         assert!(app.story_gen > s0);
         assert!(app.article_gen > a0);
+    }
+
+    #[tokio::test]
+    async fn reset_panes_and_reload_clears_prior_results_cache() {
+        // Refresh / feed-switch / cancel-search all funnel through
+        // `reset_panes_and_reload`. The user pressing `r` expects a
+        // refetch of prior-discussions too — without this clear, the
+        // LRU keeps serving the pre-refresh entry and silently misses
+        // any newly added submissions of the same URL.
+        let mut app = App::new(80, 24);
+        let sid = StoryId(42);
+        app.prior_results.put(sid, vec![fake_item(7), fake_item(8)]);
+        assert!(
+            app.prior_results.contains(&sid),
+            "fixture: cache must hold entry before reset"
+        );
+        app.reset_panes_and_reload();
+        assert!(
+            !app.prior_results.contains(&sid),
+            "reset must clear prior_results so refresh refetches"
+        );
     }
 }
