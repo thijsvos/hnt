@@ -5,6 +5,23 @@ All notable changes to `hnt` are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] — 2026-05-14
+
+Hotfix for a `cargo audit` CI regression introduced by the audit job
+that landed in 0.4.2. `rustsec/audit-check@v2` treats RustSec
+"informational/unsound" advisories as build failures by default;
+[RUSTSEC-2026-0097](https://rustsec.org/advisories/RUSTSEC-2026-0097)
+flagged a soundness issue in `rand` 0.9.x reachable only via
+`thread_rng` + a custom `log` logger with reseed during trace logging.
+`hnt` doesn't hit that path, but the audit job correctly refused to
+let CI ignore the advisory.
+
+### Fixed
+
+- Bump transitive `rand` 0.9.2 → 0.9.4 via `cargo update -p rand@0.9.2`.
+  0.9.4 is in the patched range (≥0.9.3) of the advisory. No source
+  change.
+
 ## [0.4.2] — 2026-05-14
 
 Repository-hygiene + CI-hardening patch release. A `/github-audit`
@@ -272,6 +289,7 @@ eighteen and adds ~150 new tests along the way.
 Final 0.3.x release. See `git log` for individual commits; the 0.3.x
 series predates this changelog file.
 
+[0.4.3]: https://github.com/thijsvos/hnt/releases/tag/v0.4.3
 [0.4.2]: https://github.com/thijsvos/hnt/releases/tag/v0.4.2
 [0.4.1]: https://github.com/thijsvos/hnt/releases/tag/v0.4.1
 [0.4.0]: https://github.com/thijsvos/hnt/releases/tag/v0.4.0
