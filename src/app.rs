@@ -33,6 +33,12 @@ const MAX_COMMENT_DEPTH: usize = 10;
 /// browse sessions otherwise grow this cache unboundedly (one entry per
 /// distinct visited story URL).
 const PRIOR_RESULTS_CACHE: usize = 200;
+/// Maximum [`AppMessage`]s drained per `process_messages` call.
+/// Caps the per-frame backpressure cost from a comment-thread flood
+/// (`buffer_unordered(20)` × an O(n) `Vec::splice` per `CommentsAppended`)
+/// so the render loop still gets a chance to draw between batches. The
+/// next tick picks up where this one left off.
+const PROCESS_MESSAGES_BUDGET: usize = 32;
 
 /// Which content pane currently has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -482,8 +488,16 @@ impl App {
     /// fire-and-forget race fix — see [`Self::bump_feed_gen`],
     /// [`Self::bump_story_gen`], [`Self::bump_article_gen`] and the
     /// docs on [`AppMessage`].
+    ///
+    /// Caps the drain at [`PROCESS_MESSAGES_BUDGET`] per call so a
+    /// busy comment thread (each `CommentsAppended` is an O(n)
+    /// `Vec::splice`) can't starve the render loop. Remaining
+    /// messages stay in the channel and are picked up on the next
+    /// frame.
     pub fn process_messages(&mut self) {
+        let mut drained = 0usize;
         while let Ok(msg) = self.msg_rx.try_recv() {
+            drained += 1;
             match msg {
                 AppMessage::StoriesLoaded {
                     gen,
@@ -621,6 +635,9 @@ impl App {
                     }
                     self.prior_results.put(story_id, submissions);
                 }
+            }
+            if drained >= PROCESS_MESSAGES_BUDGET {
+                break;
             }
         }
     }
@@ -2072,6 +2089,40 @@ mod tests {
         app.process_messages();
         let r = app.reader_state.as_ref().unwrap();
         assert!(r.error.is_none(), "stale error must not surface");
+    }
+
+    // --- process_messages drain budget (closes #139) ---
+
+    #[test]
+    fn process_messages_caps_drain_at_budget() {
+        // Send 2× the budget of ungated `Error` messages so we exercise
+        // the busy-channel path without depending on any gating. After
+        // one process_messages call, exactly `PROCESS_MESSAGES_BUDGET`
+        // should have been drained; the rest remain queued.
+        let mut app = App::new(80, 24);
+        let total = PROCESS_MESSAGES_BUDGET * 2;
+        for i in 0..total {
+            app.msg_tx
+                .send(AppMessage::Error(format!("err {i}")))
+                .unwrap();
+        }
+        app.process_messages();
+        // The last drained error wins because each Error overwrites
+        // `app.error`. With the budget at 32, that's the message at
+        // index `BUDGET - 1` = 31.
+        assert_eq!(
+            app.error.as_deref(),
+            Some(format!("err {}", PROCESS_MESSAGES_BUDGET - 1).as_str()),
+            "expected exactly BUDGET messages drained on the first call"
+        );
+        // A second call should pick up the remainder; the final error
+        // is now message `total - 1`.
+        app.process_messages();
+        assert_eq!(
+            app.error.as_deref(),
+            Some(format!("err {}", total - 1).as_str()),
+            "second call drains the rest"
+        );
     }
 
     // --- ungated variants pass through ---
