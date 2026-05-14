@@ -457,7 +457,7 @@ impl App {
     ///
     /// Intended to be called once at startup; calling it concurrently will
     /// race two `StoriesLoaded` messages into the channel.
-    pub fn load_initial_feed(&self) {
+    pub fn load_initial_feed(&mut self) {
         self.spawn_load_stories(LoadMode::Replace);
     }
 
@@ -1062,7 +1062,13 @@ impl App {
     /// message carries that gen and is dropped by
     /// [`Self::process_messages`] if the user has since switched feeds
     /// or refreshed.
-    fn spawn_load_stories(&self, mode: LoadMode) {
+    ///
+    /// Sets `story_state.loading = true` before spawning so the story
+    /// list shows a "Loading stories..." placeholder while waiting for
+    /// the first batch — without this, the initial startup window
+    /// showed "No stories loaded" instead.
+    fn spawn_load_stories(&mut self, mode: LoadMode) {
+        self.story_state.loading = true;
         let client = self.client.clone();
         let tx = self.msg_tx.clone();
         let page_size = self.page_size();
@@ -1322,7 +1328,7 @@ impl App {
                 self.spawn_search(query, page, LoadMode::Append);
             }
         } else if self.story_state.needs_more() {
-            self.story_state.loading = true;
+            // spawn_load_stories sets `story_state.loading = true`.
             self.spawn_load_stories(LoadMode::Append);
         }
     }
@@ -2101,6 +2107,24 @@ mod tests {
         assert!(app.feed_gen > f0);
         assert!(app.story_gen > s0);
         assert!(app.article_gen > a0);
+    }
+
+    #[tokio::test]
+    async fn load_initial_feed_sets_loading_flag_before_spawn() {
+        // Without this, the startup window between App::new and the
+        // first StoriesLoaded message shows "No stories loaded"
+        // (the empty-list branch) instead of "Loading stories…"
+        // (which is gated on `loading && stories.is_empty()`).
+        let mut app = App::new(80, 24);
+        assert!(
+            !app.story_state.loading,
+            "fixture: fresh App is not loading"
+        );
+        app.load_initial_feed();
+        assert!(
+            app.story_state.loading,
+            "load_initial_feed must flip loading=true before spawn"
+        );
     }
 
     #[tokio::test]
