@@ -1707,7 +1707,7 @@ impl App {
 
     /// Dispatches the configured hint action against the resolved URL.
     /// Open/OpenInReader go through the same scheme-validating
-    /// [`open_http_url`] used elsewhere; CopyUrl emits OSC 52.
+    /// [`Self::open_url`] used elsewhere; CopyUrl emits OSC 52.
     fn execute_hint_action(&mut self, action: HintAction, url: &str) {
         match action {
             HintAction::Open => self.open_url(url),
