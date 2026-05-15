@@ -85,6 +85,12 @@ docker run -it --rm ghcr.io/thijsvos/hnt:0.4.5
 
 `-it` is required — `hnt` is a TUI, so `crossterm` needs a real terminal.
 
+#### Browser fallback in containers and over SSH
+
+Inside Docker (or any environment where there is no host browser to launch), pressing `o` copies the story URL to your **host clipboard** via OSC 52 instead of attempting to spawn `xdg-open` on the remote machine. Just paste into your local browser. This is automatic in the published image (`/.dockerenv` is detected, and `HNT_NO_BROWSER=1` is set as a belt-and-suspenders).
+
+The same fallback works over SSH — set `HNT_NO_BROWSER=1` in your remote shell's rc to opt in. If you use tmux, set `set -g set-clipboard on` in your tmux config so OSC 52 actually reaches the host clipboard.
+
 ### Build from source
 
 Requires [Rust](https://rustup.rs/) 1.88+.

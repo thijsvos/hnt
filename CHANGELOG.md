@@ -5,6 +5,34 @@ All notable changes to `hnt` are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.6] — 2026-05-15
+
+Makes `o` (open URL in browser) work usefully inside the published
+Docker image and over SSH. Previously, pressing `o` inside the
+container silently dropped — there's no `xdg-open` or browser inside
+`debian:trixie-slim`, and `open::that` swallows the error.
+
+### Added
+
+- **OSC 52 clipboard fallback** for URL-open actions when `hnt` detects
+  it's running without a reachable host browser. When triggered, `o`
+  (and the prior-discussions / reader / hint-mode equivalents) copies
+  the URL to the user's host clipboard via OSC 52 and surfaces a
+  `URL copied: …` status message. Just paste into the local browser.
+  Reuses the existing `src/clipboard.rs` mechanism that already
+  powers the quickjump-hint `y` key — works through SSH and tmux
+  (with `set -g set-clipboard on`).
+- **`HNT_NO_BROWSER` env var** lets SSH users opt in to the same
+  fallback. Set it in your remote shell's rc.
+
+### Changed
+
+- `Dockerfile`: runtime stage now sets `ENV HNT_NO_BROWSER=1` as a
+  belt-and-suspenders alongside `/.dockerenv` auto-detection.
+- `App::open_in_browser` and `App::execute_hint_action(HintAction::Open)`
+  now route through the new `App::open_url` method that picks browser
+  vs. clipboard based on `App::no_browser_env`.
+
 ## [0.4.5] — 2026-05-14
 
 Adds Windows to the release matrix. The release workflow now produces
