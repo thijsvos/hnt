@@ -71,6 +71,20 @@ cargo install --git https://github.com/thijsvos/hnt
 
 The crate isn't on crates.io yet, so the `--git` form is the idiomatic install path.
 
+### Run with Docker
+
+Multi-arch image (linux/amd64 + linux/arm64) published to GitHub Container Registry on every push to `main` and every release tag:
+
+```bash
+# Latest from main
+docker run -it --rm ghcr.io/thijsvos/hnt:latest
+
+# Pin to a specific version
+docker run -it --rm ghcr.io/thijsvos/hnt:0.4.5
+```
+
+`-it` is required — `hnt` is a TUI, so `crossterm` needs a real terminal.
+
 ### Build from source
 
 Requires [Rust](https://rustup.rs/) 1.88+.
