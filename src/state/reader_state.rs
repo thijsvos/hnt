@@ -14,8 +14,14 @@ use ratatui::style::Style;
 
 /// A run of text sharing one ratatui [`Style`]. Multiple fragments compose
 /// one rendered line (see `Vec<Vec<StyledFragment>>`).
+///
+/// Constructors are responsible for passing `text` through
+/// [`sanitize_terminal`] before building a fragment — the rendering
+/// pipeline forwards `text` to ratatui verbatim and assumes the bytes are
+/// already terminal-safe.
 pub struct StyledFragment {
-    /// Visible text content of this fragment (UTF-8).
+    /// Visible text content of this fragment (UTF-8). Must already be
+    /// terminal-safe — see the type-level doc.
     pub text: String,
     /// Ratatui style applied uniformly across `text`.
     pub style: Style,

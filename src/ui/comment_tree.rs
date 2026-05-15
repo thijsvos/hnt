@@ -486,8 +486,11 @@ fn measure_comments(
     result
 }
 
-/// Counts descendants of `all[parent_idx]` in the flat list — the
-/// contiguous run of comments with strictly greater depth that follow it.
+/// Returns the precomputed descendant count for `all[parent_idx]` — the
+/// contiguous run of comments with strictly greater depth that follow it
+/// in pre-order. Callers paint this as the "(N hidden)" annotation on a
+/// collapsed comment, hence the legacy name; the count itself does not
+/// depend on the collapse set.
 ///
 /// O(1): reads the precomputed `descendant_count` field maintained by
 /// [`crate::state::comment_state::CommentTreeState::recompute_descendant_counts`].
@@ -518,6 +521,9 @@ const INDENT_BARS: [&str; 11] = [
     "                    │ ",
 ];
 
+/// Returns the precomputed indent-plus-thread-bar string for `depth`,
+/// clamping at `INDENT_BARS.len() - 1` so deeper subtrees keep the same
+/// indent rather than allocating per-depth. See [`INDENT_BARS`].
 fn indent_bar_for(depth: usize) -> &'static str {
     INDENT_BARS[depth.min(INDENT_BARS.len() - 1)]
 }

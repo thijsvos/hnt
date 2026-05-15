@@ -11,9 +11,13 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 /// [`stories`](Self::stories) / [`comments`](Self::comments) side-by-side,
 /// [`status`](Self::status).
 pub struct AppLayout {
+    /// 1-row top header bar.
     pub header: Rect,
+    /// Left content pane — 35% of the body width.
     pub stories: Rect,
+    /// Right content pane — 65% of the body width.
     pub comments: Rect,
+    /// 1-row bottom status bar.
     pub status: Rect,
 }
 

@@ -23,8 +23,9 @@ pub enum Event {
     /// Terminal resize. New dimensions are cached on `App` via
     /// `App::set_terminal_size`; widgets pick them up on the next draw.
     Resize { width: u16, height: u16 },
-    /// Fixed-rate timer pulse; drives the loading-spinner animation.
-    /// Does not imply user activity.
+    /// Fixed-rate timer pulse routed into [`crate::app::App::tick`];
+    /// drives the loading-spinner animation and expires the
+    /// auto-clearing info toast. Does not imply user activity.
     Tick,
 }
 
@@ -39,6 +40,12 @@ impl EventHandler {
     ///
     /// The task runs until the channel is dropped or the crossterm stream
     /// errors/ends. Ticks fire every `tick_rate`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a Tokio runtime (`tokio::spawn` requires
+    /// one) or if `tick_rate` is zero (`tokio::time::interval` rejects
+    /// zero durations).
     pub fn new(tick_rate: Duration) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
 

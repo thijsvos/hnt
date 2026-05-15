@@ -49,7 +49,10 @@ pub enum CommentFilter {
 /// `depth == 0` is a root-level comment; children have strictly greater
 /// depth and are stored contiguously after their parent in pre-order.
 pub struct FlatComment {
+    /// Decoded HN comment item (or the story body for the root).
     pub item: Item,
+    /// Tree depth — `0` is a root-level comment under the story; children
+    /// have strictly greater depth than their parent.
     pub depth: usize,
     /// Number of descendants — the count of contiguously-following
     /// comments at strictly greater depth. Precomputed by

@@ -29,8 +29,11 @@ struct DiskStore<E> {
 /// count and atomic disk writes. Domain wrappers ([`crate::state::read_store::ReadStore`],
 /// [`crate::state::pin_store::PinStore`]) compose around this.
 pub(crate) struct JsonStore<E: PersistedEntry> {
+    /// Loaded entries keyed by [`StoryId`].
     pub entries: HashMap<StoryId, E>,
+    /// Save target — `None` for in-memory-only stores.
     pub path: Option<PathBuf>,
+    /// Set on every mutating call; cleared by a successful [`Self::save`].
     pub dirty: bool,
     max_entries: usize,
     schema_version: u32,

@@ -56,8 +56,8 @@ pub struct LinkRegistry {
 }
 
 impl LinkRegistry {
-    /// Empty registry. Use [`Self::push`] to add links, then
-    /// [`Self::assign_labels`] to populate the `label` field.
+    /// Constructs an empty registry. Add links via [`Self::push`] then
+    /// call [`Self::assign_labels`] to populate each entry's `label` field.
     pub fn new() -> Self {
         Self::default()
     }
@@ -103,7 +103,10 @@ impl LinkRegistry {
         }
     }
 
-    /// Looks up `prefix` against every link's label. See [`MatchResult`].
+    /// Looks up `prefix` against every link's label and reports whether
+    /// zero, one, or more labels start with it. An empty `prefix` matches
+    /// every label, so on a multi-link registry it returns
+    /// [`MatchResult::Multiple`]. See [`MatchResult`] for the variants.
     #[must_use]
     pub fn match_prefix(&self, prefix: &str) -> MatchResult<'_> {
         let mut iter = self.links.iter().filter(|l| l.label.starts_with(prefix));

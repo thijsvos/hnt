@@ -23,7 +23,8 @@ pub struct PriorDiscussionsState {
     /// Prior HN submissions of `story_id`'s URL, in Algolia default order
     /// (most recent first). May be empty when the URL has no prior submissions.
     pub submissions: Vec<Item>,
-    /// Cursor into `submissions`. Clamps at `submissions.len() - 1`.
+    /// Cursor into `submissions`. Navigation methods saturate at
+    /// `submissions.len() - 1`.
     pub selected: usize,
 }
 
