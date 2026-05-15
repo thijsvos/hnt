@@ -1948,8 +1948,7 @@ async fn run_comment_load(
 /// Resolved once at [`App::new`] and memoised on the `App` so we don't
 /// `stat` the marker per keypress.
 fn detect_no_browser_env() -> bool {
-    std::env::var_os("HNT_NO_BROWSER").is_some()
-        || std::path::Path::new("/.dockerenv").exists()
+    std::env::var_os("HNT_NO_BROWSER").is_some() || std::path::Path::new("/.dockerenv").exists()
 }
 
 #[cfg(test)]
