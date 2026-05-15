@@ -29,8 +29,15 @@ pub struct StatusBar<'a> {
     /// `ui::render`.
     pub position: &'a str,
     /// Last error to surface (sanitised at render time). `None` paints
-    /// the normal keybinding hint line instead.
+    /// the normal keybinding hint line instead (when `info` is also
+    /// `None`). Rendered with the `Error:` prefix and red foreground.
     pub error: Option<&'a str>,
+    /// Transient, non-error status message — auto-expiring toast set via
+    /// [`crate::app::App::set_info`]. Takes precedence over `error` and
+    /// over the keybinding hints; rendered without the `Error:` prefix
+    /// and in the theme's accent style (not red). Same C0/C1 sanitisation
+    /// applies — `URL copied: <url>` carries server-controlled bytes.
+    pub info: Option<&'a str>,
     /// Pane label for the right-aligned `[Stories]` / `[Comments]` tag.
     pub focus_pane: &'static str,
     /// Current input mode — drives the search-input vs normal layout
@@ -76,7 +83,13 @@ impl<'a> Widget for StatusBar<'a> {
             ));
             spans.push(Span::styled(" ", theme::status_style()));
 
-            if let Some(err) = self.error {
+            if let Some(info) = self.info {
+                let safe_info = sanitize_terminal(info);
+                spans.push(Span::styled(
+                    format!("{} ", safe_info),
+                    theme::accent_style().bg(theme::SURFACE),
+                ));
+            } else if let Some(err) = self.error {
                 // Errors can carry server-controlled bytes (URLs from
                 // Location headers, hostnames from DNS errors), so scrub
                 // C0/C1/DEL controls before they reach ratatui — same
@@ -103,7 +116,13 @@ impl<'a> Widget for StatusBar<'a> {
             ));
             spans.push(Span::styled(" ", theme::status_style()));
 
-            if let Some(err) = self.error {
+            if let Some(info) = self.info {
+                let safe_info = sanitize_terminal(info);
+                spans.push(Span::styled(
+                    format!("{} ", safe_info),
+                    theme::accent_style().bg(theme::SURFACE),
+                ));
+            } else if let Some(err) = self.error {
                 // Errors can carry server-controlled bytes (URLs from
                 // Location headers, hostnames from DNS errors), so scrub
                 // C0/C1/DEL controls before they reach ratatui — same
@@ -147,12 +166,17 @@ mod tests {
     use ratatui::layout::Rect;
 
     fn render_bar(err: Option<&str>) -> Buffer {
+        render_bar_with(err, None)
+    }
+
+    fn render_bar_with(err: Option<&str>, info: Option<&str>) -> Buffer {
         let area = Rect::new(0, 0, 120, 1);
         let mut buf = Buffer::empty(area);
         StatusBar {
             feed: FeedKind::Top,
             position: "1/1",
             error: err,
+            info,
             focus_pane: "Stories",
             input_mode: InputMode::Normal,
             search_input: None,
@@ -207,6 +231,7 @@ mod tests {
             feed: FeedKind::Top,
             position: "1/1",
             error: Some("hit\x1b[2Jclear"),
+            info: None,
             focus_pane: "Stories",
             input_mode: InputMode::Normal,
             search_input: None,
@@ -218,5 +243,29 @@ mod tests {
         assert!(!text.contains('\x1b'));
         assert!(text.contains("hit"));
         assert!(text.contains("clear"));
+    }
+
+    #[test]
+    fn info_toast_renders_without_error_prefix() {
+        let buf = render_bar_with(None, Some("URL copied: https://example.com"));
+        let text = buffer_text(&buf);
+        assert!(text.contains("URL copied:"));
+        assert!(text.contains("https://example.com"));
+        assert!(
+            !text.contains("Error:"),
+            "info toast must not be styled/prefixed as an error: {text:?}"
+        );
+    }
+
+    #[test]
+    fn info_toast_takes_precedence_over_error() {
+        let buf = render_bar_with(Some("network down"), Some("URL copied: https://x"));
+        let text = buffer_text(&buf);
+        assert!(text.contains("URL copied:"));
+        assert!(
+            !text.contains("Error:"),
+            "info should preempt error rendering: {text:?}"
+        );
+        assert!(!text.contains("network down"));
     }
 }

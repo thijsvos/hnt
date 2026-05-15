@@ -5,6 +5,31 @@ All notable changes to `hnt` are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.7] — 2026-05-15
+
+Fixes how the "URL copied" message renders after the 0.4.6 OSC 52
+fallback landed. The success message was going through `App::error`,
+which the status bar always prefixes with `Error:` in red — misleading,
+since the copy actually succeeded. It also stuck around forever.
+
+### Fixed
+
+- **`URL copied: …` is no longer styled as an error.** Introduces an
+  auto-expiring info toast (`App::info_toast`) distinct from `App::error`,
+  rendered without the red `Error:` prefix.
+- **Toast auto-clears after 4 seconds** so the normal keybinding hints
+  reappear without the user needing to press anything. Implemented as a
+  TTL check in `App::tick()`, which is now called on every
+  `Event::Tick` (every 250 ms) instead of the previous inline counter
+  bump in `main.rs`.
+
+### Internal
+
+- `StatusBar` widget gains an `info: Option<&str>` field that takes
+  precedence over `error` when set. Mirrors the existing C0/C1
+  sanitisation on the error path so a server-controlled URL can't smuggle
+  escape sequences through the new channel.
+
 ## [0.4.6] — 2026-05-15
 
 Makes `o` (open URL in browser) work usefully inside the published

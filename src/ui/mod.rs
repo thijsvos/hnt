@@ -125,6 +125,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             feed: app.current_feed,
             position: &position,
             error: app.error.as_deref(),
+            info: app.info_toast_message(),
             focus_pane: match app.focus {
                 crate::app::Pane::Stories => "Stories",
                 crate::app::Pane::Comments => "Comments",

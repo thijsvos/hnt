@@ -51,6 +51,13 @@ const PRIOR_RESULTS_CACHE: usize = 200;
 /// next tick picks up where this one left off.
 const PROCESS_MESSAGES_BUDGET: usize = 32;
 
+/// Lifetime of an info toast set via [`App::set_info`]. After this many
+/// seconds, [`App::tick`] clears the toast and the status bar reverts to
+/// its normal keybinding hints. 4 s is long enough to read a 60-80 char
+/// URL aloud and copy it, but short enough that it isn't perceived as a
+/// modal change to the bar.
+const INFO_TOAST_TTL: std::time::Duration = std::time::Duration::from_secs(4);
+
 /// Which content pane currently has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
@@ -307,6 +314,14 @@ pub struct App {
     /// see [`detect_no_browser_env`].
     no_browser_env: bool,
 
+    /// Transient, non-error status-bar message with auto-expiry — distinct
+    /// from [`Self::error`] so the rendered text isn't prefixed with
+    /// `Error:` and styled red. Stored as `(message, expires_at)`; the
+    /// status bar renders the message when `Instant::now() < expires_at`,
+    /// and [`Self::tick`] clears the entry once it's past its deadline so
+    /// the normal keybinding hints reappear. Set via [`Self::set_info`].
+    info_toast: Option<(String, std::time::Instant)>,
+
     client: HnClient,
     msg_tx: mpsc::UnboundedSender<AppMessage>,
     msg_rx: mpsc::UnboundedReceiver<AppMessage>,
@@ -350,6 +365,7 @@ impl App {
             story_gen: 0,
             article_gen: 0,
             no_browser_env: detect_no_browser_env(),
+            info_toast: None,
             client: HnClient::new(),
             msg_tx,
             msg_rx,
@@ -398,6 +414,43 @@ impl App {
     pub fn set_terminal_size(&mut self, w: u16, h: u16) {
         self.terminal_width = w;
         self.terminal_height = h;
+    }
+
+    /// Sets the auto-expiring info toast and returns the previous one (if
+    /// any). Distinct from [`Self::error`] so the status bar can pick a
+    /// non-red style and skip the `Error:` prefix. Lives `INFO_TOAST_TTL`
+    /// from now; [`Self::tick`] clears it once it's expired so the normal
+    /// keybinding hints reappear without the user pressing anything.
+    pub fn set_info(&mut self, message: String) {
+        let expires = std::time::Instant::now() + INFO_TOAST_TTL;
+        self.info_toast = Some((message, expires));
+    }
+
+    /// Currently visible info-toast text, or `None` if no toast is set or
+    /// the active toast has already expired. Called per-frame by the UI
+    /// layer — cheap because it's a single `Instant::now()` plus pointer
+    /// dereference. The expired-but-not-yet-cleared case is handled
+    /// transparently here so a frame rendered between two ticks doesn't
+    /// show a stale toast.
+    pub fn info_toast_message(&self) -> Option<&str> {
+        self.info_toast
+            .as_ref()
+            .filter(|(_, expires)| std::time::Instant::now() < *expires)
+            .map(|(msg, _)| msg.as_str())
+    }
+
+    /// Per-tick housekeeping: bumps the spinner counter and clears the
+    /// info toast once its deadline has passed. Called from the main loop
+    /// on every [`crate::event::Event::Tick`] (every 250 ms — see
+    /// [`crate::event::EventHandler`]). Replaces the inline tick-count
+    /// bump that used to live in `main.rs`.
+    pub fn tick(&mut self) {
+        self.tick_count = self.tick_count.wrapping_add(1);
+        if let Some((_, expires)) = &self.info_toast {
+            if std::time::Instant::now() >= *expires {
+                self.info_toast = None;
+            }
+        }
     }
 
     /// Flushes any in-memory persistent state (read-store, pin-store) to
@@ -1491,7 +1544,11 @@ impl App {
         if self.no_browser_env {
             match clipboard::copy(parsed.as_str()) {
                 Ok(()) => {
-                    self.error = Some(format!("URL copied: {}", parsed.as_str()));
+                    // Success is not an error — set the auto-expiring info
+                    // toast so the status bar renders without the red
+                    // `Error:` prefix and reverts to keybinding hints
+                    // after `INFO_TOAST_TTL` elapses.
+                    self.set_info(format!("URL copied: {}", parsed.as_str()));
                 }
                 Err(e) => {
                     self.error = Some(format!("Clipboard write failed: {}", e));
@@ -2606,12 +2663,39 @@ mod tests {
         let mut app = App::new(80, 24);
         app.no_browser_env = true;
         app.error = None;
+        app.info_toast = None;
         app.open_url("https://example.com/story");
-        let msg = app.error.as_deref().unwrap_or("");
+        let msg = app.info_toast_message().unwrap_or("");
         assert!(
             msg.starts_with("URL copied: ") && msg.ends_with("https://example.com/story"),
-            "expected `URL copied: …` status, got {:?}",
+            "expected `URL copied: …` info toast, got {:?}",
             msg
+        );
+        assert!(
+            app.error.is_none(),
+            "success path must not set the error channel; got {:?}",
+            app.error
+        );
+    }
+
+    #[test]
+    fn info_toast_expires_after_ttl() {
+        let mut app = App::new(80, 24);
+        app.set_info("hello".to_string());
+        assert_eq!(app.info_toast_message(), Some("hello"));
+        // Manually expire by rewriting the expiry to the past.
+        if let Some((_, expires)) = app.info_toast.as_mut() {
+            *expires = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        }
+        assert_eq!(
+            app.info_toast_message(),
+            None,
+            "expired toast must not be returned"
+        );
+        app.tick();
+        assert!(
+            app.info_toast.is_none(),
+            "tick() must drop the expired toast"
         );
     }
 
