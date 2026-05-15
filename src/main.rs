@@ -21,6 +21,23 @@ use event::{Event, EventHandler};
 use keys::{Action, InputMode};
 use std::time::Duration;
 
+/// Process entry point — installs the panic hook, brings up the terminal,
+/// constructs the [`App`] and [`EventHandler`], and drives the main loop
+/// until `app.running` is cleared, then persists session state and
+/// restores the terminal.
+///
+/// Each loop iteration drains async results from background tasks via
+/// `App::process_messages`, renders one frame, then `.await`s the next
+/// [`Event`]. Key handling fans out by [`InputMode`]: `SearchInput` and
+/// `HintMode` consume characters directly on [`App`]; `Normal` routes
+/// through [`keys::map_key`] into an [`Action`] dispatched on [`App`].
+/// Mouse, resize, and tick events go to their matching `App` handlers.
+///
+/// # Errors
+///
+/// Propagates the first error from [`tui::init`], `terminal.size`,
+/// `terminal.draw`, [`EventHandler::next`], or [`tui::restore`]. Any of
+/// these aborts the loop and the process exits non-zero.
 #[tokio::main]
 async fn main() -> Result<()> {
     tui::install_panic_hook();
