@@ -11,9 +11,14 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs
 RUN cargo build --release 2>/dev/null || true
 RUN rm -rf src
 
-# Copy source and build
+# Copy source and build. The `touch` is load-bearing: Docker COPY may set
+# source mtimes older than the cached stub-binary artifact from the layer
+# above, in which case cargo's fingerprint check decides "nothing changed"
+# and skips the application rebuild, leaving the stub `fn main() {}` binary
+# in target/release/hnt. Touching every .rs file forces cargo to invalidate
+# the application crate while preserving the warmed dependency cache.
 COPY src/ src/
-RUN cargo build --release
+RUN find src -name '*.rs' -exec touch {} + && cargo build --release
 
 # Stage 2: Runtime
 FROM debian:trixie-slim AS runtime
