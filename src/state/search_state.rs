@@ -12,14 +12,16 @@
 #[derive(Default)]
 pub struct SearchState {
     /// Committed search query — what pagination spawns send to Algolia.
-    /// Empty until `App::submit_search` copies from `input`.
+    /// Empty until [`crate::app::App::submit_search`] copies from `input`.
     pub query: String,
     /// In-progress typed input buffer. Driven by
-    /// `App::search_input_char` / `_backspace` while
+    /// [`crate::app::App::search_input_char`] /
+    /// [`crate::app::App::search_input_backspace`] while
     /// [`crate::keys::InputMode::SearchInput`] is active.
     pub input: String,
     /// Last-fetched Algolia page index (0-based). Bumped by
-    /// `App::check_lazy_load` when the user nears the loaded tail.
+    /// `App::check_lazy_load` when the user nears the loaded tail
+    /// (private method).
     pub current_page: usize,
     /// Total pages reported by the most recent Algolia response —
     /// drives the lazy-pagination cap.

@@ -130,12 +130,17 @@ pub enum AppMessage {
     /// pointer travels straight into the story list with no deep clone
     /// at the boundary (closes #140 on the story side).
     StoriesLoaded {
+        /// `App::feed_gen` snapshot captured at spawn — see the
+        /// enum-level note on race-gating.
         gen: u64,
+        /// Story batch — either the initial page or a paginated tail.
         stories: Vec<Arc<Item>>,
         /// Only populated on initial load; subsequent paginated loads
         /// reuse the cached ID list to avoid drift when the feed changes
         /// mid-session.
         all_ids: Option<Vec<u64>>,
+        /// Whether this batch replaces the current window
+        /// ([`LoadMode::Replace`]) or appends to it ([`LoadMode::Append`]).
         mode: LoadMode,
     },
     /// Root-level comments for a story are available; deeper descendants
@@ -145,27 +150,50 @@ pub enum AppMessage {
     /// stays small and `clippy::large_enum_variant` is happy). Gated
     /// by [`App::story_gen`].
     CommentsLoaded {
+        /// `App::story_gen` snapshot captured at spawn — see the
+        /// enum-level note on race-gating.
         gen: u64,
+        /// Story whose comment tree is being loaded, ready to install
+        /// into `comment_state.story`.
         story: Arc<Item>,
+        /// Root-level comments resolved so far (may include partial
+        /// subtrees for roots that fetched fully on the first pass).
         comments: Vec<CommentWithDepth>,
+        /// Root comment IDs still awaiting their descendants — each will
+        /// arrive later as a [`Self::CommentsAppended`].
         pending_roots: HashSet<CommentId>,
     },
     /// Progressive update — append more child comments into the tree.
     /// Gated by [`App::story_gen`].
     CommentsAppended {
+        /// `App::story_gen` snapshot captured at spawn — see the
+        /// enum-level note on race-gating.
         gen: u64,
+        /// Root comment ID these children belong under — used to splice
+        /// them into the flat tree.
         parent_id: CommentId,
+        /// Descendant comments to insert under `parent_id` in pre-order.
         children: Vec<CommentWithDepth>,
     },
     /// All outstanding comment fetches finished; clear any "loading"
     /// spinners. Gated by [`App::story_gen`].
-    CommentsDone { gen: u64 },
+    CommentsDone {
+        /// `App::story_gen` snapshot captured at spawn — see the
+        /// enum-level note on race-gating.
+        gen: u64,
+    },
     /// Article reader content extracted and ready to render. `links`
     /// carries every hyperlink in the body (with assigned hint labels)
     /// for Quickjump. Gated by [`App::article_gen`].
     ArticleLoaded {
+        /// `App::article_gen` snapshot captured at spawn — see the
+        /// enum-level note on race-gating.
         gen: u64,
+        /// Pre-rendered styled lines, ready to install in
+        /// `reader_state.lines`.
         lines: Vec<Vec<StyledFragment>>,
+        /// Every hyperlink in `lines`, with assigned Quickjump hint
+        /// labels.
         links: LinkRegistry,
     },
     /// Algolia search returned a page of results. Gated by
@@ -174,15 +202,31 @@ pub enum AppMessage {
     /// constructed locally (the `Arc` is fresh in this path; the
     /// downstream `StoryListState` doesn't care).
     SearchResultsLoaded {
+        /// `App::feed_gen` snapshot captured at spawn — see the
+        /// enum-level note on race-gating.
         gen: u64,
+        /// Result batch for this page.
         stories: Vec<Arc<Item>>,
+        /// Total number of pages reported by Algolia — drives the
+        /// lazy-pagination cap in [`SearchState`].
         total_pages: usize,
+        /// Total hit count reported by Algolia — surfaced in the status
+        /// bar.
         total_hits: usize,
+        /// Whether this batch replaces the current window
+        /// ([`LoadMode::Replace`]) or appends to it ([`LoadMode::Append`]).
         mode: LoadMode,
     },
     /// Article fetch/extract failed; surface in the reader overlay.
     /// Gated by [`App::article_gen`].
-    ArticleError { gen: u64, msg: String },
+    ArticleError {
+        /// `App::article_gen` snapshot captured at spawn — see the
+        /// enum-level note on race-gating.
+        gen: u64,
+        /// Human-readable error description, rendered inside the reader
+        /// overlay.
+        msg: String,
+    },
     /// Generic error to surface in the status bar. Ungated — late
     /// errors from stale spawns are mildly confusing but never
     /// dangerous, and the wider blast radius of dropping them is worse
@@ -192,7 +236,11 @@ pub enum AppMessage {
     /// by Algolia. `story_id` identifies the originating query so stale
     /// results (user has since deselected the story) can be dropped.
     PriorDiscussionsLoaded {
+        /// Story whose URL was queried — checked against the currently
+        /// selected story so stale results are dropped.
         story_id: StoryId,
+        /// Prior HN submissions of `story_id`'s URL, in Algolia default
+        /// order (most recent first).
         submissions: Vec<Item>,
     },
 }
@@ -232,7 +280,10 @@ pub struct App {
     /// Whether the help overlay (`?`) is open.
     pub show_help: bool,
     /// Last user-facing error from a feed/search/comment spawn. Rendered
-    /// by [`crate::ui::status_bar`]; sanitised at the render boundary.
+    /// by [`crate::ui::status_bar`] with a red `Error:` prefix; sanitised
+    /// at the render boundary. Non-error transient messages
+    /// (e.g. `URL copied: …`) go through [`Self::set_info`] instead so
+    /// they don't paint red.
     pub error: Option<String>,
     /// Cached terminal height in rows. Updated on `Event::Resize`.
     pub terminal_height: u16,
@@ -240,6 +291,8 @@ pub struct App {
     pub terminal_width: u16,
     /// Monotonic frame counter used by [`crate::ui::spinner::frame`];
     /// wraps on overflow (so the spinner sequence is u64-cyclic).
+    /// Advanced once per tick by [`Self::tick`], which also expires the
+    /// info toast when its deadline has passed.
     pub tick_count: u64,
 
     /// Prior-discussions overlay state. `Some` while the overlay is open;
@@ -288,6 +341,9 @@ pub struct App {
     /// and torn down by [`Action::ExitHintMode`] or a unique-match dispatch.
     pub hint_state: Option<HintState>,
 
+    /// Most-recent click on a comment row — `(when, visible_index)`.
+    /// Drives the 400 ms double-click-to-collapse heuristic in
+    /// [`Self::handle_click`].
     last_comment_click: Option<(std::time::Instant, usize)>,
 
     /// Monotonic generation counter for feed/search loads. Bumped on
@@ -416,8 +472,8 @@ impl App {
         self.terminal_height = h;
     }
 
-    /// Sets the auto-expiring info toast and returns the previous one (if
-    /// any). Distinct from [`Self::error`] so the status bar can pick a
+    /// Sets the auto-expiring info toast, replacing any previous one.
+    /// Distinct from [`Self::error`] so the status bar can pick a
     /// non-red style and skip the `Error:` prefix. Lives `INFO_TOAST_TTL`
     /// from now; [`Self::tick`] clears it once it's expired so the normal
     /// keybinding hints reappear without the user pressing anything.
@@ -1525,10 +1581,11 @@ impl App {
 
     /// http(s)-only URL opener with auto-fallback to OSC 52 clipboard
     /// when [`Self::no_browser_env`] is true (Docker container, SSH, or
-    /// `HNT_NO_BROWSER` explicitly set). On the clipboard path, a
-    /// transient status message is surfaced through [`Self::error`]
-    /// — same channel and pattern as the quickjump-hint `y` key
-    /// ([`Self::execute_hint_action`]). On a real desktop the call
+    /// `HNT_NO_BROWSER` explicitly set). On the clipboard success path
+    /// the `URL copied: <url>` message is surfaced through the
+    /// auto-expiring info toast ([`Self::set_info`]) so it doesn't paint
+    /// red with the `Error:` prefix; an OSC 52 write failure still
+    /// falls through to [`Self::error`]. On a real desktop the call
     /// flows through [`open::that`] as before. Silently drops `None`,
     /// parse failures, and non-http(s) schemes so `file://`,
     /// `javascript:`, and `data:` URIs can never reach the underlying
@@ -1872,6 +1929,9 @@ struct PriorInFlightGuard {
 }
 
 impl Drop for PriorInFlightGuard {
+    /// Removes the in-flight entry on drop, including via panic
+    /// propagation. Tolerates a poisoned mutex by taking the inner guard
+    /// rather than panicking again.
     fn drop(&mut self) {
         // Recover from a poisoned mutex — same rationale as the
         // `HnClient::cache` guard: a transient task panic shouldn't

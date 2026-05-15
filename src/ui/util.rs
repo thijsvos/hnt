@@ -1,4 +1,9 @@
 //! Small UI helpers shared across widgets.
+//!
+//! Currently a single home for [`truncate_to`], used by the story list,
+//! prior-discussions overlay, and article reader so multi-byte titles
+//! truncate at a `char` boundary (appending `...`) rather than at a byte
+//! boundary that would panic when slicing into a `Span`.
 
 /// Truncates `s` to at most `max` characters (operating on `char`s to
 /// stay UTF-8-safe), appending `...` when truncation occurs. Returns

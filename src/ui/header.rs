@@ -1,4 +1,9 @@
 //! Top header bar: app brand, feed tabs, and search-mode indicator.
+//!
+//! Renders one row spanning the terminal width; tab order mirrors
+//! [`crate::api::types::FeedKind::ALL`] so the `1`-`7` keymap stays
+//! consistent with what the user sees. A `search_active` flag suppresses
+//! the feed-tab highlight in favour of a "Search" chip.
 
 use crate::api::types::FeedKind;
 use crate::ui::theme;

@@ -31,7 +31,7 @@ pub struct StoryListState {
     pub stories: Vec<Arc<Item>>,
     /// Pre-computed `story.domain()` for each story at the same index.
     /// Avoids the per-frame `url::Url::parse` that
-    /// [`StoryList`](crate::ui::story_list::StoryList) used to do.
+    /// [`crate::ui::story_list::StoryList`] used to do.
     pub domains: Vec<Option<String>>,
     /// Full ID list from the initial feed fetch — used as a stable
     /// pagination index so a feed that gains stories mid-session
@@ -108,6 +108,8 @@ impl StoryListState {
         self.selected = self.selected.saturating_sub(page_size);
     }
 
+    /// Returns the currently-highlighted story, if any. `None` when
+    /// `stories` is empty.
     #[must_use]
     pub fn selected_story(&self) -> Option<&Arc<Item>> {
         self.stories.get(self.selected)

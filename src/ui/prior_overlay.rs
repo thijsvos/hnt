@@ -103,6 +103,9 @@ pub fn render_prior_overlay(frame: &mut Frame, area: Rect, state: &PriorDiscussi
 }
 
 /// Formats one submission as two styled lines (main + byline).
+/// Title and author are scrubbed through
+/// [`crate::sanitize::sanitize_terminal`] before they reach a `Span` so an
+/// HN-supplied string can't smuggle ANSI escapes through ratatui.
 fn format_submission(item: &Item, selected: bool, width: usize) -> [Line<'static>; 2] {
     let points = item.score.unwrap_or(0);
     let comments = item.descendants.unwrap_or(0);

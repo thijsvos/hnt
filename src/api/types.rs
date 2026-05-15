@@ -70,14 +70,15 @@ pub struct Item {
 }
 
 impl Item {
-    /// Whether this item was removed by moderators or its author — either
-    /// flag suppresses rendering.
+    /// Returns `true` when the item was killed by moderators or removed
+    /// by its author. Either flag suppresses rendering.
     pub fn is_dead_or_deleted(&self) -> bool {
         self.dead.unwrap_or(false) || self.deleted.unwrap_or(false)
     }
 
-    /// Host component of `url` (with a leading `www.` stripped), or `None`
-    /// for HN-native posts and non-http(s) schemes.
+    /// Returns the host component of `url` (with a leading `www.`
+    /// stripped), or `None` for HN-native posts and items whose URL was
+    /// rejected by the http(s) deserializer.
     pub fn domain(&self) -> Option<String> {
         self.url.as_ref().and_then(|u| url_domain(u))
     }
@@ -115,21 +116,31 @@ impl Item {
 /// and appear contiguously after their parent in pre-order.
 #[derive(Debug, Clone)]
 pub struct CommentWithDepth {
+    /// Decoded HN comment item; always [`ItemType::Comment`] by
+    /// construction.
     pub item: Item,
+    /// Tree depth — `0` is a root comment under the story; children
+    /// have strictly greater depth than their parent.
     pub depth: usize,
 }
 
 /// Newtype wrapper for a story's HN item ID. Distinct from [`CommentId`]
 /// at the type level so story-keyed maps (`prior_results`, `read_store`
 /// entries, in-flight query tracking) can't accidentally hold comment
-/// IDs, or vice versa. `Item::id` stays as `u64` for serde simplicity —
+/// IDs, or vice versa. [`Item::id`] stays as `u64` for serde simplicity —
 /// the newtypes apply where different ID kinds share scope.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct StoryId(pub u64);
+pub struct StoryId(
+    /// Raw HN item ID — same numeric space as [`Item::id`].
+    pub u64,
+);
 
 /// Newtype wrapper for a comment's HN item ID. See [`StoryId`].
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CommentId(pub u64);
+pub struct CommentId(
+    /// Raw HN item ID — same numeric space as [`Item::id`].
+    pub u64,
+);
 
 /// Firebase `type` field — tags an [`Item`] as story / comment / job /
 /// poll / poll option. Unknown future strings deserialize to
