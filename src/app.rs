@@ -299,6 +299,14 @@ pub struct App {
     /// [`AppMessage::ArticleLoaded`] and [`AppMessage::ArticleError`].
     article_gen: u64,
 
+    /// `true` when no system browser is reachable (Docker container, SSH
+    /// session, or any environment where `xdg-open`/`open` would silently
+    /// fail). [`App::open_url`] falls back to copying the URL to the
+    /// user's clipboard via OSC 52 instead of invoking the `open` crate.
+    /// Resolved once at startup from `HNT_NO_BROWSER` or `/.dockerenv`;
+    /// see [`detect_no_browser_env`].
+    no_browser_env: bool,
+
     client: HnClient,
     msg_tx: mpsc::UnboundedSender<AppMessage>,
     msg_rx: mpsc::UnboundedReceiver<AppMessage>,
@@ -341,6 +349,7 @@ impl App {
             feed_gen: 0,
             story_gen: 0,
             article_gen: 0,
+            no_browser_env: detect_no_browser_env(),
             client: HnClient::new(),
             msg_tx,
             msg_rx,
@@ -746,18 +755,41 @@ impl App {
             self.bump_article_gen();
             return;
         }
-        let Some(r) = self.reader_state.as_mut() else {
-            return;
+        let pending_open_url = {
+            let Some(r) = self.reader_state.as_mut() else {
+                return;
+            };
+            match action {
+                Action::MoveDown => {
+                    r.scroll_down(1);
+                    None
+                }
+                Action::MoveUp => {
+                    r.scroll_up(1);
+                    None
+                }
+                Action::PageDown => {
+                    r.page_down(SCROLL_PAGE);
+                    None
+                }
+                Action::PageUp => {
+                    r.page_up(SCROLL_PAGE);
+                    None
+                }
+                Action::JumpTop => {
+                    r.jump_top();
+                    None
+                }
+                Action::JumpBottom => {
+                    r.jump_bottom();
+                    None
+                }
+                Action::OpenInBrowser => r.url.clone(),
+                _ => None,
+            }
         };
-        match action {
-            Action::MoveDown => r.scroll_down(1),
-            Action::MoveUp => r.scroll_up(1),
-            Action::PageDown => r.page_down(SCROLL_PAGE),
-            Action::PageUp => r.page_up(SCROLL_PAGE),
-            Action::JumpTop => r.jump_top(),
-            Action::JumpBottom => r.jump_bottom(),
-            Action::OpenInBrowser => open_http_url(r.url.as_deref()),
-            _ => {}
+        if let Some(u) = pending_open_url {
+            self.open_url(&u);
         }
     }
 
@@ -776,26 +808,41 @@ impl App {
             self.open_selected_prior_discussion();
             return;
         }
-        let Some(p) = self.prior_state.as_mut() else {
-            return;
-        };
-        match action {
-            Action::MoveDown => p.select_next(),
-            Action::MoveUp => p.select_prev(),
-            Action::JumpTop => p.jump_top(),
-            Action::JumpBottom => p.jump_bottom(),
-            Action::OpenInBrowser => {
-                // Prior submissions all share the parent's article URL by
-                // construction (search_by_url filters to same-URL matches),
-                // so opening `item.url` would always re-open the parent's
-                // target. The user-meaningful "open the prior post" is its
-                // own HN discussion page, which is unique per submission.
-                if let Some(item) = p.selected_submission() {
-                    let hn_url = format!("https://news.ycombinator.com/item?id={}", item.id);
-                    open_http_url(Some(hn_url.as_str()));
+        let pending_open_url = {
+            let Some(p) = self.prior_state.as_mut() else {
+                return;
+            };
+            match action {
+                Action::MoveDown => {
+                    p.select_next();
+                    None
                 }
+                Action::MoveUp => {
+                    p.select_prev();
+                    None
+                }
+                Action::JumpTop => {
+                    p.jump_top();
+                    None
+                }
+                Action::JumpBottom => {
+                    p.jump_bottom();
+                    None
+                }
+                Action::OpenInBrowser => {
+                    // Prior submissions all share the parent's article URL by
+                    // construction (search_by_url filters to same-URL matches),
+                    // so opening `item.url` would always re-open the parent's
+                    // target. The user-meaningful "open the prior post" is its
+                    // own HN discussion page, which is unique per submission.
+                    p.selected_submission()
+                        .map(|item| format!("https://news.ycombinator.com/item?id={}", item.id))
+                }
+                _ => None,
             }
-            _ => {}
+        };
+        if let Some(u) = pending_open_url {
+            self.open_url(&u);
         }
     }
 
@@ -1396,7 +1443,7 @@ impl App {
     /// the HN item page for stories without a usable http(s) URL —
     /// text-only Ask/Show HN posts plus any story whose URL was rejected
     /// at deserialization. Only http(s) URLs are opened.
-    fn open_in_browser(&self) {
+    fn open_in_browser(&mut self) {
         let url = match self.focus {
             Pane::Stories => self
                 .story_state
@@ -1418,7 +1465,42 @@ impl App {
             id.map(|id| format!("https://news.ycombinator.com/item?id={}", id))
         });
 
-        open_http_url(url.as_deref());
+        if let Some(u) = url {
+            self.open_url(&u);
+        }
+    }
+
+    /// http(s)-only URL opener with auto-fallback to OSC 52 clipboard
+    /// when [`Self::no_browser_env`] is true (Docker container, SSH, or
+    /// `HNT_NO_BROWSER` explicitly set). On the clipboard path, a
+    /// transient status message is surfaced through [`Self::error`]
+    /// — same channel and pattern as the quickjump-hint `y` key
+    /// ([`Self::execute_hint_action`]). On a real desktop the call
+    /// flows through [`open::that`] as before. Silently drops `None`,
+    /// parse failures, and non-http(s) schemes so `file://`,
+    /// `javascript:`, and `data:` URIs can never reach the underlying
+    /// opener.
+    fn open_url(&mut self, url: &str) {
+        let Ok(parsed) = url::Url::parse(url) else {
+            return;
+        };
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return;
+        }
+
+        if self.no_browser_env {
+            match clipboard::copy(parsed.as_str()) {
+                Ok(()) => {
+                    self.error = Some(format!("URL copied: {}", parsed.as_str()));
+                }
+                Err(e) => {
+                    self.error = Some(format!("Clipboard write failed: {}", e));
+                }
+            }
+            return;
+        }
+
+        let _ = open::that(parsed.as_str());
     }
 
     /// If the selection has crossed the lazy-load threshold, kicks off
@@ -1628,7 +1710,7 @@ impl App {
     /// [`open_http_url`] used elsewhere; CopyUrl emits OSC 52.
     fn execute_hint_action(&mut self, action: HintAction, url: &str) {
         match action {
-            HintAction::Open => open_http_url(Some(url)),
+            HintAction::Open => self.open_url(url),
             HintAction::OpenInReader => self.open_url_in_reader(url),
             HintAction::CopyUrl => {
                 if let Err(e) = clipboard::copy(url) {
@@ -1854,19 +1936,20 @@ async fn run_comment_load(
     let _ = tx.send(AppMessage::CommentsDone { gen });
 }
 
-/// Opens `url` in the system browser — but only when it parses as an
-/// `http`/`https` URL. Silently drops `None`, parse failures, and other
-/// schemes (so `file://`, `javascript:`, and `data:` can never reach
-/// `open::that`). All three overlay-dispatch sites and
-/// [`App::open_in_browser`] share this entry point.
-fn open_http_url(url: Option<&str>) {
-    let Some(raw) = url else { return };
-    let Ok(parsed) = url::Url::parse(raw) else {
-        return;
-    };
-    if matches!(parsed.scheme(), "http" | "https") {
-        let _ = open::that(parsed.as_str());
-    }
+/// Returns `true` when the user has no reachable host browser, in which
+/// case [`App::open_url`] copies URLs to the OSC 52 clipboard instead of
+/// invoking the `open` crate. True when:
+///
+/// - `HNT_NO_BROWSER` environment variable is set (explicit opt-in;
+///   intended for SSH users who set it in their remote shell's rc), OR
+/// - `/.dockerenv` exists (the standard Docker marker — auto-detect for
+///   `docker run` users).
+///
+/// Resolved once at [`App::new`] and memoised on the `App` so we don't
+/// `stat` the marker per keypress.
+fn detect_no_browser_env() -> bool {
+    std::env::var_os("HNT_NO_BROWSER").is_some()
+        || std::path::Path::new("/.dockerenv").exists()
 }
 
 #[cfg(test)]
@@ -2499,5 +2582,62 @@ mod tests {
             Err(p) => p.into_inner(),
         };
         assert!(!g.contains(&sid));
+    }
+
+    // --- no_browser_env detection + App::open_url routing ---
+
+    #[test]
+    fn detect_no_browser_env_respects_env_var() {
+        // SAFETY: tests run single-threaded by default for env-var mutation
+        // patterns like this in cargo. The env::set_var contract requires
+        // unsafe in newer toolchains; the project's edition wraps it in
+        // a safe API on stable. Use a scoped guard to avoid leaking state
+        // into adjacent tests.
+        let prev = std::env::var_os("HNT_NO_BROWSER");
+        std::env::set_var("HNT_NO_BROWSER", "1");
+        assert!(detect_no_browser_env());
+        match prev {
+            Some(v) => std::env::set_var("HNT_NO_BROWSER", v),
+            None => std::env::remove_var("HNT_NO_BROWSER"),
+        }
+    }
+
+    #[test]
+    fn open_url_copies_to_clipboard_when_no_browser_env() {
+        let mut app = App::new(80, 24);
+        app.no_browser_env = true;
+        app.error = None;
+        app.open_url("https://example.com/story");
+        let msg = app.error.as_deref().unwrap_or("");
+        assert!(
+            msg.starts_with("URL copied: ") && msg.ends_with("https://example.com/story"),
+            "expected `URL copied: …` status, got {:?}",
+            msg
+        );
+    }
+
+    #[test]
+    fn open_url_drops_non_http_schemes_in_no_browser_env() {
+        let mut app = App::new(80, 24);
+        app.no_browser_env = true;
+        app.error = None;
+        app.open_url("javascript:alert(1)");
+        app.open_url("file:///etc/passwd");
+        app.open_url("data:text/html,<script>alert(1)</script>");
+        assert!(
+            app.error.is_none(),
+            "non-http(s) schemes must not reach the clipboard path, got {:?}",
+            app.error
+        );
+    }
+
+    #[test]
+    fn open_url_drops_invalid_url_strings() {
+        let mut app = App::new(80, 24);
+        app.no_browser_env = true;
+        app.error = None;
+        app.open_url("not a url at all");
+        app.open_url("");
+        assert!(app.error.is_none());
     }
 }
