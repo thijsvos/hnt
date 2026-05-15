@@ -106,7 +106,7 @@ async fn main() -> Result<()> {
                 app.set_terminal_size(width, height);
             }
             Event::Tick => {
-                app.tick_count = app.tick_count.wrapping_add(1);
+                app.tick();
             }
         }
     }
