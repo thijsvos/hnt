@@ -77,8 +77,8 @@ pub enum Action {
     /// Enter search-input mode with an empty query buffer.
     EnterSearch,
     /// Cycle the comment-pane "what's new" filter: All → New since last
-    /// visit → Recent 24h → All. Falls through to All when the story has
-    /// never been visited (no `last_seen_at` to anchor `NewSince` to).
+    /// visit → Recent 24h → All. Stories never visited skip `NewSince`
+    /// (no `last_seen_at` to anchor it to) and cycle All → Recent 24h → All.
     CycleCommentFilter,
     /// Toggle the pinned state of the focused story (pin if not pinned,
     /// unpin if pinned). Pinned stories surface in the

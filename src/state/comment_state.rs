@@ -133,8 +133,10 @@ pub struct CommentTreeState {
     /// "What's new" filter — composes with collapse to narrow the visible
     /// set. Reset to [`CommentFilter::All`] on every [`Self::set_comments`].
     pub filter: CommentFilter,
-    /// Cached plain-text rendering of the current story's text (id, width, text).
-    /// Invalidated automatically when story id or width changes.
+    /// Cached plain-text rendering of the current story's text, keyed by
+    /// `(story_id, width)`; the third tuple slot holds the rendered text.
+    /// Cleared lazily on key mismatch inside [`Self::story_plain_text`]
+    /// itself — `reset()` does not clear it explicitly.
     story_text_cache: Option<(u64, usize, String)>,
     /// Memoised output of [`Self::filter_visible_set`], keyed by the
     /// pair `(filter, comments.len())`. Cleared lazily on key mismatch
@@ -260,6 +262,11 @@ impl CommentTreeState {
         computed
     }
 
+    /// Inner O(n) builder for [`Self::filter_visible_set`] (the cached
+    /// caller). Returns `None` for [`CommentFilter::All`] so the cache layer
+    /// can short-circuit, otherwise walks the pre-order tree maintaining a
+    /// path-stack of ancestor indices and unions every passing comment's
+    /// path into `keep`.
     fn compute_filter_visible_set(&self) -> Option<HashSet<usize>> {
         let threshold = match self.filter {
             CommentFilter::All => return None,
