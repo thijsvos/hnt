@@ -20,9 +20,9 @@ pub struct LinkRef {
     pub url: String,
     /// Line index within the rendered `Vec<Vec<StyledFragment>>`.
     pub line: usize,
-    /// Fragment index within that line; the label paints at this fragment's
-    /// first column. Kept for diagnostics — see `col` for the value the
-    /// renderer actually consumes.
+    /// Fragment index within that line. Kept for diagnostics — the renderer
+    /// paints labels at `col` (the visible-column offset captured at
+    /// registry-build time), not at this fragment's position.
     pub fragment: usize,
     /// Visible-column offset of the link's first character, computed
     /// once when the registry is built. Used by the hint-overlay paint

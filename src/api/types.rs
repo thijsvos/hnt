@@ -295,6 +295,17 @@ pub fn validate_http_url(raw: &str) -> Option<String> {
     Some(raw.to_string())
 }
 
+/// Serde adaptor used by [`Item::url`] to drop non-`http(s)` URLs at
+/// decode time. Deserializes as `Option<String>` then runs each `Some(_)`
+/// through [`validate_http_url`] — rejected schemes and parse failures
+/// collapse to `None`, so the rest of the app can trust any `Some(url)`
+/// on an [`Item`] is safe to open.
+///
+/// # Errors
+///
+/// Propagates the underlying deserializer error if the field is
+/// structurally invalid (non-string, non-null). Rejected schemes are
+/// **not** an error — they round to `None`.
 fn deserialize_http_url<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -303,6 +314,9 @@ where
     Ok(opt.as_deref().and_then(validate_http_url))
 }
 
+/// Returns the host of `raw` with a leading `www.` stripped, or `None`
+/// if `raw` doesn't parse as an `http`/`https` URL with a host.
+/// Backs [`Item::domain`] for the source-domain badge in the story list.
 fn url_domain(raw: &str) -> Option<String> {
     let parsed = url::Url::parse(raw).ok()?;
     if !matches!(parsed.scheme(), "http" | "https") {
