@@ -116,30 +116,8 @@ impl<E: PersistedEntry> JsonStore<E> {
         let Ok(json) = serde_json::to_string(&disk) else {
             return;
         };
-
-        // Best-effort dir creation. On Unix tighten to 0700 so per-user
-        // history isn't world-readable on shared hosts.
-        if let Some(parent) = path.parent() {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::DirBuilderExt;
-                let _ = std::fs::DirBuilder::new()
-                    .recursive(true)
-                    .mode(0o700)
-                    .create(parent);
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = std::fs::create_dir_all(parent);
-            }
-        }
-
-        let tmp = path.with_extension("json.tmp");
-        if write_atomic(&tmp, &json).is_ok() && std::fs::rename(&tmp, path).is_ok() {
+        if write_json_atomic(path, &json).is_ok() {
             self.dirty = false;
-        } else {
-            // Clean up a stranded tmp on failure so we don't leak files.
-            let _ = std::fs::remove_file(&tmp);
         }
     }
 
@@ -159,10 +137,49 @@ impl<E: PersistedEntry> JsonStore<E> {
     }
 }
 
+/// Atomically persists `json` to `path`: best-effort creates the parent
+/// directory (mode 0700 on Unix), writes to a sibling `.json.tmp` via
+/// [`write_atomic`] (mode 0600), then renames it over `path`. A stranded
+/// tmp file is removed on any failure so we don't leak it. Returns the
+/// rename/​write error on failure (callers swallow it — both stores are
+/// non-critical).
+///
+/// Shared by [`JsonStore::save`] and sibling stores such as
+/// [`crate::state::command_history_store`] so the dir-create +
+/// tmp/rename/cleanup discipline lives in exactly one place.
+pub(crate) fn write_json_atomic(path: &std::path::Path, json: &str) -> std::io::Result<()> {
+    // Best-effort dir creation. On Unix tighten to 0700 so per-user history
+    // isn't world-readable on shared hosts.
+    if let Some(parent) = path.parent() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            let _ = std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent);
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+    let tmp = path.with_extension("json.tmp");
+    match write_atomic(&tmp, json).and_then(|()| std::fs::rename(&tmp, path)) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // Clean up a stranded tmp on failure so we don't leak files.
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
 /// Writes `json` to `path` with mode 0600 on Unix (so other users on a
 /// shared host can't read pinned/read history). Existing files are
-/// truncated.
-fn write_atomic(path: &std::path::Path, json: &str) -> std::io::Result<()> {
+/// truncated. Most callers want the higher-level [`write_json_atomic`],
+/// which adds parent-dir creation and the tmp+rename discipline on top.
+pub(crate) fn write_atomic(path: &std::path::Path, json: &str) -> std::io::Result<()> {
     use std::io::Write;
     #[cfg(unix)]
     {

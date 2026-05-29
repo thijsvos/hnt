@@ -11,6 +11,8 @@
 //! resume-position snapshots, and [`link_registry::LinkRegistry`] +
 //! [`hint_state::HintState`] for the Quickjump label-hint mode.
 
+pub mod command_history_store;
+pub mod command_state;
 pub mod comment_state;
 pub mod hint_state;
 pub mod link_registry;

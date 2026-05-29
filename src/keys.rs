@@ -25,6 +25,20 @@ pub enum InputMode {
     /// Active during Quickjump label selection — `main.rs` routes raw
     /// chars to [`Action::HintKey`] and Esc to [`Action::ExitHintMode`].
     HintMode,
+    /// Active while the user is typing a `:command`. `main.rs` routes
+    /// raw chars to `App::command_input_char`, Enter to
+    /// `App::submit_command`, Esc to `App::cancel_command`, Tab to
+    /// `App::complete_command_at_cursor`, and Up/Down to
+    /// `App::command_history_prev` / `App::command_history_next`.
+    /// Entered via [`Action::EnterCommandMode`] (the `:` key in normal
+    /// mode); mirrors the [`Self::SearchInput`] dispatch pattern.
+    CommandInput,
+    /// Active while the command palette overlay is open (`Ctrl+P`).
+    /// `main.rs` routes raw chars into `App::palette_input_char`,
+    /// Backspace into `App::palette_input_backspace`, Up/Down into
+    /// `App::palette_move_up` / `App::palette_move_down`, Enter into
+    /// `App::palette_submit`, and Esc into `App::cancel_palette`.
+    PaletteInput,
 }
 
 /// A keybinding-independent operation the app may perform.
@@ -98,6 +112,14 @@ pub enum Action {
     /// pane back to stories → quit. The comments-pane back path also
     /// snapshots any pinned-resume state and bumps `story_gen`.
     Back,
+    /// Enter [`InputMode::CommandInput`] — emitted when the user
+    /// presses `:` in normal mode. The actual mode flip and prompt
+    /// initialisation live in `App::enter_command_mode`; this variant
+    /// is the dispatch trigger.
+    EnterCommandMode,
+    /// Open the command-palette overlay — fuzzy-searchable popup of
+    /// every registered `:`-command. Emitted by `Ctrl+P` in normal mode.
+    OpenCommandPalette,
 }
 
 /// Translates a [`KeyEvent`] into an [`Action`] for the current UI
@@ -116,8 +138,16 @@ pub fn map_key(
     prior_visible: bool,
     input_mode: InputMode,
 ) -> Option<Action> {
-    // SearchInput and HintMode both consume raw chars in main.rs.
-    if matches!(input_mode, InputMode::SearchInput | InputMode::HintMode) {
+    // SearchInput, HintMode, CommandInput, and PaletteInput all consume
+    // raw chars in main.rs — return None so the typed character reaches
+    // the input buffer instead of being remapped.
+    if matches!(
+        input_mode,
+        InputMode::SearchInput
+            | InputMode::HintMode
+            | InputMode::CommandInput
+            | InputMode::PaletteInput
+    ) {
         return None;
     }
 
@@ -171,6 +201,12 @@ pub fn map_key(
         KeyCode::Char('k') | KeyCode::Up => Some(Action::MoveUp),
         KeyCode::Enter => Some(Action::Select),
         KeyCode::Char('o') => Some(Action::OpenInBrowser),
+        // Ctrl+P is the palette — guarded arm must come BEFORE the plain
+        // `'p'` arm so the guarded match takes precedence over the bare
+        // OpenReader binding.
+        KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(Action::OpenCommandPalette)
+        }
         KeyCode::Char('p') => Some(Action::OpenReader),
         KeyCode::Char('h') => Some(Action::TogglePriorDiscussions),
         KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
@@ -188,6 +224,7 @@ pub fn map_key(
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => Some(Action::PageUp),
         KeyCode::Char('/') => Some(Action::EnterSearch),
+        KeyCode::Char(':') => Some(Action::EnterCommandMode),
         KeyCode::Char('?') => Some(Action::ToggleHelp),
         // Quickjump entry — comments-pane variant. Reader-overlay variant
         // is handled in the reader_visible block above.
@@ -607,5 +644,72 @@ mod tests {
         assert_eq!(s('f'), None);
         assert_eq!(s('F'), None);
         assert_eq!(s('y'), None);
+    }
+
+    // --- Command mode ---
+
+    #[test]
+    fn normal_colon_enters_command_mode() {
+        let n = |code| map_key(key(code), false, false, false, InputMode::Normal);
+        assert_eq!(n(KeyCode::Char(':')), Some(Action::EnterCommandMode));
+    }
+
+    #[test]
+    fn normal_ctrl_p_opens_palette() {
+        assert_eq!(
+            map_key(ctrl('p'), false, false, false, InputMode::Normal),
+            Some(Action::OpenCommandPalette)
+        );
+    }
+
+    #[test]
+    fn normal_p_without_modifier_still_opens_reader() {
+        // The reader is bound to plain `p`; the palette uses `Ctrl+P`.
+        // Confirm the modifier disambiguates correctly.
+        let n = |code| map_key(key(code), false, false, false, InputMode::Normal);
+        assert_eq!(n(KeyCode::Char('p')), Some(Action::OpenReader));
+    }
+
+    #[test]
+    fn command_input_returns_none_for_all_keys() {
+        // CommandInput must consume raw chars in main.rs — every key
+        // returns None just like SearchInput.
+        let c = |code| map_key(key(code), false, false, false, InputMode::CommandInput);
+        assert_eq!(c(KeyCode::Char('q')), None);
+        assert_eq!(c(KeyCode::Char(':')), None);
+        assert_eq!(c(KeyCode::Char('j')), None);
+        assert_eq!(c(KeyCode::Enter), None);
+        assert_eq!(c(KeyCode::Esc), None);
+    }
+
+    #[test]
+    fn command_input_ignores_help_and_overlay_state() {
+        // Same dominance rule as SearchInput — even with overlays open,
+        // CommandInput consumes the key into the input buffer.
+        assert_eq!(
+            map_key(
+                key(KeyCode::Char('q')),
+                true,
+                true,
+                true,
+                InputMode::CommandInput
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn reader_overlay_does_not_consume_colon() {
+        // Reader overlay has its own reduced keymap — `:` should be
+        // ignored there (not silently treated as EnterCommandMode), so the
+        // user can't accidentally drop into command mode while reading.
+        let r = |code| map_key(key(code), false, true, false, InputMode::Normal);
+        assert_eq!(r(KeyCode::Char(':')), None);
+    }
+
+    #[test]
+    fn prior_overlay_does_not_consume_colon() {
+        let p = |code| map_key(key(code), false, false, true, InputMode::Normal);
+        assert_eq!(p(KeyCode::Char(':')), None);
     }
 }

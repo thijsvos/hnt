@@ -28,8 +28,14 @@ type FilterCache = Option<((CommentFilter, usize), Option<Rc<HashSet<usize>>>)>;
 /// former from `read_store.last_seen_at(story_id)`, the latter from a
 /// rolling clock window — but their semantics are identical: keep every
 /// comment whose `time > t`, plus every ancestor of such a comment so the
-/// thread reads coherently.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// thread reads coherently. [`Self::Author`] applies the same
+/// ancestor-keep rule against a username predicate — useful for
+/// finding a specific commenter's contributions to a thread without
+/// losing the reply context they were responding to.
+///
+/// Not `Copy` — [`Self::Author`] owns a `String`. Sites that previously
+/// moved the filter by value now [`Clone`] it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum CommentFilter {
     /// No filter — every comment in the loaded tree is visible (modulo
     /// collapse). Default state and reset target on `set_comments`.
@@ -42,6 +48,28 @@ pub enum CommentFilter {
     /// Show comments newer than `now - 24h - 60s skew` (Unix seconds).
     /// Same ancestor-keep rule as [`Self::NewSince`].
     Recent(i64),
+    /// Show comments whose author (HN `by` field) matches the stored
+    /// username exactly (case-sensitive — HN usernames are
+    /// case-sensitive). Same ancestor-keep rule as [`Self::NewSince`]
+    /// so each match is readable in its reply context.
+    Author(String),
+}
+
+impl CommentFilter {
+    /// Does this comment pass the current filter? `All` always passes;
+    /// the timestamped variants check the comment's Unix time against
+    /// the threshold; [`Self::Author`] checks the `by` field for an
+    /// exact match. Ancestor-keep is handled separately by
+    /// [`CommentTreeState::compute_filter_visible_set`].
+    pub fn passes(&self, comment: &FlatComment) -> bool {
+        match self {
+            CommentFilter::All => true,
+            CommentFilter::NewSince(t) | CommentFilter::Recent(t) => {
+                comment.item.time.is_some_and(|ts| ts > *t)
+            }
+            CommentFilter::Author(name) => comment.item.by.as_deref() == Some(name.as_str()),
+        }
+    }
 }
 
 /// One comment in the flattened, depth-tagged comment tree.
@@ -248,7 +276,9 @@ impl CommentTreeState {
     /// (the only allocation, ~O(1)) so the comments pane render path
     /// doesn't pay O(n) per frame when the filter sits unchanged.
     fn filter_visible_set(&self) -> Option<Rc<HashSet<usize>>> {
-        let key = (self.filter, self.comments.len());
+        // Clone the filter into the cache key — `CommentFilter` is no
+        // longer `Copy` because [`CommentFilter::Author`] owns a `String`.
+        let key = (self.filter.clone(), self.comments.len());
         {
             let cache = self.filter_cache.borrow();
             if let Some((cached_key, cached_set)) = cache.as_ref() {
@@ -266,12 +296,13 @@ impl CommentTreeState {
     /// caller). Returns `None` for [`CommentFilter::All`] so the cache layer
     /// can short-circuit, otherwise walks the pre-order tree maintaining a
     /// path-stack of ancestor indices and unions every passing comment's
-    /// path into `keep`.
+    /// path into `keep`. The per-comment predicate lives on
+    /// [`CommentFilter::passes`] so adding a new variant changes one
+    /// site rather than every walker.
     fn compute_filter_visible_set(&self) -> Option<HashSet<usize>> {
-        let threshold = match self.filter {
-            CommentFilter::All => return None,
-            CommentFilter::NewSince(t) | CommentFilter::Recent(t) => t,
-        };
+        if matches!(self.filter, CommentFilter::All) {
+            return None;
+        }
         let mut keep: HashSet<usize> = HashSet::new();
         let mut path: Vec<usize> = Vec::with_capacity(16);
         for (i, c) in self.comments.iter().enumerate() {
@@ -283,7 +314,7 @@ impl CommentTreeState {
             {
                 path.pop();
             }
-            if c.item.time.is_some_and(|t| t > threshold) {
+            if self.filter.passes(c) {
                 for &p in &path {
                     keep.insert(p);
                 }
@@ -992,5 +1023,96 @@ mod tests {
         state.set_comments(vec![]);
         // No comments → no counts to verify, just no panic.
         assert!(state.comments.is_empty());
+    }
+
+    // --- Author filter ---
+
+    fn cwd_by(id: u64, depth: usize, by: &str) -> CommentWithDepth {
+        let mut item = make_item(id);
+        item.by = Some(by.to_string());
+        CommentWithDepth { item, depth }
+    }
+
+    #[test]
+    fn author_filter_matches_exactly() {
+        let dang = cwd_by(1, 0, "dang");
+        let other = cwd_by(2, 0, "patio11");
+        let mut state = CommentTreeState::new();
+        state.set_comments(vec![dang, other]);
+        state.filter = CommentFilter::Author("dang".into());
+        let visible = state.visible_indices();
+        assert_eq!(visible, vec![0], "only dang's comment is visible");
+    }
+
+    #[test]
+    fn author_filter_keeps_ancestors_of_matches() {
+        // Tree:
+        //   root(1, by=alice) depth 0
+        //     child(2, by=bob) depth 1
+        //       grand(3, by=dang) depth 2   ← match
+        //   sibling(4, by=carol) depth 0
+        let mut state = CommentTreeState::new();
+        state.set_comments(vec![
+            cwd_by(1, 0, "alice"),
+            cwd_by(2, 1, "bob"),
+            cwd_by(3, 2, "dang"),
+            cwd_by(4, 0, "carol"),
+        ]);
+        state.filter = CommentFilter::Author("dang".into());
+        let visible = state.visible_indices();
+        // alice + bob are ancestors of dang's reply, so they stay; carol
+        // is a sibling root with no dang descendant, so she's filtered.
+        assert_eq!(visible, vec![0, 1, 2], "ancestors of match are kept");
+    }
+
+    #[test]
+    fn author_filter_is_case_sensitive() {
+        // HN usernames are case-sensitive — `Dang` != `dang`.
+        let mut state = CommentTreeState::new();
+        state.set_comments(vec![cwd_by(1, 0, "dang")]);
+        state.filter = CommentFilter::Author("Dang".into());
+        assert!(state.visible_indices().is_empty());
+    }
+
+    #[test]
+    fn author_filter_no_match_yields_empty_visible() {
+        let mut state = CommentTreeState::new();
+        state.set_comments(vec![cwd_by(1, 0, "alice"), cwd_by(2, 0, "bob")]);
+        state.filter = CommentFilter::Author("dang".into());
+        assert!(state.visible_indices().is_empty());
+    }
+
+    #[test]
+    fn author_filter_cache_invalidates_when_username_changes() {
+        let mut state = CommentTreeState::new();
+        state.set_comments(vec![cwd_by(1, 0, "alice"), cwd_by(2, 0, "bob")]);
+        state.filter = CommentFilter::Author("alice".into());
+        let first = state.filter_visible_set().expect("set");
+        state.filter = CommentFilter::Author("bob".into());
+        let second = state.filter_visible_set().expect("set");
+        assert!(
+            !Rc::ptr_eq(&first, &second),
+            "username change must invalidate cache"
+        );
+        assert!(second.contains(&1), "bob is now the match");
+        assert!(!second.contains(&0));
+    }
+
+    #[test]
+    fn comment_filter_passes_method_matches_predicate() {
+        // Direct test of the CommentFilter::passes API — the predicate
+        // that compute_filter_visible_set delegates to.
+        let comment = FlatComment::new(make_item(1), 0);
+        assert!(CommentFilter::All.passes(&comment));
+
+        // Author filter on a comment with no `by` field → no match.
+        assert!(!CommentFilter::Author("dang".into()).passes(&comment));
+
+        // With `by` populated, exact match passes.
+        let mut item = make_item(2);
+        item.by = Some("dang".into());
+        let dang_comment = FlatComment::new(item, 0);
+        assert!(CommentFilter::Author("dang".into()).passes(&dang_comment));
+        assert!(!CommentFilter::Author("other".into()).passes(&dang_comment));
     }
 }
