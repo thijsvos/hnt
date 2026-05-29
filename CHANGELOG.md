@@ -5,6 +5,41 @@ All notable changes to `hnt` are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.8] — 2026-05-29
+
+Adds a discoverable, keyboard-driven command surface: a vim-style `:`
+command prompt and a `Ctrl+P` fuzzy command palette, plus an author-based
+comment filter. Previously every action needed its own memorised
+keybinding, and there was no way to open a story by ID or isolate a single
+commenter's replies.
+
+### Added
+
+- **`:` command prompt** (`InputMode::CommandInput`) with twelve built-in
+  commands (`quit`, `refresh`, `help`, `feed`, `open`, `search`, `reader`,
+  `pin`, `filter`, `yank`, `goto`, `hint`), each arity-checked before it
+  runs. Persisted command history (↑/↓, stored `0600` under the XDG data
+  dir), Tab-completion of command names, aliases, and first arguments
+  (`feed t` → `feed top`), and UTF-8-aware in-line editing
+  (←/→/Home/End).
+- **`Ctrl+P` command palette** — a fuzzy-searchable overlay of every
+  command. Arg-bearing commands hand off to the `:` prompt pre-filled, and
+  a bare Enter on an untouched palette is a no-op so it can't accidentally
+  fire `:quit`.
+- **Author comment filter** (`:filter author <user>`) — keeps a
+  commenter's posts plus their ancestors so each match stays readable in
+  its reply context.
+
+### Internal
+
+- New `command` module (a `CommandRegistry` plus a quote-aware line parser)
+  and a `command_history_store` that shares `persist::write_json_atomic`
+  with the pin/read stores.
+- Every user-supplied or echoed string is sanitised at the render
+  boundary, and command-result feedback reconciles errors against the
+  auto-expiring info toast so failures and successes both surface
+  correctly.
+
 ## [0.4.7] — 2026-05-15
 
 Fixes how the "URL copied" message renders after the 0.4.6 OSC 52
