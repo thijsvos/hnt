@@ -24,8 +24,10 @@ use std::time::Duration;
 
 /// Process entry point — installs the panic hook, brings up the terminal,
 /// constructs the [`App`] and [`EventHandler`], and drives the main loop
-/// until `app.running` is cleared, then persists session state and
-/// restores the terminal.
+/// until `app.running` is cleared, then persists session state. A
+/// `tui::TerminalGuard` restores the terminal on the way out — including a
+/// `?` early-return from `draw`/event polling, which the panic hook (panics
+/// only) does not cover.
 ///
 /// Each loop iteration drains async results from background tasks via
 /// `App::process_messages`, renders one frame, then `.await`s the next
@@ -37,13 +39,17 @@ use std::time::Duration;
 /// # Errors
 ///
 /// Propagates the first error from [`tui::init`], `terminal.size`,
-/// `terminal.draw`, [`EventHandler::next`], or [`tui::restore`]. Any of
-/// these aborts the loop and the process exits non-zero.
+/// `terminal.draw`, or [`EventHandler::next`]; the `TerminalGuard` still
+/// restores the terminal before the process exits non-zero.
 #[tokio::main]
 async fn main() -> Result<()> {
     tui::install_panic_hook();
 
     let mut terminal = tui::init()?;
+    // Restore the terminal on every exit from here on — including a `?`
+    // early-return below (a failed draw or event poll), which the panic hook
+    // does not cover.
+    let _guard = tui::TerminalGuard;
     let mut events = EventHandler::new(Duration::from_millis(250));
     let size = terminal.size()?;
     let mut app = App::new(size.width, size.height);
@@ -175,6 +181,6 @@ async fn main() -> Result<()> {
     }
 
     app.persist();
-    tui::restore()?;
+    // `_guard` is dropped as `main` returns, restoring the terminal.
     Ok(())
 }
