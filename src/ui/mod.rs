@@ -6,6 +6,7 @@
 //! shared [`theme`] palette.
 
 pub mod article_reader;
+pub mod command_palette;
 pub mod comment_tree;
 pub mod header;
 pub mod layout;
@@ -133,6 +134,8 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             input_mode: app.input_mode,
             search_input: app.search_state.as_ref().map(|ss| ss.input.as_str()),
             search_query: if search_active { search_query } else { None },
+            command_input: app.command_state.as_ref().map(|cs| cs.input.as_str()),
+            command_cursor: app.command_state.as_ref().map(|cs| cs.cursor),
         },
         layout.status,
     );
@@ -154,6 +157,14 @@ pub fn render(app: &mut App, frame: &mut Frame) {
         if let Some(ref prior_state) = app.prior_state {
             prior_overlay::render_prior_overlay(frame, area, prior_state);
         }
+    }
+
+    // Command palette overlay — rendered last so it sits on top of every
+    // other widget. The user explicitly opened it with Ctrl+P; any other
+    // overlay underneath stays visible at the edges so the context is
+    // preserved while typing.
+    if let Some(ref palette) = app.palette_state {
+        command_palette::render_command_palette(frame, area, palette, &app.command_registry);
     }
 }
 

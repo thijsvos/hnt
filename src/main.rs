@@ -7,6 +7,7 @@ mod api;
 mod app;
 mod article;
 mod clipboard;
+mod command;
 mod event;
 mod keys;
 mod sanitize;
@@ -90,6 +91,51 @@ async fn main() -> Result<()> {
                         app.dispatch(Action::ExitHintMode);
                     }
                     KeyCode::Char(c) => app.dispatch(Action::HintKey(c)),
+                    _ => {}
+                },
+                InputMode::CommandInput => match key.code {
+                    KeyCode::Enter => app.submit_command(),
+                    KeyCode::Esc => app.cancel_command(),
+                    KeyCode::Backspace => app.command_input_backspace(),
+                    KeyCode::Tab => app.complete_command_at_cursor(),
+                    KeyCode::Up => app.command_history_prev(),
+                    KeyCode::Down => app.command_history_next(),
+                    KeyCode::Left => app.command_cursor_left(),
+                    KeyCode::Right => app.command_cursor_right(),
+                    KeyCode::Home => app.command_cursor_home(),
+                    KeyCode::End => app.command_cursor_end(),
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.cancel_command();
+                    }
+                    // Only insert unmodified (or shift-modified) characters —
+                    // a Ctrl/Alt chord (Ctrl+U, Ctrl+W, …) must not type its
+                    // literal letter into the buffer.
+                    KeyCode::Char(c)
+                        if !key.modifiers.contains(KeyModifiers::CONTROL)
+                            && !key.modifiers.contains(KeyModifiers::ALT) =>
+                    {
+                        app.command_input_char(c)
+                    }
+                    _ => {}
+                },
+                InputMode::PaletteInput => match key.code {
+                    KeyCode::Enter => app.palette_submit(),
+                    KeyCode::Esc => app.cancel_palette(),
+                    KeyCode::Backspace => app.palette_input_backspace(),
+                    KeyCode::Up => app.palette_move_up(),
+                    KeyCode::Down => app.palette_move_down(),
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        app.cancel_palette();
+                    }
+                    // Only feed unmodified (or shift-modified) characters into
+                    // the query — pressing Ctrl+P again (or any Ctrl/Alt chord)
+                    // must not type its literal letter.
+                    KeyCode::Char(c)
+                        if !key.modifiers.contains(KeyModifiers::CONTROL)
+                            && !key.modifiers.contains(KeyModifiers::ALT) =>
+                    {
+                        app.palette_input_char(c)
+                    }
                     _ => {}
                 },
                 InputMode::Normal => {

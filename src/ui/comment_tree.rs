@@ -106,7 +106,7 @@ impl<'a> Widget for CommentTree<'a> {
                 theme::dim_style(),
             ));
         }
-        match self.state.filter {
+        match &self.state.filter {
             CommentFilter::All => {}
             CommentFilter::NewSince(_) => title_spans.push(Span::styled(
                 "· New since last visit (n) ",
@@ -114,6 +114,16 @@ impl<'a> Widget for CommentTree<'a> {
             )),
             CommentFilter::Recent(_) => {
                 title_spans.push(Span::styled("· Recent 24h (n) ", theme::accent_style()));
+            }
+            CommentFilter::Author(name) => {
+                // Scrub the username — it's user-supplied via `:filter author`
+                // and reaches ratatui here, so strip C0/C1/OSC bytes like
+                // every other dynamic string at this render boundary.
+                let safe_name = crate::sanitize::sanitize_terminal(name);
+                title_spans.push(Span::styled(
+                    format!("· Author: {safe_name} (n) "),
+                    theme::accent_style(),
+                ));
             }
         }
 
@@ -638,5 +648,48 @@ mod tests {
         let story = make_story(None, None);
         let label = build_block_title_label(&story);
         assert!(label.contains("[no title]"));
+    }
+
+    // --- Author-filter title chip ---
+
+    #[test]
+    fn author_filter_title_sanitises_username() {
+        // `:filter author <name>` interpolates a user-supplied username into
+        // the pane title; it must be scrubbed like every other dynamic
+        // string at this render boundary.
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut state = CommentTreeState::new();
+        state.filter = CommentFilter::Author("dang\x1b]0;OWNED\x07".to_string());
+        let visible = state.visible_indices();
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                f.render_widget(
+                    CommentTree {
+                        state: &mut state,
+                        visible: &visible,
+                        focused: true,
+                        tick: 0,
+                        prior_count: 0,
+                        now_secs: 0,
+                    },
+                    area,
+                );
+            })
+            .expect("draw");
+        let buf = terminal.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[(x, y)].symbol());
+            }
+        }
+        assert!(!text.contains('\x1b'), "ESC must not survive: {text:?}");
+        assert!(!text.contains('\x07'), "BEL must not survive: {text:?}");
+        assert!(text.contains("Author:"), "author chip present: {text:?}");
     }
 }

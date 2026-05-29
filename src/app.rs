@@ -10,7 +10,10 @@ use crate::api::client::HnClient;
 use crate::api::types::{CommentId, CommentWithDepth, FeedKind, Item, StoryId};
 use crate::article::{fetch_and_extract_article, html_to_styled_lines};
 use crate::clipboard;
+use crate::command::{parser as cmd_parser, CommandRegistry, CommandResult};
 use crate::keys::{Action, InputMode};
+use crate::state::command_history_store;
+use crate::state::command_state::{CommandState, PaletteState};
 use crate::state::comment_state::{CommentFilter, CommentTreeState};
 use crate::state::hint_state::{HintAction, HintContext, HintState};
 use crate::state::link_registry::{LinkRegistry, MatchResult};
@@ -285,6 +288,25 @@ pub struct App {
     /// (e.g. `URL copied: …`) go through [`Self::set_info`] instead so
     /// they don't paint red.
     pub error: Option<String>,
+
+    /// `:`-command prompt state. `Some` while
+    /// [`InputMode::CommandInput`] is active. Mirrors [`Self::search_state`]
+    /// — `main.rs` routes raw chars into [`Self::command_input_char`]
+    /// rather than through `keys::map_key`.
+    pub command_state: Option<CommandState>,
+    /// Registry of all built-in `:`-commands, built once via
+    /// [`CommandRegistry::with_builtins`] in [`Self::new`].
+    pub command_registry: CommandRegistry,
+    /// Persisted command history — newest entries appended at the back.
+    /// Walked by [`Self::command_history_prev`] /
+    /// [`Self::command_history_next`] and rotated by [`Self::submit_command`].
+    pub command_history: Vec<String>,
+    /// Command-palette overlay state. `Some` while
+    /// [`InputMode::PaletteInput`] is active. `main.rs` routes raw chars
+    /// into [`Self::palette_input_char`] rather than through
+    /// `keys::map_key`. Rendered by
+    /// [`crate::ui::command_palette::render_command_palette`].
+    pub palette_state: Option<PaletteState>,
     /// Cached terminal height in rows. Updated on `Event::Resize`.
     pub terminal_height: u16,
     /// Cached terminal width in columns. Updated on `Event::Resize`.
@@ -404,6 +426,10 @@ impl App {
             input_mode: InputMode::Normal,
             show_help: false,
             error: None,
+            command_state: None,
+            command_registry: CommandRegistry::with_builtins(),
+            command_history: command_history_store::load(),
+            palette_state: None,
             terminal_height,
             terminal_width,
             tick_count: 0,
@@ -482,6 +508,15 @@ impl App {
         self.info_toast = Some((message, expires));
     }
 
+    /// Sets a status-bar error, first clearing any live info toast.
+    /// The status bar renders `info` before `error`, so without this a
+    /// fresh error would stay hidden behind an unexpired success toast
+    /// (e.g. `:yank url` then `:feed bogus`). Mirrors [`Self::set_info`].
+    pub fn set_error(&mut self, message: String) {
+        self.info_toast = None;
+        self.error = Some(message);
+    }
+
     /// Currently visible info-toast text, or `None` if no toast is set or
     /// the active toast has already expired. Called per-frame by the UI
     /// layer — cheap because it's a single `Instant::now()` plus pointer
@@ -518,6 +553,7 @@ impl App {
         self.snapshot_pinned_resume_if_any();
         self.read_store.save();
         self.pin_store.save();
+        command_history_store::save(&self.command_history);
     }
 
     /// If the currently-loaded story is pinned, capture its current
@@ -1035,6 +1071,12 @@ impl App {
             Action::EnterSearch => {
                 self.enter_search_mode();
             }
+            Action::EnterCommandMode => {
+                self.enter_command_mode();
+            }
+            Action::OpenCommandPalette => {
+                self.open_command_palette();
+            }
             Action::JumpTop => match self.focus {
                 Pane::Stories => self.story_state.jump_top(),
                 Pane::Comments => {
@@ -1122,11 +1164,16 @@ impl App {
         // comments filtered out as "older than now − 24h".
         let now = chrono::Utc::now().timestamp();
         let recent = CommentFilter::Recent(now - 86_400 - 60);
-        self.comment_state.filter = match (self.comment_state.filter, last_seen) {
+        // Borrow the filter rather than moving it — `CommentFilter` is
+        // no longer `Copy` because [`CommentFilter::Author`] owns a
+        // `String`. Pressing `n` while filtered by author exits to All
+        // (Author is a typed filter, not part of the round-trip cycle).
+        self.comment_state.filter = match (&self.comment_state.filter, last_seen) {
             (CommentFilter::All, Some(t)) => CommentFilter::NewSince(t),
             (CommentFilter::All, None) => recent,
             (CommentFilter::NewSince(_), _) => recent,
             (CommentFilter::Recent(_), _) => CommentFilter::All,
+            (CommentFilter::Author(_), _) => CommentFilter::All,
         };
         // Clamp selection to whatever is visible under the new filter.
         let visible = self.comment_state.visible_len();
@@ -1253,6 +1300,443 @@ impl App {
     pub fn search_input_backspace(&mut self) {
         if let Some(ref mut ss) = self.search_state {
             ss.input.pop();
+        }
+    }
+
+    /// Transitions into `:`-command input mode with an empty prompt.
+    /// Mirrors [`Self::enter_search_mode`] — the actual key routing
+    /// lives in `main.rs::InputMode::CommandInput`.
+    pub fn enter_command_mode(&mut self) {
+        self.input_mode = InputMode::CommandInput;
+        self.command_state = Some(CommandState::new());
+    }
+
+    /// Appends one typed character to the command-input buffer at the
+    /// cursor. No-op when no command prompt is active.
+    pub fn command_input_char(&mut self, c: char) {
+        if let Some(ref mut cs) = self.command_state {
+            cs.insert_char(c);
+        }
+    }
+
+    /// Removes the char before the cursor in the command-input buffer.
+    /// No-op at column 0 or when no command prompt is active.
+    pub fn command_input_backspace(&mut self) {
+        if let Some(ref mut cs) = self.command_state {
+            cs.backspace();
+        }
+    }
+
+    /// Moves the command-input cursor one char left. No-op when no command
+    /// prompt is active.
+    pub fn command_cursor_left(&mut self) {
+        if let Some(ref mut cs) = self.command_state {
+            cs.move_left();
+        }
+    }
+
+    /// Moves the command-input cursor one char right. No-op when no command
+    /// prompt is active.
+    pub fn command_cursor_right(&mut self) {
+        if let Some(ref mut cs) = self.command_state {
+            cs.move_right();
+        }
+    }
+
+    /// Moves the command-input cursor to the start of the line.
+    pub fn command_cursor_home(&mut self) {
+        if let Some(ref mut cs) = self.command_state {
+            cs.move_home();
+        }
+    }
+
+    /// Moves the command-input cursor to the end of the line.
+    pub fn command_cursor_end(&mut self) {
+        if let Some(ref mut cs) = self.command_state {
+            cs.move_end();
+        }
+    }
+
+    /// Walks one step backward in [`Self::command_history`]. No-op when no
+    /// command prompt is active or when no older history exists. The
+    /// in-progress line is snapshotted on the first recall so cancelling
+    /// history navigation restores it.
+    pub fn command_history_prev(&mut self) {
+        let Some(cs) = self.command_state.as_mut() else {
+            return;
+        };
+        if self.command_history.is_empty() {
+            return;
+        }
+        let new_idx = match cs.history_idx {
+            None => {
+                cs.pre_history = cs.input.clone();
+                self.command_history.len() - 1
+            }
+            Some(0) => 0,
+            Some(i) => i - 1,
+        };
+        cs.history_idx = Some(new_idx);
+        let entry = self.command_history[new_idx].clone();
+        cs.set_input(entry);
+    }
+
+    /// Walks one step forward in [`Self::command_history`]. Stepping past
+    /// the newest entry restores the line captured at recall time.
+    pub fn command_history_next(&mut self) {
+        let Some(cs) = self.command_state.as_mut() else {
+            return;
+        };
+        match cs.history_idx {
+            None => {}
+            Some(i) if i + 1 < self.command_history.len() => {
+                cs.history_idx = Some(i + 1);
+                let entry = self.command_history[i + 1].clone();
+                cs.set_input(entry);
+            }
+            Some(_) => {
+                // Stepped past newest — restore the pre-history snapshot
+                // so the user gets back the line they had typed.
+                let snapshot = std::mem::take(&mut cs.pre_history);
+                cs.set_input(snapshot);
+                cs.history_idx = None;
+            }
+        }
+    }
+
+    /// Cancels the `:`-command prompt without running anything. Restores
+    /// [`InputMode::Normal`] and drops the buffered line.
+    pub fn cancel_command(&mut self) {
+        self.command_state = None;
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Submits the in-progress `:`-command. Parses it, looks up the
+    /// command in [`Self::command_registry`], validates arity, runs the
+    /// closure, and surfaces any result via [`Self::set_info`] or
+    /// [`Self::error`]. The line is appended to [`Self::command_history`]
+    /// unless it duplicates the last entry, then the prompt closes.
+    pub fn submit_command(&mut self) {
+        let Some(cs) = self.command_state.as_mut() else {
+            return;
+        };
+        let line = std::mem::take(&mut cs.input);
+        self.command_state = None;
+        self.input_mode = InputMode::Normal;
+        if line.trim().is_empty() {
+            return;
+        }
+        let (name, args) = match cmd_parser::parse(&line) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                self.set_error(e.to_string());
+                return;
+            }
+        };
+        // `resolve` validates the name + arity and hands back a `Copy` fn
+        // pointer, so no `&Command` borrow is held across the `&mut self`
+        // call below — no borrow-checker dance needed at the call site.
+        let run = match self.command_registry.resolve(&name, &args) {
+            Ok(run) => run,
+            Err(msg) => {
+                self.set_error(msg);
+                return;
+            }
+        };
+        // Only record runnable commands in history — malformed, unknown, and
+        // wrong-arity lines never reach here, so they don't pollute the
+        // persisted `commands.json`. A runtime `Err` is still worth recalling,
+        // so the push precedes the run.
+        if self.command_history.last().is_none_or(|prev| prev != &line) {
+            self.command_history.push(line.clone());
+        }
+        match run(self, &args) {
+            // A successful command clears any stale error so a previous
+            // failure's red message doesn't linger (`self.error` has no TTL).
+            CommandResult::Ok => self.error = None,
+            CommandResult::OkInfo(msg) => {
+                self.error = None;
+                self.set_info(msg);
+            }
+            CommandResult::Err(msg) => self.set_error(msg),
+        }
+    }
+
+    /// Returns the story under user attention — the highlighted row in
+    /// the stories pane when focused there, or the loaded story in the
+    /// comments pane when focused there. Used by `:yank`, `:pin`,
+    /// `:reader`, etc. so they target the same item the user is looking
+    /// at regardless of which pane is active.
+    pub fn focused_story(&self) -> Option<&Arc<Item>> {
+        match self.focus {
+            Pane::Stories => self.story_state.selected_story(),
+            Pane::Comments => self.comment_state.story.as_ref(),
+        }
+    }
+
+    /// Spawns an async fetch for the HN story `id` and opens its
+    /// comments. Mirrors the click-a-story-in-the-list path: resets the
+    /// comments pane, bumps `story_gen` for race-gating, focuses the
+    /// comments pane, then issues the fetch. A miss or network error
+    /// surfaces as a status-bar error via [`AppMessage::Error`].
+    pub fn spawn_open_story_by_id(&mut self, id: u64) {
+        // Mirror the click path (`load_selected_comments`): snapshot the
+        // outgoing pinned story's reading position before `reset()` wipes
+        // `comment_state`, and record this visit in the read store so the
+        // story renders as read and gets a `new`-comments anchor. The
+        // descendant count isn't known until the fetch lands, so seed it at
+        // 0; reopening from a feed list later re-marks it with the real
+        // count.
+        self.snapshot_pinned_resume_if_any();
+        self.read_store.mark(StoryId(id), 0);
+        self.focus = Pane::Comments;
+        self.comment_state.reset();
+        self.comment_state.loading = true;
+        self.pending_pinned_resume = None;
+        let gen = self.bump_story_gen();
+        let client = self.client.clone();
+        let tx = self.msg_tx.clone();
+        tokio::spawn(async move {
+            match client.fetch_item(id).await {
+                Ok(Some(item)) => {
+                    let needs_full_fetch = item.kids.is_none();
+                    run_comment_load(client, tx, item, needs_full_fetch, gen).await;
+                }
+                Ok(None) => {
+                    let _ = tx.send(AppMessage::Error(format!("Story {id} not found")));
+                }
+                Err(e) => {
+                    let _ = tx.send(AppMessage::Error(format!(
+                        "Failed to fetch story {id}: {e}"
+                    )));
+                }
+            }
+        });
+    }
+
+    /// Opens the command-palette overlay with no query, every command
+    /// matching. Flips [`InputMode`] to [`InputMode::PaletteInput`] so
+    /// `main.rs` routes raw chars into the palette query.
+    pub fn open_command_palette(&mut self) {
+        let mut state = PaletteState::new();
+        state.matches = (0..self.command_registry.all().len()).collect();
+        state.selected = 0;
+        self.palette_state = Some(state);
+        self.input_mode = InputMode::PaletteInput;
+    }
+
+    /// Closes the palette without running anything. Restores
+    /// [`InputMode::Normal`].
+    pub fn cancel_palette(&mut self) {
+        self.palette_state = None;
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Appends `c` to the palette query and recomputes the match list.
+    pub fn palette_input_char(&mut self, c: char) {
+        let Some(p) = self.palette_state.as_mut() else {
+            return;
+        };
+        p.push_query(c);
+        self.recompute_palette_matches();
+    }
+
+    /// Backspaces one char from the palette query and recomputes matches.
+    pub fn palette_input_backspace(&mut self) {
+        let Some(p) = self.palette_state.as_mut() else {
+            return;
+        };
+        p.pop_query();
+        self.recompute_palette_matches();
+    }
+
+    /// Moves palette selection up by one row.
+    pub fn palette_move_up(&mut self) {
+        if let Some(p) = self.palette_state.as_mut() {
+            p.move_up();
+        }
+    }
+
+    /// Moves palette selection down by one row.
+    pub fn palette_move_down(&mut self) {
+        if let Some(p) = self.palette_state.as_mut() {
+            p.move_down();
+        }
+    }
+
+    /// Runs the selected command and closes the palette. No-op when no
+    /// match is selected. A command that needs arguments can't be completed
+    /// from the palette, so instead of failing it hands off to the `:`
+    /// prompt pre-filled with the command name, ready for the user to type
+    /// the arguments and submit.
+    pub fn palette_submit(&mut self) {
+        // A freshly-opened palette pre-highlights row 0, which is whatever
+        // registered first (currently `:quit`). Running it on a bare Enter —
+        // before the user has typed a query or moved the selection — would be
+        // a destructive surprise, so require an explicit interaction first and
+        // otherwise leave the palette open.
+        match self.palette_state.as_ref() {
+            Some(p) if p.interacted => {}
+            _ => return,
+        }
+        let Some(idx) = self.palette_state.as_ref().and_then(|p| p.selected_index()) else {
+            self.cancel_palette();
+            return;
+        };
+        self.cancel_palette();
+        let (name, run, needs_args) = {
+            let cmd = &self.command_registry.all()[idx];
+            let needs_args = !matches!(
+                cmd.arity,
+                crate::command::Arity::Variadic | crate::command::Arity::Exact(0)
+            );
+            (cmd.name, cmd.run, needs_args)
+        };
+        if needs_args {
+            // Hand off to the `:` prompt pre-filled with `<name> ` so the
+            // user can supply the arguments — every arg-bearing command stays
+            // reachable from the palette instead of dead-ending in an error.
+            self.enter_command_mode();
+            if let Some(cs) = self.command_state.as_mut() {
+                cs.set_input(format!("{name} "));
+            }
+            return;
+        }
+        match run(self, &[]) {
+            CommandResult::Ok => self.error = None,
+            CommandResult::OkInfo(msg) => {
+                self.error = None;
+                self.set_info(msg);
+            }
+            CommandResult::Err(msg) => self.set_error(msg),
+        }
+    }
+
+    /// Rebuilds [`PaletteState::matches`] from the current query against
+    /// [`Self::command_registry`]. Resets `selected` to 0 so the new top
+    /// match is highlighted. No-op when the palette is closed.
+    pub fn recompute_palette_matches(&mut self) {
+        // `fuzzy` now returns registry indices directly, so this is O(n) and
+        // borrows `command_registry` (immutable) and `palette_state.query`
+        // (immutable, disjoint field) without a query clone or a ptr::eq
+        // round-trip. The owned `Vec` ends both borrows before the re-borrow.
+        let matches: Vec<usize> = match self.palette_state.as_ref() {
+            Some(p) => self
+                .command_registry
+                .fuzzy(&p.query)
+                .into_iter()
+                .map(|(idx, _score)| idx)
+                .collect(),
+            None => return,
+        };
+        if let Some(p) = self.palette_state.as_mut() {
+            p.matches = matches;
+            p.selected = 0;
+        }
+    }
+
+    /// Tab-completion against the command registry.
+    ///
+    /// - **Single prefix match**: replaces the in-progress line with the
+    ///   completed name and a trailing space (ready for an argument).
+    /// - **Multi-match**: extends the line to the longest common prefix
+    ///   (if longer than what's already typed) and surfaces the candidate
+    ///   list as a status-bar info toast so the user can keep narrowing.
+    /// - **No match / no prefix typed**: no-op.
+    ///
+    /// Tab-completion against the command registry.
+    ///
+    /// While still typing the first token, completes the **command name** —
+    /// preferring canonical names, falling back to aliases when no name
+    /// matches (`un` → `unpin`). Once the command name is followed by a
+    /// space, completes its **first positional argument** against
+    /// [`crate::command::Command::arg_completions`] (`feed t` → `feed top`,
+    /// `filter ` → candidate list). Later arguments (freeform IDs, queries,
+    /// usernames) are left alone.
+    pub fn complete_command_at_cursor(&mut self) {
+        let Some(cs) = self.command_state.as_mut() else {
+            return;
+        };
+        let line = cs.input.trim_start().to_string();
+        if line.is_empty() {
+            return;
+        }
+        let trailing_space = line.ends_with(|c: char| c.is_whitespace());
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+
+        // Still typing the first token → complete the command name.
+        if tokens.len() == 1 && !trailing_space {
+            let prefix = tokens[0];
+            let name_matches: Vec<&str> = self
+                .command_registry
+                .all()
+                .iter()
+                .filter(|c| c.name.starts_with(prefix))
+                .map(|c| c.name)
+                .collect();
+            // Names take precedence so canonical-name completion stays
+            // unsurprising; only when nothing matches by name do we offer
+            // aliases, which keeps short aliases (`q`, `r`) from poisoning the
+            // common-prefix of a name match like `re` → refresh/reader.
+            let matches: Vec<&str> = if name_matches.is_empty() {
+                self.command_registry
+                    .all()
+                    .iter()
+                    .flat_map(|c| c.aliases.iter().copied())
+                    .filter(|a| a.starts_with(prefix))
+                    .collect()
+            } else {
+                name_matches
+            };
+            match matches.as_slice() {
+                [] => {}
+                [single] => cs.set_input(format!("{single} ")),
+                many => {
+                    let common = longest_common_prefix(many);
+                    if common.len() > prefix.len() {
+                        cs.set_input(common);
+                    } else {
+                        // No further extension possible — show the candidates
+                        // so the user knows their options without losing the
+                        // typed prefix.
+                        let candidates = many.join("  :");
+                        self.set_info(format!("Matches: :{candidates}"));
+                    }
+                }
+            }
+            return;
+        }
+
+        // Command name typed; complete its first positional argument. Only the
+        // first arg is completed — later tokens may be freeform.
+        let on_first_arg =
+            (tokens.len() == 1 && trailing_space) || (tokens.len() == 2 && !trailing_space);
+        if !on_first_arg {
+            return;
+        }
+        let name = tokens[0];
+        let arg_prefix = if tokens.len() == 2 { tokens[1] } else { "" };
+        let Some(cmd) = self.command_registry.lookup(name) else {
+            return;
+        };
+        let cands: Vec<&str> = cmd
+            .arg_completions
+            .iter()
+            .copied()
+            .filter(|a| a.starts_with(arg_prefix))
+            .collect();
+        match cands.as_slice() {
+            [] => {}
+            [single] => cs.set_input(format!("{name} {single} ")),
+            many => {
+                let common = longest_common_prefix(many);
+                if common.len() > arg_prefix.len() {
+                    cs.set_input(format!("{name} {common}"));
+                } else {
+                    let candidates = many.join("  ");
+                    self.set_info(format!("Matches: {candidates}"));
+                }
+            }
         }
     }
 
@@ -2068,6 +2552,35 @@ fn detect_no_browser_env() -> bool {
     std::env::var_os("HNT_NO_BROWSER").is_some() || std::path::Path::new("/.dockerenv").exists()
 }
 
+/// Returns the longest string `s` such that every entry in `names`
+/// starts with `s`. Empty `names` yields `""`. Used by
+/// [`App::complete_command_at_cursor`] to extend a typed prefix up to
+/// the maximal common ground before showing candidates.
+fn longest_common_prefix(names: &[&str]) -> String {
+    let mut iter = names.iter();
+    let Some(first) = iter.next() else {
+        return String::new();
+    };
+    let mut end = first.len();
+    for s in iter {
+        let common = first
+            .bytes()
+            .zip(s.bytes())
+            .take_while(|(a, b)| a == b)
+            .count();
+        end = end.min(common);
+        if end == 0 {
+            break;
+        }
+    }
+    // Walk back to the nearest UTF-8 char boundary so we never split a
+    // multi-byte sequence.
+    while end > 0 && !first.is_char_boundary(end) {
+        end -= 1;
+    }
+    first[..end].to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2782,5 +3295,634 @@ mod tests {
         app.open_url("not a url at all");
         app.open_url("");
         assert!(app.error.is_none());
+    }
+
+    // --- Command mode ---
+
+    #[test]
+    fn enter_command_mode_installs_prompt_and_flips_input_mode() {
+        let mut app = App::new(80, 24);
+        assert!(app.command_state.is_none());
+        assert_eq!(app.input_mode, InputMode::Normal);
+        app.enter_command_mode();
+        assert_eq!(app.input_mode, InputMode::CommandInput);
+        let cs = app.command_state.as_ref().expect("command_state is Some");
+        assert_eq!(cs.input, "");
+        assert_eq!(cs.cursor, 0);
+    }
+
+    #[test]
+    fn command_input_char_appends_to_buffer() {
+        let mut app = App::new(80, 24);
+        app.enter_command_mode();
+        for c in "quit".chars() {
+            app.command_input_char(c);
+        }
+        assert_eq!(app.command_state.as_ref().unwrap().input, "quit");
+    }
+
+    #[test]
+    fn command_input_backspace_removes_last_char() {
+        let mut app = App::new(80, 24);
+        app.enter_command_mode();
+        for c in "quiz".chars() {
+            app.command_input_char(c);
+        }
+        app.command_input_backspace();
+        assert_eq!(app.command_state.as_ref().unwrap().input, "qui");
+    }
+
+    #[test]
+    fn cancel_command_drops_prompt_without_running() {
+        let mut app = App::new(80, 24);
+        app.enter_command_mode();
+        app.command_input_char('q');
+        app.cancel_command();
+        assert!(app.command_state.is_none());
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.running, "cancel must not quit the app");
+    }
+
+    #[test]
+    fn submit_command_quit_sets_running_false() {
+        // The :quit milestone — full end-to-end path: enter command mode,
+        // type the command, submit, and confirm the app is scheduled to
+        // exit on the next main-loop iteration.
+        let mut app = App::new(80, 24);
+        app.enter_command_mode();
+        for c in "quit".chars() {
+            app.command_input_char(c);
+        }
+        app.submit_command();
+        assert!(!app.running, ":quit must clear App::running");
+        assert!(app.command_state.is_none(), "prompt must close on submit");
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(
+            app.command_history,
+            vec!["quit".to_string()],
+            "submitted command must be appended to history"
+        );
+    }
+
+    #[test]
+    fn submit_command_alias_q_also_quits() {
+        let mut app = App::new(80, 24);
+        app.enter_command_mode();
+        app.command_input_char('q');
+        app.submit_command();
+        assert!(!app.running, ":q alias must clear App::running");
+    }
+
+    #[test]
+    fn submit_unknown_command_sets_error() {
+        let mut app = App::new(80, 24);
+        app.enter_command_mode();
+        for c in "nope".chars() {
+            app.command_input_char(c);
+        }
+        app.submit_command();
+        assert!(app.running, "unknown command must not quit");
+        assert!(
+            app.error.as_deref().is_some_and(|e| e.contains("Unknown")),
+            "expected unknown-command error, got {:?}",
+            app.error
+        );
+    }
+
+    #[test]
+    fn submit_empty_command_is_noop() {
+        let mut app = App::new(80, 24);
+        app.enter_command_mode();
+        app.submit_command();
+        assert!(app.running);
+        assert!(app.error.is_none());
+        assert!(app.command_history.is_empty());
+    }
+
+    #[test]
+    fn submit_command_with_wrong_arity_errors() {
+        let mut app = App::new(80, 24);
+        app.enter_command_mode();
+        for c in "quit extra".chars() {
+            app.command_input_char(c);
+        }
+        app.submit_command();
+        assert!(app.running);
+        assert!(
+            app.error.as_deref().is_some_and(|e| e.contains("expects")),
+            "expected arity error, got {:?}",
+            app.error
+        );
+    }
+
+    #[test]
+    fn submit_command_dedups_consecutive_history_entries() {
+        let mut app = App::new(80, 24);
+        for _ in 0..3 {
+            app.enter_command_mode();
+            for c in "quit".chars() {
+                app.command_input_char(c);
+            }
+            // Use cancel + push manually to avoid actually quitting.
+            let line = std::mem::take(&mut app.command_state.as_mut().unwrap().input);
+            app.cancel_command();
+            if app.command_history.last().is_none_or(|p| p != &line) {
+                app.command_history.push(line);
+            }
+        }
+        assert_eq!(app.command_history, vec!["quit".to_string()]);
+    }
+
+    #[test]
+    fn history_prev_recalls_previous_entry() {
+        let mut app = App::new(80, 24);
+        app.command_history = vec!["feed best".to_string(), "refresh".to_string()];
+        app.enter_command_mode();
+        app.command_history_prev();
+        assert_eq!(app.command_state.as_ref().unwrap().input, "refresh");
+        app.command_history_prev();
+        assert_eq!(app.command_state.as_ref().unwrap().input, "feed best");
+    }
+
+    #[test]
+    fn history_next_restores_pre_history_snapshot() {
+        let mut app = App::new(80, 24);
+        app.command_history = vec!["refresh".to_string()];
+        app.enter_command_mode();
+        for c in "in-progress".chars() {
+            app.command_input_char(c);
+        }
+        app.command_history_prev();
+        assert_eq!(app.command_state.as_ref().unwrap().input, "refresh");
+        app.command_history_next();
+        assert_eq!(
+            app.command_state.as_ref().unwrap().input,
+            "in-progress",
+            "stepping past newest restores the pre-history buffer"
+        );
+    }
+
+    #[test]
+    fn tab_completes_unique_prefix() {
+        let mut app = App::new(80, 24);
+        app.enter_command_mode();
+        for c in "qui".chars() {
+            app.command_input_char(c);
+        }
+        app.complete_command_at_cursor();
+        let cs = app.command_state.as_ref().unwrap();
+        assert_eq!(cs.input, "quit ");
+        assert_eq!(cs.cursor, 5);
+    }
+
+    #[test]
+    fn open_command_palette_flips_input_mode_and_lists_all_commands() {
+        let mut app = App::new(80, 24);
+        assert!(app.palette_state.is_none());
+        app.open_command_palette();
+        assert_eq!(app.input_mode, InputMode::PaletteInput);
+        let p = app.palette_state.as_ref().expect("palette open");
+        assert_eq!(
+            p.matches.len(),
+            app.command_registry.all().len(),
+            "no query → every command listed"
+        );
+        assert_eq!(p.selected, 0);
+    }
+
+    #[test]
+    fn palette_input_char_filters_matches() {
+        let mut app = App::new(80, 24);
+        app.open_command_palette();
+        for c in "fee".chars() {
+            app.palette_input_char(c);
+        }
+        let p = app.palette_state.as_ref().unwrap();
+        // 'fee' subsequence-matches "feed" but not "quit"
+        let names: Vec<&str> = p
+            .matches
+            .iter()
+            .map(|&i| app.command_registry.all()[i].name)
+            .collect();
+        assert!(names.contains(&"feed"), "'fee' must match feed");
+        assert!(!names.contains(&"quit"), "'fee' must not match quit");
+    }
+
+    #[test]
+    fn palette_input_backspace_widens_matches() {
+        let mut app = App::new(80, 24);
+        app.open_command_palette();
+        for c in "feed".chars() {
+            app.palette_input_char(c);
+        }
+        let narrow = app.palette_state.as_ref().unwrap().matches.len();
+        app.palette_input_backspace();
+        let wider = app.palette_state.as_ref().unwrap().matches.len();
+        assert!(wider >= narrow, "removing a char must widen matches");
+    }
+
+    #[test]
+    fn palette_move_navigates_selection() {
+        let mut app = App::new(80, 24);
+        app.open_command_palette();
+        let initial = app.palette_state.as_ref().unwrap().selected;
+        assert_eq!(initial, 0);
+        app.palette_move_down();
+        assert_eq!(app.palette_state.as_ref().unwrap().selected, 1);
+        app.palette_move_up();
+        assert_eq!(app.palette_state.as_ref().unwrap().selected, 0);
+    }
+
+    #[test]
+    fn palette_submit_runs_zero_arity_command() {
+        let mut app = App::new(80, 24);
+        app.open_command_palette();
+        // Type just enough to surface `:quit` as the unique top match.
+        for c in "quit".chars() {
+            app.palette_input_char(c);
+        }
+        app.palette_submit();
+        assert!(!app.running, ":quit must execute via palette");
+        assert!(app.palette_state.is_none(), "palette closes on submit");
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn palette_submit_arg_command_hands_off_to_command_prompt() {
+        // `:feed` needs an argument the palette can't collect, so submitting
+        // it drops into the `:` prompt pre-filled with `feed `, ready for the
+        // user to type the feed name — no dead-end error.
+        let mut app = App::new(80, 24);
+        app.open_command_palette();
+        for c in "feed".chars() {
+            app.palette_input_char(c);
+        }
+        app.palette_submit();
+        assert!(app.running);
+        assert!(app.error.is_none(), "handoff must not surface an error");
+        assert!(app.palette_state.is_none(), "palette closes on handoff");
+        assert_eq!(app.input_mode, InputMode::CommandInput);
+        assert_eq!(
+            app.command_state.as_ref().map(|cs| cs.input.as_str()),
+            Some("feed "),
+            "command prompt pre-filled with the command name"
+        );
+    }
+
+    #[test]
+    fn cancel_palette_closes_without_running() {
+        let mut app = App::new(80, 24);
+        app.open_command_palette();
+        for c in "quit".chars() {
+            app.palette_input_char(c);
+        }
+        app.cancel_palette();
+        assert!(app.running, "cancel must not run anything");
+        assert!(app.palette_state.is_none());
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn tab_extends_to_longest_common_prefix() {
+        // Typed 'r' — matches both 'refresh' and 'reader'. Their LCP
+        // is 're', so Tab extends the line to 're' (no trailing space
+        // since the user must still choose between candidates).
+        let mut app = App::new(80, 24);
+        app.enter_command_mode();
+        app.command_input_char('r');
+        app.complete_command_at_cursor();
+        assert_eq!(app.command_state.as_ref().unwrap().input, "re");
+    }
+
+    #[test]
+    fn tab_shows_candidates_when_no_further_extension_possible() {
+        let mut app = App::new(80, 24);
+        app.enter_command_mode();
+        for c in "re".chars() {
+            app.command_input_char(c);
+        }
+        app.complete_command_at_cursor();
+        assert_eq!(
+            app.command_state.as_ref().unwrap().input,
+            "re",
+            "no LCP extension beyond what's typed"
+        );
+        let toast = app.info_toast_message().expect("candidate toast set");
+        assert!(toast.contains(":refresh"));
+        assert!(toast.contains(":reader"));
+    }
+
+    #[test]
+    fn longest_common_prefix_of_empty_is_empty() {
+        assert_eq!(longest_common_prefix(&[]), "");
+    }
+
+    #[test]
+    fn longest_common_prefix_of_single_returns_full() {
+        assert_eq!(longest_common_prefix(&["refresh"]), "refresh");
+    }
+
+    #[test]
+    fn longest_common_prefix_finds_shared_prefix() {
+        assert_eq!(longest_common_prefix(&["refresh", "reader"]), "re");
+        assert_eq!(
+            longest_common_prefix(&["filter", "fence", "feet"]),
+            "f",
+            "diverging at index 1"
+        );
+        assert_eq!(longest_common_prefix(&["alpha", "beta"]), "");
+    }
+
+    #[test]
+    fn longest_common_prefix_respects_utf8_boundaries() {
+        // Two-byte chars: 'é' is 0xC3 0xA9. LCP byte-wise would be 2 if
+        // both share the first byte but differ at the second — the
+        // function must walk back to a char boundary.
+        // 'é' = é, 'è' = è — both start with 0xC3 then differ.
+        assert_eq!(longest_common_prefix(&["éa", "èa"]), "");
+    }
+
+    #[test]
+    fn tab_does_nothing_on_ambiguous_prefix() {
+        let mut app = App::new(80, 24);
+        app.enter_command_mode();
+        app.command_input_char('q');
+        app.complete_command_at_cursor();
+        // 'q' matches the command name "quit" (names take precedence over the
+        // 'q' alias), so it completes to "quit " — unique since no other
+        // command name begins with 'q'.
+        assert_eq!(app.command_state.as_ref().unwrap().input, "quit ");
+    }
+
+    #[test]
+    fn tab_completes_alias_when_no_name_matches() {
+        // `un` matches no command *name*, but it's a prefix of the `unpin`
+        // alias of `pin`; completion falls back to aliases so it's reachable.
+        let mut app = App::new(80, 24);
+        app.enter_command_mode();
+        for c in "un".chars() {
+            app.command_input_char(c);
+        }
+        app.complete_command_at_cursor();
+        assert_eq!(app.command_state.as_ref().unwrap().input, "unpin ");
+    }
+
+    #[test]
+    fn tab_completes_first_argument() {
+        // `feed t` → unique arg match `top` → `feed top `.
+        let mut app = App::new(80, 24);
+        app.enter_command_mode();
+        for c in "feed t".chars() {
+            app.command_input_char(c);
+        }
+        app.complete_command_at_cursor();
+        assert_eq!(app.command_state.as_ref().unwrap().input, "feed top ");
+    }
+
+    #[test]
+    fn tab_arg_completion_unique_match_for_filter() {
+        let mut app = App::new(80, 24);
+        app.enter_command_mode();
+        for c in "filter au".chars() {
+            app.command_input_char(c);
+        }
+        app.complete_command_at_cursor();
+        assert_eq!(app.command_state.as_ref().unwrap().input, "filter author ");
+    }
+
+    #[test]
+    fn tab_arg_completion_shows_candidates_when_ambiguous() {
+        // `filter a` matches `all` and `author`; LCP is just `a` (already
+        // typed), so the candidate list is surfaced and the line is unchanged.
+        let mut app = App::new(80, 24);
+        app.enter_command_mode();
+        for c in "filter a".chars() {
+            app.command_input_char(c);
+        }
+        app.complete_command_at_cursor();
+        assert_eq!(app.command_state.as_ref().unwrap().input, "filter a");
+        let toast = app.info_toast_message().expect("candidate toast set");
+        assert!(toast.contains("all"), "got {toast:?}");
+        assert!(toast.contains("author"), "got {toast:?}");
+    }
+
+    #[test]
+    fn tab_arg_completion_lists_all_on_empty_arg() {
+        // `goto ` (trailing space) → first arg, empty prefix → list all.
+        let mut app = App::new(80, 24);
+        app.enter_command_mode();
+        for c in "goto ".chars() {
+            app.command_input_char(c);
+        }
+        app.complete_command_at_cursor();
+        let toast = app.info_toast_message().expect("candidate toast set");
+        assert!(toast.contains("top"), "got {toast:?}");
+        assert!(toast.contains("bottom"), "got {toast:?}");
+    }
+
+    #[test]
+    fn tab_no_arg_completion_for_freeform_or_later_args() {
+        // `:open` takes a freeform numeric id → no completion candidates.
+        let mut app = App::new(80, 24);
+        app.enter_command_mode();
+        for c in "open 12".chars() {
+            app.command_input_char(c);
+        }
+        app.complete_command_at_cursor();
+        assert_eq!(app.command_state.as_ref().unwrap().input, "open 12");
+        // A second argument (e.g. the username) is freeform → untouched.
+        let mut app2 = App::new(80, 24);
+        app2.enter_command_mode();
+        for c in "filter author da".chars() {
+            app2.command_input_char(c);
+        }
+        app2.complete_command_at_cursor();
+        assert_eq!(
+            app2.command_state.as_ref().unwrap().input,
+            "filter author da"
+        );
+    }
+
+    // --- Command-feature correctness fixes (review #1–#10) ---
+
+    fn item_with_id(id: u64) -> Item {
+        Item {
+            id,
+            title: Some("t".into()),
+            url: None,
+            text: None,
+            by: None,
+            score: None,
+            time: None,
+            kids: None,
+            descendants: None,
+            item_type: None,
+            dead: None,
+            deleted: None,
+        }
+    }
+
+    #[test]
+    fn palette_bare_enter_on_untouched_palette_does_not_run_quit() {
+        // Ctrl+P preselects row 0 (registration order → :quit). A bare Enter
+        // before any typing/navigation must NOT fire it.
+        let mut app = App::new(80, 24);
+        app.open_command_palette();
+        app.palette_submit();
+        assert!(app.running, "bare Enter on a fresh palette must not quit");
+        assert!(app.palette_state.is_some(), "palette stays open");
+        assert_eq!(app.input_mode, InputMode::PaletteInput);
+    }
+
+    #[test]
+    fn palette_enter_runs_after_navigation() {
+        // Once the user interacts (arrow down then back to 0), Enter runs the
+        // selected command as before.
+        let mut app = App::new(80, 24);
+        app.open_command_palette();
+        app.palette_move_down();
+        app.palette_move_up();
+        app.palette_submit();
+        assert!(
+            !app.running,
+            "Enter after navigating runs the selected command"
+        );
+    }
+
+    #[test]
+    fn command_error_clears_stale_info_toast() {
+        // A `:yank`-style success toast must not mask a following command
+        // error (the status bar renders info before error).
+        let mut app = App::new(80, 24);
+        app.set_info("Copied: https://example.com".to_string());
+        assert!(app.info_toast_message().is_some());
+        app.enter_command_mode();
+        for c in "feed bogus".chars() {
+            app.command_input_char(c);
+        }
+        app.submit_command();
+        assert!(
+            app.error
+                .as_deref()
+                .is_some_and(|e| e.contains("Unknown feed")),
+            "feed error expected, got {:?}",
+            app.error
+        );
+        assert!(
+            app.info_toast_message().is_none(),
+            "stale toast must be cleared so the error is visible"
+        );
+    }
+
+    #[test]
+    fn successful_command_clears_stale_error() {
+        let mut app = App::new(80, 24);
+        app.error = Some("Unknown command: nope".to_string());
+        app.enter_command_mode();
+        for c in "goto top".chars() {
+            app.command_input_char(c);
+        }
+        app.submit_command();
+        assert!(
+            app.error.is_none(),
+            "a successful command clears a stale error"
+        );
+    }
+
+    #[test]
+    fn palette_success_clears_stale_error() {
+        let mut app = App::new(80, 24);
+        app.error = Some("boom".to_string());
+        app.open_command_palette();
+        // `:help` is arg-less (palette-runnable) and synchronous — it returns
+        // OkInfo, which must also clear the stale error.
+        for c in "help".chars() {
+            app.palette_input_char(c);
+        }
+        app.palette_submit();
+        assert!(
+            app.error.is_none(),
+            "a successful palette command clears a stale error"
+        );
+    }
+
+    #[test]
+    fn invalid_commands_do_not_enter_history() {
+        let mut app = App::new(80, 24);
+        // Unknown command.
+        app.enter_command_mode();
+        for c in "nope".chars() {
+            app.command_input_char(c);
+        }
+        app.submit_command();
+        assert!(
+            app.command_history.is_empty(),
+            "unknown command must not be saved to history"
+        );
+        // Wrong arity.
+        app.enter_command_mode();
+        for c in "quit extra".chars() {
+            app.command_input_char(c);
+        }
+        app.submit_command();
+        assert!(app.running, "wrong-arity :quit must not quit");
+        assert!(
+            app.command_history.is_empty(),
+            "wrong-arity command must not be saved to history"
+        );
+        // Parse error (unterminated quote).
+        app.enter_command_mode();
+        for c in "search \"foo".chars() {
+            app.command_input_char(c);
+        }
+        app.submit_command();
+        assert!(
+            app.command_history.is_empty(),
+            "unparseable command must not be saved to history"
+        );
+    }
+
+    #[test]
+    fn valid_command_still_enters_history() {
+        let mut app = App::new(80, 24);
+        app.enter_command_mode();
+        for c in "goto top".chars() {
+            app.command_input_char(c);
+        }
+        app.submit_command();
+        assert_eq!(app.command_history, vec!["goto top".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn open_story_by_id_marks_read() {
+        let mut app = App::new(80, 24);
+        let id = 12_345u64;
+        assert!(!app.read_store.is_read(StoryId(id)));
+        app.spawn_open_story_by_id(id);
+        assert!(
+            app.read_store.is_read(StoryId(id)),
+            ":open must record the visit so the story isn't perpetually unread"
+        );
+        assert!(
+            app.read_store.last_seen_at(StoryId(id)).is_some(),
+            ":open must set a `new`-comments anchor"
+        );
+    }
+
+    #[tokio::test]
+    async fn open_story_by_id_snapshots_pinned_resume() {
+        let mut app = App::new(80, 24);
+        // Pin story 1 and load it with a non-default reading position.
+        app.pin_store.pin_at(StoryId(1), 1_700_000_000);
+        app.comment_state.story = Some(Arc::new(item_with_id(1)));
+        app.comment_state.selected = 5;
+        // Opening a different story by id must snapshot story 1's position
+        // before reset() wipes comment_state.
+        app.spawn_open_story_by_id(2);
+        assert_eq!(
+            app.pin_store.resume_for(StoryId(1)).map(|e| e.selected),
+            Some(5),
+            ":open must snapshot the outgoing pinned story's reading position"
+        );
     }
 }
