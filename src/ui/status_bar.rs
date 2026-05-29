@@ -146,9 +146,10 @@ impl<'a> Widget for StatusBar<'a> {
                 ));
             }
         } else if let Some(query) = self.search_query {
-            // Search results mode
+            // Search results mode. Sanitise the echoed query — defence-in-depth
+            // matching the search-input echo and command prompt above.
             spans.push(Span::styled(
-                format!(" Search: \"{}\" ", query),
+                format!(" Search: \"{}\" ", sanitize_terminal(query)),
                 theme::accent_style().bg(theme::SURFACE),
             ));
             spans.push(Span::styled(" ", theme::status_style()));
@@ -317,6 +318,33 @@ mod tests {
         assert!(!text.contains('\x1b'));
         assert!(text.contains("hit"));
         assert!(text.contains("clear"));
+    }
+
+    #[test]
+    fn status_bar_neutralises_escape_in_search_query() {
+        // The committed search query is echoed as the results-mode label; scrub
+        // C0/C1/OSC bytes there too — defence-in-depth matching the search-input
+        // echo and the command prompt.
+        let area = Rect::new(0, 0, 120, 1);
+        let mut buf = Buffer::empty(area);
+        StatusBar {
+            feed: FeedKind::Top,
+            position: "1/1",
+            error: None,
+            info: None,
+            focus_pane: "Stories",
+            input_mode: InputMode::Normal,
+            search_input: None,
+            search_query: Some("rust\x1b]0;OWNED\x07lang"),
+            command_input: None,
+            command_cursor: None,
+        }
+        .render(area, &mut buf);
+        let text = buffer_text(&buf);
+        assert!(!text.contains('\x1b'), "ESC must not survive: {text:?}");
+        assert!(!text.contains('\x07'), "BEL must not survive");
+        assert!(text.contains("rust"));
+        assert!(text.contains("lang"));
     }
 
     fn render_command_bar(input: &str) -> Buffer {

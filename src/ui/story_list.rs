@@ -6,6 +6,7 @@
 //! timestamps.
 
 use crate::api::types::{Item, StoryId};
+use crate::sanitize::sanitize_terminal;
 use crate::state::pin_store::PinStore;
 use crate::state::read_store::ReadStore;
 use crate::ui::theme;
@@ -54,8 +55,13 @@ impl<'a> Widget for StoryList<'a> {
             theme::dim_style()
         };
 
-        let title_span = if let Some(q) = &self.search_query {
-            Span::styled(format!(" Search: {} ", q), theme::title_style())
+        let title_span = if let Some(q) = self.search_query {
+            // Sanitise the echoed query — same defence-in-depth as the status
+            // bar; a pasted query could carry C0/C1 bytes.
+            Span::styled(
+                format!(" Search: {} ", sanitize_terminal(q)),
+                theme::title_style(),
+            )
         } else {
             Span::styled(" Stories ", theme::title_style())
         };
@@ -272,5 +278,51 @@ mod tests {
     fn large_diff_counts_days() {
         // ~30 days
         assert_eq!(format_time_ago_since(0, 86_400 * 30), "30d");
+    }
+
+    #[test]
+    fn search_title_sanitises_terminal_escapes() {
+        use super::StoryList;
+        use crate::state::pin_store::PinStore;
+        use crate::state::read_store::ReadStore;
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Widget;
+
+        let read_store = ReadStore::empty();
+        let pin_store = PinStore::empty();
+        let area = Rect::new(0, 0, 80, 6);
+        let mut buf = Buffer::empty(area);
+        StoryList {
+            stories: &[],
+            domains: &[],
+            selected: 0,
+            focused: false,
+            loading: false,
+            // Committed query carries an OSC-0 title-rewrite sequence.
+            search_query: Some("rust\x1b]0;OWNED\x07lang"),
+            read_store: &read_store,
+            pin_store: &pin_store,
+        }
+        .render(area, &mut buf);
+
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[(x, y)].symbol());
+            }
+        }
+        assert!(
+            !text.contains('\x1b'),
+            "ESC must not survive in search title: {text:?}"
+        );
+        assert!(
+            !text.contains('\x07'),
+            "BEL must not survive in search title"
+        );
+        assert!(
+            text.contains("rust"),
+            "query text should still render: {text:?}"
+        );
     }
 }
