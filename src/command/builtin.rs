@@ -336,9 +336,8 @@ fn register_hint(r: &mut CommandRegistry) {
 /// Maps a feed name (case-folded by caller) to its index in
 /// [`FeedKind::ALL`]. Returns `None` for unknown names.
 fn feed_index(name: &str) -> Option<usize> {
-    FeedKind::ALL
-        .iter()
-        .position(|f| f.to_string().eq_ignore_ascii_case(name))
+    let kind = FeedKind::from_name(name)?;
+    FeedKind::ALL.iter().position(|f| *f == kind)
 }
 
 #[cfg(test)]

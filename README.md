@@ -29,6 +29,7 @@ Browse stories, read threaded comments, and open links — all from your termina
 - **Open in browser** — Press `o` to open the story URL
 - **Progressive loading** — Root comments appear instantly, children load in the background
 - **Lazy pagination** — Stories load automatically as you scroll
+- **Scriptable** — a headless CLI mode (`hnt top --json`, `hnt thread <id>`, `hnt article <id>`) pipes Hacker News into `jq`, `fzf`, `cron`, or a pager. No arguments still launches the TUI — see [Scripting](#scripting-headless-mode)
 
 ## Installation
 
@@ -123,6 +124,48 @@ cargo build --release
 | `q` | Quit |
 | `Esc` | Back / close |
 | `?` | Help overlay |
+
+## Scripting (headless mode)
+
+Give `hnt` a subcommand and it prints to stdout and exits instead of opening
+the TUI — so Hacker News composes with the rest of your shell (`jq`, `fzf`,
+`cron`, `mail`, a pager, your editor). It talks to the same Hacker News API
+and Algolia the TUI uses and nothing else; output is local-only. With **no**
+arguments, `hnt` still launches the full-screen reader.
+
+| Command | Description |
+|---|---|
+| `hnt <feed>` · `hnt feed <name>` | List a feed: `top` `new` `best` `ask` `show` `jobs` `pinned` |
+| `hnt thread <id>` | Print a story's comment thread (alias: `comments`) |
+| `hnt open <id>` | Print a single item (alias: `item`) |
+| `hnt search <query…>` | Algolia full-text search |
+| `hnt article <id\|url>` | Print extracted article text (alias: `read`) |
+| `hnt --help` · `hnt --version` | Usage / version |
+
+Options: `--json` (a stable JSON contract), `--digest` (one compact line per
+story; feeds only), `--limit N` (default 30), `--max-depth N` (comment nesting
+for `thread`; default 12).
+
+```bash
+# Top 10 titles via jq
+hnt top --limit 10 --json | jq -r '.[].title'
+
+# Save a thread; read an article in your pager
+hnt thread 38911 > thread.txt
+hnt article 38911 | less
+
+# Email yourself a daily front-page digest (cron-friendly)
+hnt top --digest | mail -s "HN today" you@example.com
+
+# Pick a story with fzf, then open its comments
+id=$(hnt top --limit 30 --json | jq -r '.[] | "\(.id)\t\(.title)"' | fzf | cut -f1)
+[ -n "$id" ] && hnt thread "$id" | less
+```
+
+Text output is plain (no ANSI) and HN-supplied strings are stripped of
+terminal control sequences, so it's safe to pipe anywhere. Exit status: `0`
+success, `1` item not found, `2` usage error. See the
+[scripting reference](docs/scripting.md) for the full JSON field list.
 
 ## Configuration & state
 
