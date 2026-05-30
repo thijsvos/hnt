@@ -5,6 +5,45 @@ All notable changes to `hnt` are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.9] — 2026-05-30
+
+Adds a headless, scriptable CLI mode so `hnt` composes with the rest of the
+shell, and ships the terminal-restore + search-sanitisation fix that landed
+after 0.4.8. Running `hnt` with no arguments still launches the full-screen
+TUI unchanged.
+
+### Added
+
+- **Headless / scriptable mode.** A subcommand makes `hnt` print to stdout
+  and exit instead of opening the TUI: `hnt <feed>` / `hnt feed <name>`
+  (`top new best ask show jobs pinned`), `hnt thread <id>` (alias
+  `comments`), `hnt open <id>` (alias `item`), `hnt search <query…>`,
+  `hnt article <id|url>` (alias `read`), plus `--help` / `--version`. Output
+  formats: `--json` (a stable contract decoupled from the wire `Item`, unset
+  fields omitted), `--digest` (one compact line per story), and plain text;
+  `--limit N` and `--max-depth N` (`0` = root comments only) tune how much is
+  fetched. Reuses the existing `HnClient`, the article extractor (SSRF guard
+  included), and the HTML renderer; every printed Hacker-News string is
+  scrubbed of terminal escapes and output carries no ANSI, so it is safe to
+  pipe. A `std::io::IsTerminal` guard refuses to paint the TUI into a
+  non-terminal stdout. Exit status is `0` success / `1` not-found / `2`
+  usage. Zero new dependencies. See the new
+  [scripting reference](docs/scripting.md).
+
+### Fixed
+
+- **Terminal restored on an error-path exit**, not just on panic: a `?`
+  early-return from the draw/event loop now unwinds through a
+  `TerminalGuard`, so a failed draw or event poll can no longer leave the
+  shell in raw mode on the alternate screen. The echoed **search query is
+  sanitised** before it reaches the pane title.
+  ([#215](https://github.com/thijsvos/hnt/pull/215))
+
+### Internal
+
+- `FeedKind::from_name` factored out so the `:feed` command (`feed_index`)
+  and the headless feed argument resolve names from one source of truth.
+
 ## [0.4.8] — 2026-05-29
 
 Adds a discoverable, keyboard-driven command surface: a vim-style `:`
