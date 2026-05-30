@@ -6,6 +6,7 @@
 mod api;
 mod app;
 mod article;
+mod cli;
 mod clipboard;
 mod command;
 mod event;
@@ -43,6 +44,45 @@ use std::time::Duration;
 /// restores the terminal before the process exits non-zero.
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Headless / scriptable mode: a subcommand prints to stdout and exits
+    // without ever touching raw mode or the alternate screen. With no
+    // arguments, `cli::parse` returns `Ok(None)` and we fall through to the
+    // interactive TUI below.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match cli::parse(&args) {
+        Ok(Some(invocation)) => {
+            let code = match cli::run(invocation).await {
+                Ok(code) => code,
+                Err(e) => {
+                    eprintln!("hnt: {e:#}");
+                    1
+                }
+            };
+            // `process::exit` skips destructors, so flush the buffered stdout
+            // first — otherwise the tail of the output can be dropped.
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            std::process::exit(code);
+        }
+        Ok(None) => {
+            // No subcommand. Refuse to paint the TUI into a non-terminal
+            // stdout (a pipe or file) — that would dump raw escape sequences
+            // into the captured stream. Point the user at headless mode.
+            use std::io::IsTerminal;
+            if !std::io::stdout().is_terminal() {
+                eprintln!("hnt: stdout is not a terminal — the TUI needs a real terminal.");
+                eprintln!("     For scriptable output run a subcommand, e.g. `hnt top --json`.");
+                eprintln!("     See `hnt --help`.");
+                std::process::exit(2);
+            }
+        }
+        Err(e) => {
+            eprintln!("hnt: {e}");
+            eprintln!("Try `hnt --help` for usage.");
+            std::process::exit(2);
+        }
+    }
+
     tui::install_panic_hook();
 
     let mut terminal = tui::init()?;

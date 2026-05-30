@@ -383,6 +383,19 @@ impl FeedKind {
             FeedKind::Pinned => None,
         }
     }
+
+    /// Resolves a feed name (case-insensitive) to its [`FeedKind`], or
+    /// `None` for an unrecognized name. Accepts the short names shown in the
+    /// header tab bar and `:feed` completion (`top`, `new`, `best`, `ask`,
+    /// `show`, `jobs`, `pinned`). Backs both the `:feed` command (via
+    /// `feed_index`) and the headless CLI's feed argument, so the accepted
+    /// spellings can't drift between the two entry points.
+    pub fn from_name(name: &str) -> Option<FeedKind> {
+        FeedKind::ALL
+            .iter()
+            .copied()
+            .find(|f| f.to_string().eq_ignore_ascii_case(name))
+    }
 }
 
 impl fmt::Display for FeedKind {
@@ -678,6 +691,22 @@ mod tests {
         assert_eq!(format!("{}", FeedKind::Show), "Show");
         assert_eq!(format!("{}", FeedKind::Jobs), "Jobs");
         assert_eq!(format!("{}", FeedKind::Pinned), "Pinned");
+    }
+
+    #[test]
+    fn from_name_resolves_every_feed_case_insensitively() {
+        for f in FeedKind::ALL {
+            let name = f.to_string();
+            assert_eq!(FeedKind::from_name(&name), Some(f));
+            assert_eq!(FeedKind::from_name(&name.to_lowercase()), Some(f));
+            assert_eq!(FeedKind::from_name(&name.to_uppercase()), Some(f));
+        }
+    }
+
+    #[test]
+    fn from_name_rejects_unknown() {
+        assert_eq!(FeedKind::from_name("nope"), None);
+        assert_eq!(FeedKind::from_name(""), None);
     }
 
     // --- TryFrom<SearchHit> for Item ---
