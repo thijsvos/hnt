@@ -8,7 +8,9 @@
 //! emitting `null` so `jq` filters stay simple.
 
 use crate::api::types::{CommentWithDepth, Item, ItemType};
+use crate::pulse::Momentum;
 use serde::Serialize;
+use std::sync::Arc;
 
 /// Render width for comment bodies that are flattened to plain text inside
 /// the JSON payload. Matches the headless text renderer's default.
@@ -127,10 +129,65 @@ pub struct OutThread {
 }
 
 /// Builds the JSON listing payload for a slice of stories.
-pub fn stories(items: &[std::sync::Arc<Item>]) -> Vec<OutStory> {
+pub fn stories(items: &[Arc<Item>]) -> Vec<OutStory> {
     items
         .iter()
         .map(|i| OutStory::from_item(i.as_ref()))
+        .collect()
+}
+
+/// JSON view of a story's Pulse momentum — the `hnt rising` extras.
+#[derive(Debug, Serialize)]
+pub struct OutMomentum {
+    /// Points gained per 30 minutes at the current pace (one decimal).
+    pub velocity_30m: f64,
+    /// Comments gained per 30 minutes at the current pace (one decimal).
+    pub comment_velocity_30m: f64,
+    /// Eight-column block-glyph sparkline of the trailing 30 minutes;
+    /// leading spaces mark buckets older than the first observation.
+    pub sparkline: String,
+    /// 1-based front-page position, omitted when not on the front page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub front_page_rank: Option<usize>,
+    /// Projected minutes until the story enters the front page at its
+    /// current pace; omitted when already there, unknown, or > 3 h away.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eta_minutes: Option<u32>,
+}
+
+impl OutMomentum {
+    /// Projects a [`Momentum`] into the public shape, rounding rates to
+    /// one decimal so the JSON stays readable.
+    pub fn from_momentum(m: &Momentum) -> Self {
+        let round1 = |v: f64| (v * 10.0).round() / 10.0;
+        Self {
+            velocity_30m: round1(m.velocity.points),
+            comment_velocity_30m: round1(m.velocity.comments),
+            sparkline: m.sparkline.clone(),
+            front_page_rank: m.front_page_rank,
+            eta_minutes: m.eta_minutes,
+        }
+    }
+}
+
+/// JSON view of one `hnt rising` row: the story fields (flattened, same
+/// contract as a feed listing) plus a nested `momentum` object.
+#[derive(Debug, Serialize)]
+pub struct OutRising {
+    /// The story, flattened into the top level.
+    #[serde(flatten)]
+    pub story: OutStory,
+    /// Pulse momentum summary.
+    pub momentum: OutMomentum,
+}
+
+/// Builds the JSON payload for `hnt rising`.
+pub fn rising(rows: &[(Arc<Item>, Momentum)]) -> Vec<OutRising> {
+    rows.iter()
+        .map(|(item, m)| OutRising {
+            story: OutStory::from_item(item.as_ref()),
+            momentum: OutMomentum::from_momentum(m),
+        })
         .collect()
 }
 
@@ -187,5 +244,34 @@ mod tests {
         let mut item = story();
         item.title = None;
         assert_eq!(OutStory::from_item(&item).title, "");
+    }
+
+    #[test]
+    fn out_rising_flattens_story_and_nests_momentum() {
+        use crate::pulse::Velocity;
+        let m = Momentum {
+            id: 42,
+            points: 100,
+            comments: 7,
+            velocity: Velocity {
+                points: 17.66,
+                comments: 3.04,
+            },
+            sparkline: "  ▁▂▃▅▇█".into(),
+            front_page_rank: None,
+            eta_minutes: Some(25),
+        };
+        let rows = vec![(Arc::new(story()), m)];
+        let json = serde_json::to_string(&rising(&rows)).unwrap();
+        assert!(json.contains("\"id\":42"), "{json}");
+        assert!(json.contains("\"hn_url\""), "{json}");
+        assert!(json.contains("\"momentum\":{"), "{json}");
+        assert!(json.contains("\"velocity_30m\":17.7"), "{json}");
+        assert!(json.contains("\"comment_velocity_30m\":3.0"), "{json}");
+        assert!(json.contains("\"eta_minutes\":25"), "{json}");
+        assert!(
+            !json.contains("front_page_rank"),
+            "absent rank must be omitted: {json}"
+        );
     }
 }

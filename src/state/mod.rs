@@ -8,8 +8,10 @@
 //! [`prior_state::PriorDiscussionsState`] for the prior-submissions
 //! overlay, [`read_store::ReadStore`] for persisted read-state tracking,
 //! [`pin_store::PinStore`] for persisted pinned stories with
-//! resume-position snapshots, and [`link_registry::LinkRegistry`] +
-//! [`hint_state::HintState`] for the Quickjump label-hint mode.
+//! resume-position snapshots, [`pulse_store::PulseStore`] for the
+//! persisted momentum samples behind the `Rising` feed, and
+//! [`link_registry::LinkRegistry`] + [`hint_state::HintState`] for the
+//! Quickjump label-hint mode.
 
 pub mod command_history_store;
 pub mod command_state;
@@ -19,6 +21,7 @@ pub mod link_registry;
 mod persist;
 pub mod pin_store;
 pub mod prior_state;
+pub mod pulse_store;
 pub mod read_store;
 pub mod reader_state;
 pub mod search_state;

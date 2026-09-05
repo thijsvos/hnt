@@ -1,13 +1,18 @@
 //! Story-list widget for the left pane.
 //!
 //! [`StoryList`] renders numbered story rows with badge, title, and
-//! domain, scrolling to keep the selected row in view. Also exposes
+//! domain, scrolling to keep the selected row in view. In the `Rising`
+//! feed each row also carries a momentum column (sparkline, points
+//! gained, front-page chip) from the Pulse store; in every other feed a
+//! fast-moving story gets a `↗` glyph. Also exposes
 //! [`format_time_ago_since`], used by the comment-tree widget for author
 //! timestamps.
 
 use crate::api::types::{Item, StoryId};
+use crate::pulse::{self, Momentum, SPARKLINE_WIDTH};
 use crate::sanitize::sanitize_terminal;
 use crate::state::pin_store::PinStore;
+use crate::state::pulse_store::PulseStore;
 use crate::state::read_store::ReadStore;
 use crate::ui::theme;
 use ratatui::{
@@ -17,6 +22,20 @@ use ratatui::{
     widgets::{Block, Borders, Widget},
 };
 use std::sync::Arc;
+
+/// Minimum inner width at which the `Rising` momentum column shows the
+/// front-page chip (`FP ~25m` / `on FP #9`) in addition to the sparkline
+/// and points figure. The stories pane is 35 % of the terminal, so this
+/// is roughly a 230-column terminal — below it the chip is dropped
+/// rather than squeezing the title.
+const WIDE_MOMENTUM_MIN_WIDTH: u16 = 80;
+/// Minimum inner width for the sparkline + points column at all. Below
+/// this the `Rising` feed falls back to the single `↗` glyph.
+const MOMENTUM_MIN_WIDTH: u16 = 48;
+/// Width of the `+NN` points figure (`+123` fits).
+const VELOCITY_WIDTH: usize = 4;
+/// Width of the front-page chip (`on FP #30` is the longest form).
+const FRONT_PAGE_WIDTH: usize = 9;
 
 /// Stateless widget that renders the left pane. Composed from borrowed
 /// app state; rebuilt each frame.
@@ -45,6 +64,101 @@ pub struct StoryList<'a> {
     /// Persisted pin-store: stories present here render with a leading
     /// `★` glyph in any feed.
     pub pin_store: &'a PinStore,
+    /// Momentum store: drives the sparkline column in the `Rising` feed
+    /// and the `↗` glyph elsewhere.
+    pub pulse_store: &'a PulseStore,
+    /// Whether the `Rising` feed is on screen — switches on the momentum
+    /// column and the warming-up placeholder.
+    pub rising: bool,
+    /// Pane title override (e.g. `Rising · next sweep 43s`). Ignored while
+    /// a search query is active; falls back to `Stories` when `None`.
+    pub pane_title: Option<&'a str>,
+    /// Wall-clock time (Unix seconds) captured once per frame — every
+    /// momentum query is evaluated against it.
+    pub now_secs: i64,
+}
+
+/// The momentum column layout chosen for a frame, from the pane width.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MomentumLayout {
+    /// `↗ ` only (2 columns) — also the non-Rising form.
+    Glyph,
+    /// Sparkline + points: `▂▃▅▆▇█ +42 ` (SPARKLINE_WIDTH + 1 + 4 + 1).
+    Compact,
+    /// Compact plus the front-page chip: `… FP ~25m ` (+ 9 + 1).
+    Wide,
+}
+
+impl MomentumLayout {
+    fn for_width(rising: bool, inner_width: u16) -> Self {
+        if !rising || inner_width < MOMENTUM_MIN_WIDTH {
+            Self::Glyph
+        } else if inner_width < WIDE_MOMENTUM_MIN_WIDTH {
+            Self::Compact
+        } else {
+            Self::Wide
+        }
+    }
+
+    /// Columns the momentum column occupies, including trailing spaces.
+    /// In the `Glyph` layout that's 2 only when the glyph is shown, so
+    /// callers pass `shown`.
+    fn width(self, shown: bool) -> usize {
+        match self {
+            Self::Glyph => {
+                if shown {
+                    2
+                } else {
+                    0
+                }
+            }
+            Self::Compact => SPARKLINE_WIDTH + 1 + VELOCITY_WIDTH + 1,
+            Self::Wide => SPARKLINE_WIDTH + 1 + VELOCITY_WIDTH + 1 + FRONT_PAGE_WIDTH + 1,
+        }
+    }
+}
+
+/// Builds the momentum spans for one row. Returns the spans and their
+/// total visible width. Rows without live momentum in the `Rising` feed
+/// get a blank column of the same width so titles stay aligned; in other
+/// feeds they get nothing.
+fn momentum_spans(
+    momentum: Option<&Momentum>,
+    layout: MomentumLayout,
+    row_bg: ratatui::style::Color,
+) -> (Vec<Span<'static>>, usize) {
+    let spark_style = theme::momentum_style().bg(row_bg);
+    let meta_style = theme::momentum_meta_style().bg(row_bg);
+    match layout {
+        MomentumLayout::Glyph => match momentum {
+            Some(m) if m.velocity.is_hot() => (vec![Span::styled("\u{2197} ", spark_style)], 2),
+            _ => (Vec::new(), 0),
+        },
+        MomentumLayout::Compact | MomentumLayout::Wide => {
+            let width = layout.width(true);
+            let Some(m) = momentum else {
+                return (vec![Span::styled(" ".repeat(width), meta_style)], width);
+            };
+            let points = m.velocity.points.round() as i64;
+            let velocity = if points >= 0 {
+                format!("+{points}")
+            } else {
+                points.to_string()
+            };
+            let mut spans = vec![
+                Span::styled(m.sparkline.clone(), spark_style),
+                Span::styled(format!(" {velocity:>VELOCITY_WIDTH$} "), meta_style),
+            ];
+            if layout == MomentumLayout::Wide {
+                let chip = pulse::format_front_page(m);
+                spans.push(Span::styled(
+                    format!("{chip:<FRONT_PAGE_WIDTH$} "),
+                    meta_style,
+                ));
+            }
+            (spans, width)
+        }
+    }
 }
 
 impl<'a> Widget for StoryList<'a> {
@@ -62,6 +176,8 @@ impl<'a> Widget for StoryList<'a> {
                 format!(" Search: {} ", sanitize_terminal(q)),
                 theme::title_style(),
             )
+        } else if let Some(t) = self.pane_title {
+            Span::styled(format!(" {t} "), theme::title_style())
         } else {
             Span::styled(" Stories ", theme::title_style())
         };
@@ -89,6 +205,8 @@ impl<'a> Widget for StoryList<'a> {
         if self.stories.is_empty() {
             let msg = if self.search_query.is_some() {
                 "  No results found"
+            } else if self.rising {
+                "  Warming up \u{2014} momentum needs two sweeps (~2 min)"
             } else {
                 "  No stories loaded"
             };
@@ -97,6 +215,7 @@ impl<'a> Widget for StoryList<'a> {
             return;
         }
 
+        let momentum_layout = MomentumLayout::for_width(self.rising, inner.width);
         let visible_height = inner.height as usize;
 
         // Calculate scroll offset to keep selected visible.
@@ -148,21 +267,30 @@ impl<'a> Widget for StoryList<'a> {
             // ★ + space = 2 visual columns. Reserved before the badge so a
             // pinned Ask HN story stays aligned: "  1. ★ [Ask HN] Title".
             let pin_width = if is_pinned { 2 } else { 0 };
-            let max_title_width = (inner.width as usize).saturating_sub(
-                num.chars().count()
-                    + pin_width
-                    + badge_width
-                    + new_badge_width
-                    + domain.chars().count()
-                    + 2,
-            );
-            let truncated_title = crate::ui::util::truncate_to(title, max_title_width);
 
             let row_bg = if is_selected {
                 theme::SURFACE
             } else {
                 theme::BG
             };
+
+            // Momentum column (Rising) or `↗` glyph (elsewhere). Every
+            // sparkline glyph is one column wide, so `chars().count()`
+            // stays valid for the width reservation.
+            let momentum = self.pulse_store.momentum_for(sid, self.now_secs);
+            let (momentum_spans, momentum_width) =
+                momentum_spans(momentum.as_ref(), momentum_layout, row_bg);
+
+            let max_title_width = (inner.width as usize).saturating_sub(
+                num.chars().count()
+                    + pin_width
+                    + momentum_width
+                    + badge_width
+                    + new_badge_width
+                    + domain.chars().count()
+                    + 2,
+            );
+            let truncated_title = crate::ui::util::truncate_to(title, max_title_width);
             let row_style = if is_selected {
                 theme::selected_style()
             } else {
@@ -203,6 +331,7 @@ impl<'a> Widget for StoryList<'a> {
                     },
                 ));
             }
+            spans.extend(momentum_spans);
             if let Some((text, b)) = badge_text.zip(badge) {
                 spans.push(Span::styled(text, theme::badge_style(b)));
             }
@@ -280,8 +409,15 @@ mod tests {
         assert_eq!(format_time_ago_since(0, 86_400 * 30), "30d");
     }
 
-    #[test]
-    fn search_title_sanitises_terminal_escapes() {
+    /// Renders `stories` through [`StoryList`] into a `width`×6 buffer
+    /// and returns the first row as text.
+    fn render_first_row(
+        stories: &[std::sync::Arc<crate::api::types::Item>],
+        pulse_store: &crate::state::pulse_store::PulseStore,
+        rising: bool,
+        width: u16,
+        now: i64,
+    ) -> String {
         use super::StoryList;
         use crate::state::pin_store::PinStore;
         use crate::state::read_store::ReadStore;
@@ -291,6 +427,177 @@ mod tests {
 
         let read_store = ReadStore::empty();
         let pin_store = PinStore::empty();
+        let domains: Vec<Option<String>> = stories.iter().map(|s| s.domain()).collect();
+        let area = Rect::new(0, 0, width, 6);
+        let mut buf = Buffer::empty(area);
+        StoryList {
+            stories,
+            domains: &domains,
+            selected: 0,
+            focused: false,
+            loading: false,
+            search_query: None,
+            read_store: &read_store,
+            pin_store: &pin_store,
+            pulse_store,
+            rising,
+            pane_title: None,
+            now_secs: now,
+        }
+        .render(area, &mut buf);
+        (0..buf.area.width)
+            .map(|x| buf[(x, 1)].symbol().to_string())
+            .collect()
+    }
+
+    fn hot_story(id: u64, now: i64) -> std::sync::Arc<crate::api::types::Item> {
+        std::sync::Arc::new(crate::api::types::Item {
+            id,
+            title: Some("Rising story".into()),
+            url: Some("https://example.com/x".into()),
+            text: None,
+            by: Some("alice".into()),
+            score: Some(60),
+            time: Some(now - 1800),
+            kids: None,
+            descendants: Some(9),
+            item_type: Some(crate::api::types::ItemType::Story),
+            dead: None,
+            deleted: None,
+        })
+    }
+
+    /// A store where story 1 gained 40 points over the last 15 minutes
+    /// (→ +80/30m, well past the `↗` threshold) and story 2 has no
+    /// samples.
+    fn hot_store(now: i64) -> crate::state::pulse_store::PulseStore {
+        use crate::api::types::StoryId;
+        use crate::pulse::Sample;
+        use crate::state::pulse_store::PulseStore;
+        let mut store = PulseStore::empty();
+        store.record(
+            StoryId(1),
+            Some(now - 1800),
+            Sample {
+                at: now - 900,
+                points: 20,
+                comments: 2,
+            },
+        );
+        store.record(
+            StoryId(1),
+            None,
+            Sample {
+                at: now,
+                points: 60,
+                comments: 9,
+            },
+        );
+        store
+    }
+
+    #[test]
+    fn hot_story_gets_arrow_glyph_in_regular_feeds() {
+        let now = 1_700_000_000;
+        let store = hot_store(now);
+        let row = render_first_row(&[hot_story(1, now)], &store, false, 80, now);
+        assert!(row.contains("\u{2197} Rising story"), "{row:?}");
+        assert!(!row.contains('▁'), "no sparkline outside Rising: {row:?}");
+
+        let cold = render_first_row(&[hot_story(2, now)], &store, false, 80, now);
+        assert!(!cold.contains('\u{2197}'), "{cold:?}");
+    }
+
+    #[test]
+    fn rising_feed_renders_sparkline_and_velocity_column() {
+        let now = 1_700_000_000;
+        let store = hot_store(now);
+        // 80 wide → inner 78 → Compact layout (no front-page chip).
+        let row = render_first_row(&[hot_story(1, now)], &store, true, 80, now);
+        assert!(row.contains('█'), "sparkline expected: {row:?}");
+        assert!(row.contains(" +80 Rising story"), "{row:?}");
+        assert!(!row.contains("FP"), "compact layout has no chip: {row:?}");
+
+        // A Rising row without momentum keeps the column blank so titles
+        // stay aligned with their neighbours.
+        let blank = render_first_row(&[hot_story(2, now)], &store, true, 80, now);
+        // Compare visual columns, not byte offsets — the sparkline glyphs
+        // are three bytes each.
+        let title_col = |r: &str| r[..r.find("Rising story").unwrap()].chars().count();
+        assert_eq!(title_col(&row), title_col(&blank), "{row:?} vs {blank:?}");
+    }
+
+    #[test]
+    fn rising_feed_wide_layout_shows_front_page_chip() {
+        let now = 1_700_000_000;
+        let mut store = hot_store(now);
+        // A sweep installing story 1 at front-page rank 4.
+        store.merge_sweep(&[], vec![7, 8, 9, 1], now);
+        let row = render_first_row(&[hot_story(1, now)], &store, true, 100, now);
+        assert!(row.contains("on FP #4"), "{row:?}");
+    }
+
+    #[test]
+    fn rising_feed_narrow_pane_falls_back_to_glyph() {
+        let now = 1_700_000_000;
+        let store = hot_store(now);
+        let row = render_first_row(&[hot_story(1, now)], &store, true, 40, now);
+        assert!(row.contains('\u{2197}'), "{row:?}");
+        assert!(!row.contains('█'), "{row:?}");
+    }
+
+    #[test]
+    fn rising_feed_empty_shows_warming_up() {
+        let now = 1_700_000_000;
+        let store = crate::state::pulse_store::PulseStore::empty();
+        use super::StoryList;
+        use crate::state::pin_store::PinStore;
+        use crate::state::read_store::ReadStore;
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Widget;
+        let read_store = ReadStore::empty();
+        let pin_store = PinStore::empty();
+        let area = Rect::new(0, 0, 80, 6);
+        let mut buf = Buffer::empty(area);
+        StoryList {
+            stories: &[],
+            domains: &[],
+            selected: 0,
+            focused: false,
+            loading: false,
+            search_query: None,
+            read_store: &read_store,
+            pin_store: &pin_store,
+            pulse_store: &store,
+            rising: true,
+            pane_title: Some("Rising · warming up…"),
+            now_secs: now,
+        }
+        .render(area, &mut buf);
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[(x, y)].symbol());
+            }
+        }
+        assert!(text.contains("Rising · warming up…"), "{text:?}");
+        assert!(text.contains("Warming up"), "{text:?}");
+    }
+
+    #[test]
+    fn search_title_sanitises_terminal_escapes() {
+        use super::StoryList;
+        use crate::state::pin_store::PinStore;
+        use crate::state::pulse_store::PulseStore;
+        use crate::state::read_store::ReadStore;
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Widget;
+
+        let read_store = ReadStore::empty();
+        let pin_store = PinStore::empty();
+        let pulse_store = PulseStore::empty();
         let area = Rect::new(0, 0, 80, 6);
         let mut buf = Buffer::empty(area);
         StoryList {
@@ -303,6 +610,10 @@ mod tests {
             search_query: Some("rust\x1b]0;OWNED\x07lang"),
             read_store: &read_store,
             pin_store: &pin_store,
+            pulse_store: &pulse_store,
+            rising: false,
+            pane_title: None,
+            now_secs: 0,
         }
         .render(area, &mut buf);
 

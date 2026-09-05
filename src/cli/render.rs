@@ -7,6 +7,7 @@
 //! render applies here on write.
 
 use crate::api::types::{CommentWithDepth, Item};
+use crate::pulse::{self, Momentum};
 use crate::sanitize::sanitize_terminal;
 use crate::state::reader_state::StyledFragment;
 use std::io::{self, Write};
@@ -72,6 +73,74 @@ pub fn digest(out: &mut impl Write, items: &[Arc<Item>]) -> io::Result<()> {
             "{:>3}. {}  [{} pts · {} cmts · {}]",
             i + 1,
             title,
+            item.score.unwrap_or(0),
+            item.descendants.unwrap_or(0),
+            domain,
+        )?;
+    }
+    Ok(())
+}
+
+/// One-line momentum summary shared by the rising text and digest
+/// renderers: `▂▃▅▆▇█ +42/30m · FP ~15m` (the chip is omitted when there
+/// is nothing to say).
+fn momentum_summary(m: &Momentum) -> String {
+    let chip = pulse::format_front_page(m);
+    let mut s = format!("{} {}", m.sparkline, pulse::format_velocity(&m.velocity));
+    if !chip.is_empty() {
+        s.push_str(" · ");
+        s.push_str(&chip);
+    }
+    s
+}
+
+/// Writes the `hnt rising` text listing — like [`feed`], with a momentum
+/// line (sparkline, points per 30 minutes, front-page chip) per story.
+pub fn rising(out: &mut impl Write, rows: &[(Arc<Item>, Momentum)]) -> io::Result<()> {
+    if rows.is_empty() {
+        writeln!(out, "No rising stories yet.")?;
+        return Ok(());
+    }
+    for (i, (item, m)) in rows.iter().enumerate() {
+        let badge = item
+            .badge()
+            .map(|b| format!("[{}] ", b.label()))
+            .unwrap_or_default();
+        let title = sanitize_terminal(item.title.as_deref().unwrap_or("[no title]"));
+        let domain = item
+            .domain()
+            .map(|d| format!("  ({})", sanitize_terminal(&d)))
+            .unwrap_or_default();
+        writeln!(out, "{:>3}. {badge}{title}{domain}", i + 1)?;
+        writeln!(
+            out,
+            "     {} · {} points · {} comments · by {} · id {}",
+            momentum_summary(m),
+            item.score.unwrap_or(0),
+            item.descendants.unwrap_or(0),
+            sanitize_terminal(item.by.as_deref().unwrap_or("unknown")),
+            item.id,
+        )?;
+        writeln!(out, "     https://news.ycombinator.com/item?id={}", item.id)?;
+    }
+    Ok(())
+}
+
+/// Writes one compact line per rising story — rank, title, momentum,
+/// score, comments, domain. Built for a tmux status line or a cron mail.
+pub fn rising_digest(out: &mut impl Write, rows: &[(Arc<Item>, Momentum)]) -> io::Result<()> {
+    for (i, (item, m)) in rows.iter().enumerate() {
+        let title = sanitize_terminal(item.title.as_deref().unwrap_or("[no title]"));
+        let domain = item
+            .domain()
+            .map(|d| sanitize_terminal(&d).into_owned())
+            .unwrap_or_else(|| "news.ycombinator.com".to_string());
+        writeln!(
+            out,
+            "{:>3}. {}  [{} · {} pts · {} cmts · {}]",
+            i + 1,
+            title,
+            momentum_summary(m),
             item.score.unwrap_or(0),
             item.descendants.unwrap_or(0),
             domain,
@@ -230,6 +299,56 @@ mod tests {
         let s = String::from_utf8(buf).unwrap();
         assert_eq!(s.lines().count(), 2);
         assert!(s.contains("[50 pts · 2 cmts · example.com]"));
+    }
+
+    fn momentum_row() -> (Arc<Item>, Momentum) {
+        use crate::pulse::Velocity;
+        (
+            Arc::new(story_item()),
+            Momentum {
+                id: 1,
+                points: 50,
+                comments: 2,
+                velocity: Velocity {
+                    points: 41.6,
+                    comments: 4.0,
+                },
+                sparkline: "  ▁▂▃▅▇█".into(),
+                front_page_rank: None,
+                eta_minutes: Some(15),
+            },
+        )
+    }
+
+    #[test]
+    fn rising_renders_momentum_line() {
+        let rows = vec![momentum_row()];
+        let mut buf = Vec::new();
+        rising(&mut buf, &rows).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("1. [Show HN] Show HN: Thing"), "{s}");
+        assert!(s.contains("▁▂▃▅▇█ +42/30m · FP ~15m · 50 points"), "{s}");
+        assert!(s.contains("item?id=1"));
+
+        let mut empty = Vec::new();
+        rising(&mut empty, &[]).unwrap();
+        assert_eq!(
+            String::from_utf8(empty).unwrap(),
+            "No rising stories yet.\n"
+        );
+    }
+
+    #[test]
+    fn rising_digest_is_one_line_per_story_with_momentum() {
+        let rows = vec![momentum_row(), momentum_row()];
+        let mut buf = Vec::new();
+        rising_digest(&mut buf, &rows).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert_eq!(s.lines().count(), 2);
+        assert!(
+            s.contains("+42/30m · FP ~15m · 50 pts · 2 cmts · example.com]"),
+            "{s}"
+        );
     }
 
     #[test]

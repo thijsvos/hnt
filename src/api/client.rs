@@ -6,6 +6,7 @@
 //! with `CONCURRENT_REQUESTS` in flight.
 
 use super::types::{CommentWithDepth, FeedKind, Item, SearchResponse};
+use crate::pulse::{SweepSample, FRONT_PAGE_SIZE};
 use anyhow::Result;
 use futures::future::BoxFuture;
 use futures::stream::{self, StreamExt};
@@ -20,6 +21,13 @@ const BASE_URL: &str = "https://hacker-news.firebaseio.com/v0";
 /// Algolia HN search endpoint. Used by [`HnClient::search_stories`] and
 /// [`HnClient::search_by_url`].
 const ALGOLIA_URL: &str = "https://hn.algolia.com/api/v1/search";
+/// Algolia HN date-ordered search endpoint. Used by
+/// [`HnClient::recent_story_snapshot`] to pull every recent story's
+/// current score in one request.
+const ALGOLIA_BY_DATE_URL: &str = "https://hn.algolia.com/api/v1/search_by_date";
+/// Algolia's hard cap on `hitsPerPage`. A twelve-hour window on a busy
+/// day is ~600 stories, so one page suffices.
+const ALGOLIA_MAX_HITS: usize = 1000;
 /// Outstanding-fetch ceiling for [`HnClient::fetch_items`]. Empirically
 /// chosen — above ~20 the HN endpoint has been observed to return
 /// truncated or rate-limited responses.
@@ -291,6 +299,51 @@ impl HnClient {
             .filter_map(|h| Item::try_from(h).ok())
             .collect();
         Ok((stories, resp.nb_pages, resp.nb_hits))
+    }
+
+    /// One Pulse sweep: the current score and comment count of every story
+    /// submitted in the last `window_secs`, via a single Algolia
+    /// `search_by_date` request. Hits whose `objectID` doesn't parse are
+    /// skipped; missing points/comments read as zero. Returns the raw
+    /// [`SweepSample`]s — merging into the store and stamping the sample
+    /// time is the caller's job.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the underlying [`reqwest::Error`] when the Algolia
+    /// request fails (network, timeout, non-success status) or when the
+    /// response body fails to decode as a [`SearchResponse`].
+    pub async fn recent_story_snapshot(&self, window_secs: i64) -> Result<Vec<SweepSample>> {
+        let since = chrono::Utc::now().timestamp() - window_secs;
+        let url = format!(
+            "{}?tags=story&numericFilters=created_at_i%3E{}&hitsPerPage={}",
+            ALGOLIA_BY_DATE_URL, since, ALGOLIA_MAX_HITS
+        );
+        let resp: SearchResponse = self.client.get(&url).send().await?.json().await?;
+        Ok(resp
+            .hits
+            .into_iter()
+            .filter_map(|h| {
+                Some(SweepSample {
+                    id: h.object_id.parse::<u64>().ok()?,
+                    created_at: h.created_at_i,
+                    points: h.points.unwrap_or(0),
+                    comments: h.num_comments.unwrap_or(0),
+                })
+            })
+            .collect())
+    }
+
+    /// The first [`FRONT_PAGE_SIZE`] IDs of the `topstories` feed — the
+    /// current HN front page — for Pulse's rank badges and ETA threshold.
+    ///
+    /// # Errors
+    ///
+    /// Propagates errors from [`Self::fetch_story_ids`].
+    pub async fn fetch_front_page_ids(&self) -> Result<Vec<u64>> {
+        let mut ids = self.fetch_story_ids(FeedKind::Top).await?;
+        ids.truncate(FRONT_PAGE_SIZE);
+        Ok(ids)
     }
 
     /// Walks a comment subtree depth-first, appending [`CommentWithDepth`]

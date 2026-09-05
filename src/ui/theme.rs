@@ -140,6 +140,18 @@ pub const fn pinned_style() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+/// Green momentum sparkline / `↗` glyph for stories the Pulse engine
+/// reports as rising. Green reads as "up" without competing with the
+/// orange brand accents used for selection and pins.
+pub const fn momentum_style() -> Style {
+    Style::new().fg(GREEN)
+}
+
+/// Muted momentum figures (`+18/30m`, `FP ~25m`) beside the sparkline.
+pub const fn momentum_meta_style() -> Style {
+    Style::new().fg(TEAL)
+}
+
 /// Bold badge color on the surface background — one color per
 /// [`StoryBadge`](crate::api::types::StoryBadge) variant.
 pub const fn badge_style(badge: crate::api::types::StoryBadge) -> Style {

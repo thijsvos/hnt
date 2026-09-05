@@ -5,6 +5,61 @@ All notable changes to `hnt` are documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-09-05
+
+Adds **Pulse**, a momentum engine, and the **Rising** feed built on it.
+Every Hacker News client — and HN itself — shows a static ranked list;
+`hnt` now also shows the derivative: which stories are climbing fastest
+*right now*, how their score has moved over the last half hour, and when
+they are projected to reach the front page.
+
+### Added
+
+- **`Rising` feed (`8`, `:feed rising`).** A background sweep takes one
+  Algolia `search_by_date` snapshot of every story from the last 12 hours
+  (plus the current front page) once a minute — about 60 small requests an
+  hour against Algolia's 10 000/hour allowance — and every Firebase feed
+  page that lands is sampled for free on the way through. Stories are
+  ranked by trailing-30-minute velocity (`points + ½ comments`); rows show
+  an eight-column sparkline of the last 30 minutes, a `+N` points-per-30m
+  figure, and on wide panes a front-page chip: `on FP #9` or `FP ~25m`,
+  the latter from the well-known `(p−1)^0.8 / (h+2)^1.8` ranking
+  approximation stepped forward at the current pace. The list re-ranks in
+  place after each sweep with the cursor following the same story; the
+  pane title shows `warming up…` until the first velocities exist (about
+  two minutes on a cold store), then `next sweep Ns`.
+- **`↗` momentum glyph** in every other feed for stories gaining 20+
+  points per 30 minutes.
+- **`hnt rising [--limit N] [--json|--digest]`** in headless mode. Takes
+  one fresh sample, merges it into the persisted store, saves, ranks, and
+  prints; `--json` adds a nested `momentum` object (`velocity_30m`,
+  `comment_velocity_30m`, `sparkline`, `front_page_rank?`,
+  `eta_minutes?`). Two runs ≥ 110 s apart — or a cron entry — are enough
+  for momentum.
+- **`pulse.json`** — a fourth persisted store (up to 32 samples per story,
+  1500 stories, stories dropped six hours after their last sample),
+  flushed every ten sweeps and on quit so a crash keeps the time series.
+
+### Changed
+
+- Feed keys are now `1`–`8`; the help overlay, status-bar hint, `:feed`
+  completion, and headless usage text list `rising`.
+
+### Fixed
+
+- Documentation now lists all four state files (`commands.json` was
+  undocumented) with the caps the code actually enforces (5000 / 1000
+  rather than the stale 200 / 100).
+
+### Internal
+
+- New `src/pulse.rs` (pure, clock-free sampling/ranking math: `Track`,
+  `Velocity`, `sparkline`, `rank_score`, `front_page_eta`, `rank`) and
+  `src/state/pulse_store.rs` (a third `JsonStore<E>` consumer). New
+  ungated `AppMessage::PulseSweep` and feed-gen-gated
+  `AppMessage::RisingReranked`. `FeedKind::Rising` is the second virtual
+  feed after `Pinned` and follows the same load path. 51 new tests.
+
 ## [0.4.9] — 2026-05-30
 
 Adds a headless, scriptable CLI mode so `hnt` composes with the rest of the
@@ -466,6 +521,13 @@ eighteen and adds ~150 new tests along the way.
 Final 0.3.x release. See `git log` for individual commits; the 0.3.x
 series predates this changelog file.
 
+[0.5.0]: https://github.com/thijsvos/hnt/releases/tag/v0.5.0
+[0.4.9]: https://github.com/thijsvos/hnt/releases/tag/v0.4.9
+[0.4.8]: https://github.com/thijsvos/hnt/releases/tag/v0.4.8
+[0.4.7]: https://github.com/thijsvos/hnt/releases/tag/v0.4.7
+[0.4.6]: https://github.com/thijsvos/hnt/releases/tag/v0.4.6
+[0.4.5]: https://github.com/thijsvos/hnt/releases/tag/v0.4.5
+[0.4.4]: https://github.com/thijsvos/hnt/releases/tag/v0.4.4
 [0.4.3]: https://github.com/thijsvos/hnt/releases/tag/v0.4.3
 [0.4.2]: https://github.com/thijsvos/hnt/releases/tag/v0.4.2
 [0.4.1]: https://github.com/thijsvos/hnt/releases/tag/v0.4.1

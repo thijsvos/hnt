@@ -103,11 +103,43 @@ Two caches make the comments pane O(1)-per-frame for the common case:
 ## Persistence layer
 
 `state::persist::JsonStore<E>` is the shared atomic-write + LRU-bounded
-JSON store used by both `read_store.rs` and `pin_store.rs`. Generic over
-an entry type that implements `PersistedEntry` (provides an `age_key`
-used for eviction).
+JSON store used by `read_store.rs`, `pin_store.rs`, and `pulse_store.rs`.
+Generic over an entry type that implements `PersistedEntry` (provides an
+`age_key` used for eviction). `command_history_store.rs` reuses only the
+`write_json_atomic` primitive (a flat list, no LRU cap by age).
 
 See `docs/configuration.md` for the per-platform paths.
+
+## Pulse (the `Rising` feed)
+
+`pulse.rs` is pure, clock-free math: a `Track` is a story's ring of
+`(at, points, comments)` `Sample`s (≤ 32, ≥ 30 s apart); `Track::velocity`
+extrapolates the delta between the oldest in-window sample and the latest
+to a 30-minute rate (needs a span ≥ 110 s and a latest sample ≤ 30 min
+old); `rank` sorts by `points + ½ comments` velocity; `front_page_eta`
+steps the `(p−1)^0.8 / (h+2)^1.8` approximation forward in 5-minute
+increments until it clears the lowest score on the current front page
+(`front_page_threshold`, which needs ≥ 20 known front-page stories).
+
+`state::pulse_store::PulseStore` owns the tracks plus transient sweep
+state (front page, cached threshold, sweep count). Two sampling sources:
+
+- `App::start_pulse_sweeper` — a tokio task started once from `main`,
+  looping `recent_story_snapshot` (Algolia `search_by_date`, 12 h window,
+  one request) + `fetch_front_page_ids`, sleeping `SWEEP_INTERVAL` (60 s),
+  and sending the **ungated** `AppMessage::PulseSweep`.
+- `process_messages`'s `StoriesLoaded` arm — `record_items` on every
+  Firebase feed page, so front-page stories older than the window stay
+  tracked at zero extra cost.
+
+`FeedKind::Rising` is a virtual feed like `Pinned`: `spawn_load_stories`
+takes the ranked IDs from the store and hydrates them through
+`fetch_items_page`. While Rising is on screen, each `PulseSweep` spawns a
+re-hydration that lands as the feed-gen-gated `RisingReranked` and is
+applied in place by `apply_rising_rerank`, which keeps the cursor on the
+same story ID. `ui::story_list` reads `PulseStore::momentum_for` per
+visible row: the sparkline column in Rising (layout chosen by pane width),
+a `↗` glyph elsewhere when `Velocity::is_hot`.
 
 ## Where to look first
 

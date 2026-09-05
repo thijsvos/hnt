@@ -84,16 +84,18 @@ fn register_feed(r: &mut CommandRegistry) {
     r.register(Command {
         name: "feed",
         aliases: &[],
-        description: "Switch feed: top, new, best, ask, show, jobs, pinned",
+        description: "Switch feed: top, new, best, ask, show, jobs, pinned, rising",
         arity: Arity::Exact(1),
-        arg_completions: &["top", "new", "best", "ask", "show", "jobs", "pinned"],
+        arg_completions: &[
+            "top", "new", "best", "ask", "show", "jobs", "pinned", "rising",
+        ],
         run: |app, args| {
             let name = args[0].to_lowercase();
             let idx = match feed_index(&name) {
                 Some(i) => i,
                 None => {
                     return CommandResult::Err(format!(
-                        "Unknown feed: {name}. Try: top, new, best, ask, show, jobs, pinned"
+                        "Unknown feed: {name}. Try: top, new, best, ask, show, jobs, pinned, rising"
                     ))
                 }
             };

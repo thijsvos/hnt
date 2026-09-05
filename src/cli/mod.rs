@@ -17,6 +17,8 @@ mod render;
 
 use crate::api::client::HnClient;
 use crate::api::types::{CommentWithDepth, FeedKind, Item};
+use crate::pulse::{self, Momentum};
+use crate::state::pulse_store::PulseStore;
 use anyhow::{Context, Result};
 use std::io::Write;
 use std::sync::Arc;
@@ -37,6 +39,7 @@ USAGE:
     hnt                          Launch the interactive TUI (default)
     hnt <feed> [options]         List a feed: top new best ask show jobs pinned
     hnt feed <name> [options]    Same, explicit form
+    hnt rising [options]         Stories gaining points fastest right now (Pulse)
     hnt thread <id> [options]    Print a story's comment thread (alias: comments)
     hnt open <id> [options]      Print a single item (alias: item)
     hnt search <query…> [opts]   Search Hacker News via Algolia
@@ -55,6 +58,7 @@ EXAMPLES:
     hnt article 38911 | less
     hnt search rust async --json
     hnt top --digest | mail -s 'HN today' me
+    hnt rising --limit 3 --digest   # momentum needs two runs ≥ 2 min apart
 
 No arguments launches the full-screen reader. Output is local-only — hnt
 talks only to the Hacker News API and Algolia, exactly like the TUI.
@@ -244,7 +248,7 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, UsageError> {
         "feed" => match rest.first() {
             Some(name) => parse_feed(name, &rest[1..]),
             None => Err(ue(
-                "feed requires a name (top, new, best, ask, show, jobs, pinned)",
+                "feed requires a name (top, new, best, ask, show, jobs, pinned, rising)",
             )),
         },
         "thread" | "comments" => parse_thread(rest),
@@ -263,7 +267,7 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, UsageError> {
 fn parse_feed(name: &str, flags: &[String]) -> Result<Option<Invocation>, UsageError> {
     let kind = FeedKind::from_name(name).ok_or_else(|| {
         ue(format!(
-            "unknown feed: {name} (try top, new, best, ask, show, jobs, pinned)"
+            "unknown feed: {name} (try top, new, best, ask, show, jobs, pinned, rising)"
         ))
     })?;
     let f = Flags::parse(flags)?;
@@ -369,6 +373,9 @@ pub async fn run(inv: Invocation) -> Result<i32> {
 
 /// Fetches and prints a feed listing.
 async fn run_feed(kind: FeedKind, limit: usize, format: Format) -> Result<i32> {
+    if kind == FeedKind::Rising {
+        return run_rising(limit, format).await;
+    }
     let client = HnClient::new();
     let items: Vec<Arc<Item>> = if kind == FeedKind::Pinned {
         // Pinned is a virtual feed backed by the local pin store — no remote
@@ -399,6 +406,56 @@ async fn run_feed(kind: FeedKind, limit: usize, format: Format) -> Result<i32> {
         }
         Format::Digest => render::digest(&mut out, &items)?,
         Format::Text => render::feed(&mut out, &items)?,
+    }
+    Ok(0)
+}
+
+/// `hnt rising`: takes one fresh Pulse sweep, merges it with the persisted
+/// samples in `pulse.json` (so momentum survives between runs — a cron
+/// job every few minutes builds a live time series), saves, ranks, and
+/// prints. With no usable history yet, prints an empty listing and a
+/// one-line hint on stderr; the exit code stays 0 because nothing failed.
+async fn run_rising(limit: usize, format: Format) -> Result<i32> {
+    let client = HnClient::new();
+    let mut store = PulseStore::load();
+    let samples = client
+        .recent_story_snapshot(pulse::SWEEP_WINDOW_SECS)
+        .await
+        .context("failed to sweep recent stories for momentum")?;
+    let front_page = client.fetch_front_page_ids().await.unwrap_or_default();
+    let now = chrono::Utc::now().timestamp();
+    store.merge_sweep(&samples, front_page, now);
+    store.save();
+
+    let ranked = store.ranked(now, limit);
+    if ranked.is_empty() {
+        if store.is_empty() {
+            eprintln!("hnt: the momentum sweep returned no stories — is Algolia reachable?");
+        } else {
+            eprintln!(
+                "hnt: momentum needs two samples at least {} s apart — run `hnt rising` again in a couple of minutes ({} stories tracked)",
+                pulse::MIN_SPAN_SECS,
+                store.len(),
+            );
+        }
+    }
+    let ids: Vec<u64> = ranked.iter().map(|m| m.id).collect();
+    let items = client.fetch_items(&ids).await;
+    let rows: Vec<(Arc<Item>, Momentum)> = ranked
+        .into_iter()
+        .zip(items)
+        .filter_map(|(m, item)| item.filter(|i| !i.is_dead_or_deleted()).map(|i| (i, m)))
+        .collect();
+
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    match format {
+        Format::Json => {
+            serde_json::to_writer_pretty(&mut out, &output::rising(&rows))?;
+            writeln!(out)?;
+        }
+        Format::Digest => render::rising_digest(&mut out, &rows)?,
+        Format::Text => render::rising(&mut out, &rows)?,
     }
     Ok(0)
 }
@@ -624,6 +681,26 @@ mod tests {
                 kind: FeedKind::Pinned,
                 limit: DEFAULT_LIMIT,
                 format: Format::Text,
+            }))
+        );
+    }
+
+    #[test]
+    fn rising_feed_parses_with_flags() {
+        assert_eq!(
+            p(&["rising", "--limit", "3", "--digest"]),
+            Ok(Some(Invocation::Feed {
+                kind: FeedKind::Rising,
+                limit: 3,
+                format: Format::Digest,
+            }))
+        );
+        assert_eq!(
+            p(&["feed", "rising", "--json"]),
+            Ok(Some(Invocation::Feed {
+                kind: FeedKind::Rising,
+                limit: DEFAULT_LIMIT,
+                format: Format::Json,
             }))
         );
     }
