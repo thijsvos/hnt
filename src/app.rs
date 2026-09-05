@@ -12,6 +12,7 @@ use crate::article::{fetch_and_extract_article, html_to_styled_lines};
 use crate::clipboard;
 use crate::command::{parser as cmd_parser, CommandRegistry, CommandResult};
 use crate::keys::{Action, InputMode};
+use crate::pulse::{self, SweepSample};
 use crate::state::command_history_store;
 use crate::state::command_state::{CommandState, PaletteState};
 use crate::state::comment_state::{CommentFilter, CommentTreeState};
@@ -19,6 +20,7 @@ use crate::state::hint_state::{HintAction, HintContext, HintState};
 use crate::state::link_registry::{LinkRegistry, MatchResult};
 use crate::state::pin_store::PinStore;
 use crate::state::prior_state::PriorDiscussionsState;
+use crate::state::pulse_store::PulseStore;
 use crate::state::read_store::ReadStore;
 use crate::state::reader_state::{ReaderState, StyledFragment};
 use crate::state::search_state::SearchState;
@@ -246,6 +248,26 @@ pub enum AppMessage {
         /// order (most recent first).
         submissions: Vec<Item>,
     },
+    /// One completed Pulse sweep from the background task started by
+    /// [`App::start_pulse_sweeper`]. Ungated — samples are timestamped
+    /// observations, never stale relative to app state.
+    PulseSweep {
+        /// Every recent story's current score/comment count.
+        samples: Vec<SweepSample>,
+        /// Current front-page IDs (first 30 of `topstories`).
+        front_page: Vec<u64>,
+        /// Wall-clock time the sweep was taken, Unix seconds.
+        at: i64,
+    },
+    /// A re-ranked, hydrated `Rising` list produced after a sweep while
+    /// the Rising feed was on screen. Gated by [`App::feed_gen`] like a
+    /// feed page; applied in place so the cursor stays on the same story.
+    RisingReranked {
+        /// `App::feed_gen` snapshot captured at spawn.
+        gen: u64,
+        /// Ranked stories, fastest first.
+        stories: Vec<Arc<Item>>,
+    },
 }
 
 /// Central application state — owned by the main loop.
@@ -351,6 +373,13 @@ pub struct App {
     /// on shutdown.
     pub pin_store: PinStore,
 
+    /// Persisted momentum samples — fed by the background Pulse sweep
+    /// ([`Self::start_pulse_sweeper`]) and by every feed page that lands.
+    /// Backs the [`FeedKind::Rising`] virtual feed, the sparkline column,
+    /// and the `↗` glyph in other feeds. Loaded from disk at startup,
+    /// flushed every few sweeps and via [`App::persist`] on shutdown.
+    pub pulse_store: PulseStore,
+
     /// In-progress resume application: when a pinned story is opened, this
     /// holds the saved selected-comment target until the comments tree
     /// has loaded enough rows to position the cursor there. Cleared on
@@ -440,6 +469,7 @@ impl App {
             prior_in_flight: Arc::new(Mutex::new(HashSet::new())),
             read_store: ReadStore::load(),
             pin_store: PinStore::load(),
+            pulse_store: PulseStore::load(),
             pending_pinned_resume: None,
             hint_state: None,
             last_comment_click: None,
@@ -553,6 +583,7 @@ impl App {
         self.snapshot_pinned_resume_if_any();
         self.read_store.save();
         self.pin_store.save();
+        self.pulse_store.save();
         command_history_store::save(&self.command_history);
     }
 
@@ -677,6 +708,115 @@ impl App {
         self.spawn_load_stories(LoadMode::Replace);
     }
 
+    /// Starts the background Pulse sweeper: one Algolia
+    /// `search_by_date` snapshot of every story from the last
+    /// [`pulse::SWEEP_WINDOW_SECS`] plus the current front page, every
+    /// [`pulse::SWEEP_INTERVAL`], delivered as
+    /// [`AppMessage::PulseSweep`]. A failed sweep is skipped silently —
+    /// momentum is optional UX, never critical path — and the loop ends
+    /// on its own once the receiver (the `App`) is gone.
+    ///
+    /// Intended to be called once at startup, after
+    /// [`Self::load_initial_feed`]. The task holds only a client clone and
+    /// a sender, so it is unaffected by feed switches and cache clears.
+    pub fn start_pulse_sweeper(&self) {
+        let client = self.client.clone();
+        let tx = self.msg_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                if tx.is_closed() {
+                    break;
+                }
+                let snapshot = client.recent_story_snapshot(pulse::SWEEP_WINDOW_SECS).await;
+                if let Ok(samples) = snapshot {
+                    let front_page = client.fetch_front_page_ids().await.unwrap_or_default();
+                    let at = chrono::Utc::now().timestamp();
+                    if tx
+                        .send(AppMessage::PulseSweep {
+                            samples,
+                            front_page,
+                            at,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                tokio::time::sleep(pulse::SWEEP_INTERVAL).await;
+            }
+        });
+    }
+
+    /// Current wall-clock time in Unix seconds — the `now` every Pulse
+    /// query takes.
+    fn now_secs() -> i64 {
+        chrono::Utc::now().timestamp()
+    }
+
+    /// The `Rising` feed's story IDs, fastest first, at most one page.
+    fn rising_ids(&self) -> Vec<u64> {
+        self.pulse_store
+            .ranked(Self::now_secs(), self.page_size())
+            .into_iter()
+            .map(|m| m.id)
+            .collect()
+    }
+
+    /// Title for the story pane while the `Rising` feed is active:
+    /// `Rising · warming up…` until the first velocities exist, then
+    /// `Rising · next sweep 43s`. `None` for every other feed.
+    #[must_use]
+    pub fn rising_pane_title(&self) -> Option<String> {
+        if self.current_feed != FeedKind::Rising || self.search_state.is_some() {
+            return None;
+        }
+        let warming = self.story_state.stories.is_empty()
+            && !self.story_state.loading
+            && self.pulse_store.ranked(Self::now_secs(), 1).is_empty();
+        Some(
+            match (warming, self.pulse_store.seconds_until_next_sweep()) {
+                (true, _) => "Rising · warming up…".to_string(),
+                (false, Some(secs)) => format!("Rising · next sweep {secs}s"),
+                (false, None) => "Rising".to_string(),
+            },
+        )
+    }
+
+    /// After a sweep lands while `Rising` is on screen, re-hydrate the
+    /// ranked list in the background and apply it in place via
+    /// [`AppMessage::RisingReranked`]. Most IDs are already in the item
+    /// cache, so this is usually a handful of fetches for new entrants.
+    fn spawn_rising_rerank(&mut self) {
+        let ids = self.rising_ids();
+        if ids.is_empty() {
+            return;
+        }
+        let client = self.client.clone();
+        let tx = self.msg_tx.clone();
+        let gen = self.feed_gen;
+        let page_size = self.page_size();
+        tokio::spawn(async move {
+            if let Ok(stories) = client.fetch_items_page(&ids, 0, page_size).await {
+                let _ = tx.send(AppMessage::RisingReranked { gen, stories });
+            }
+        });
+    }
+
+    /// Installs a re-ranked `Rising` list without disturbing the user:
+    /// the cursor follows the story it was on (or clamps to the tail if
+    /// that story dropped out), and the comments pane is untouched.
+    fn apply_rising_rerank(&mut self, stories: Vec<Arc<Item>>) {
+        let selected_id = self.story_state.selected_story().map(|s| s.id);
+        self.story_state.all_ids = stories.iter().map(|s| s.id).collect();
+        self.story_state.replace_stories(stories);
+        let len = self.story_state.stories.len();
+        self.story_state.selected = selected_id
+            .and_then(|id| self.story_state.stories.iter().position(|s| s.id == id))
+            .unwrap_or(self.story_state.selected)
+            .min(len.saturating_sub(1));
+        self.story_state.loading = false;
+    }
+
     /// Common housekeeping after either a feed page or a search page lands:
     /// install/append the new stories, clear the loading flag, clear the
     /// error banner. Auto-load and search-pagination bookkeeping are
@@ -718,6 +858,9 @@ impl App {
                     if gen != self.feed_gen {
                         continue;
                     }
+                    // Piggyback Pulse sampling: a Firebase page is a free
+                    // observation of every story's current score.
+                    self.pulse_store.record_items(&stories, Self::now_secs());
                     self.apply_loaded_stories(stories, mode);
                     if let Some(ids) = all_ids {
                         self.story_state.all_ids = ids;
@@ -844,6 +987,27 @@ impl App {
                         }
                     }
                     self.prior_results.put(story_id, submissions);
+                }
+                AppMessage::PulseSweep {
+                    samples,
+                    front_page,
+                    at,
+                } => {
+                    if self.pulse_store.merge_sweep(&samples, front_page, at) {
+                        self.pulse_store.save();
+                    }
+                    if self.current_feed == FeedKind::Rising
+                        && self.search_state.is_none()
+                        && !self.story_state.loading
+                    {
+                        self.spawn_rising_rerank();
+                    }
+                }
+                AppMessage::RisingReranked { gen, stories } => {
+                    if gen != self.feed_gen || self.current_feed != FeedKind::Rising {
+                        continue;
+                    }
+                    self.apply_rising_rerank(stories);
                 }
             }
             if drained >= PROCESS_MESSAGES_BUDGET {
@@ -1812,11 +1976,11 @@ impl App {
             // significantly the user may see a couple of duplicates or
             // gaps, but the next scroll round-trips back to a consistent
             // view.
-            let pinned_branch = matches!(self.current_feed, FeedKind::Pinned);
-            let cached_ids = if pinned_branch {
-                self.pin_store.pinned_ids_newest_first()
-            } else {
-                self.story_state.all_ids.clone()
+            let pinned_branch = matches!(self.current_feed, FeedKind::Pinned | FeedKind::Rising);
+            let cached_ids = match self.current_feed {
+                FeedKind::Pinned => self.pin_store.pinned_ids_newest_first(),
+                FeedKind::Rising => self.rising_ids(),
+                _ => self.story_state.all_ids.clone(),
             };
             let offset = self.story_state.stories.len();
             tokio::spawn(async move {
@@ -1843,22 +2007,27 @@ impl App {
                     }
                 }
             });
-        } else if matches!(self.current_feed, FeedKind::Pinned) {
-            // Virtual feed: source IDs locally, then page through them with
-            // the same `fetch_items_page` path the remote feeds use.
-            let pinned_ids = self.pin_store.pinned_ids_newest_first();
+        } else if matches!(self.current_feed, FeedKind::Pinned | FeedKind::Rising) {
+            // Virtual feeds: source IDs locally, then page through them with
+            // the same `fetch_items_page` path the remote feeds use. Rising
+            // ranks from the Pulse store; an empty ranking (still warming
+            // up) lands as an empty page and the pane title explains why.
+            let (local_ids, label) = match self.current_feed {
+                FeedKind::Rising => (self.rising_ids(), "rising"),
+                _ => (self.pin_store.pinned_ids_newest_first(), "pinned"),
+            };
             tokio::spawn(async move {
-                match client.fetch_items_page(&pinned_ids, 0, page_size).await {
+                match client.fetch_items_page(&local_ids, 0, page_size).await {
                     Ok(stories) => {
                         let _ = tx.send(AppMessage::StoriesLoaded {
                             gen,
                             stories,
-                            all_ids: Some(pinned_ids),
+                            all_ids: Some(local_ids),
                             mode: LoadMode::Replace,
                         });
                     }
                     Err(e) => {
-                        let _ = tx.send(AppMessage::Error(format!("Failed to load pinned: {}", e)));
+                        let _ = tx.send(AppMessage::Error(format!("Failed to load {label}: {e}")));
                     }
                 }
             });
@@ -2974,6 +3143,165 @@ mod tests {
         app.process_messages();
         let cached = app.prior_results.get(&sid).expect("cached");
         assert_eq!(cached.len(), 1);
+    }
+
+    // --- Pulse: sweeps, piggyback sampling, Rising re-rank ---
+
+    /// `App::new` loads whatever `pulse.json` the developer has on disk;
+    /// these tests need a known-empty store.
+    fn app_with_empty_pulse() -> App {
+        let mut app = App::new(80, 24);
+        app.pulse_store = PulseStore::empty();
+        app
+    }
+
+    fn sweep_sample(id: u64, points: i64) -> SweepSample {
+        SweepSample {
+            id,
+            created_at: Some(1_700_000_000),
+            points,
+            comments: 0,
+        }
+    }
+
+    #[test]
+    fn pulse_sweep_is_ungated_and_feeds_the_store() {
+        let mut app = app_with_empty_pulse();
+        app.bump_feed_gen();
+        app.bump_story_gen();
+        app.bump_article_gen();
+        let now = App::now_secs();
+        app.msg_tx
+            .send(AppMessage::PulseSweep {
+                samples: vec![sweep_sample(1, 5)],
+                front_page: vec![1],
+                at: now,
+            })
+            .unwrap();
+        app.process_messages();
+        assert!(app.pulse_store.has_swept());
+        assert_eq!(app.pulse_store.len(), 1);
+        assert!(app.pulse_store.seconds_until_next_sweep().is_some());
+    }
+
+    #[test]
+    fn stories_loaded_piggybacks_pulse_samples() {
+        let mut app = app_with_empty_pulse();
+        let gen = app.feed_gen;
+        let mut scored = fake_item(7);
+        scored.score = Some(12);
+        scored.descendants = Some(3);
+        scored.time = Some(App::now_secs() - 600);
+        // Pre-seed a comment so the Replace branch doesn't spawn a load.
+        app.comment_state.story = Some(fake_arc(1));
+        app.msg_tx
+            .send(AppMessage::StoriesLoaded {
+                gen,
+                stories: vec![Arc::new(scored), fake_arc(8)],
+                all_ids: Some(vec![7, 8]),
+                mode: LoadMode::Replace,
+            })
+            .unwrap();
+        app.process_messages();
+        // The scored story is tracked; the scoreless fixture is skipped.
+        assert_eq!(app.pulse_store.len(), 1);
+        assert_eq!(app.story_state.stories.len(), 2);
+    }
+
+    #[test]
+    fn rising_reranked_keeps_cursor_on_same_story() {
+        let mut app = app_with_empty_pulse();
+        app.current_feed = FeedKind::Rising;
+        app.story_state
+            .replace_stories(vec![fake_arc(1), fake_arc(2), fake_arc(3)]);
+        app.story_state.selected = 2; // on story 3
+        let gen = app.feed_gen;
+        app.msg_tx
+            .send(AppMessage::RisingReranked {
+                gen,
+                stories: vec![fake_arc(3), fake_arc(9), fake_arc(1)],
+            })
+            .unwrap();
+        app.process_messages();
+        assert_eq!(app.story_state.selected, 0, "cursor follows story 3");
+        assert_eq!(app.story_state.all_ids, vec![3, 9, 1]);
+        assert_eq!(app.story_state.domains.len(), 3);
+    }
+
+    #[test]
+    fn rising_reranked_clamps_when_story_dropped_out() {
+        let mut app = app_with_empty_pulse();
+        app.current_feed = FeedKind::Rising;
+        app.story_state
+            .replace_stories(vec![fake_arc(1), fake_arc(2), fake_arc(3)]);
+        app.story_state.selected = 2;
+        let gen = app.feed_gen;
+        app.msg_tx
+            .send(AppMessage::RisingReranked {
+                gen,
+                stories: vec![fake_arc(5), fake_arc(6)],
+            })
+            .unwrap();
+        app.process_messages();
+        assert_eq!(app.story_state.selected, 1, "clamped to the new tail");
+    }
+
+    #[test]
+    fn rising_reranked_is_dropped_when_stale_or_off_feed() {
+        let mut app = app_with_empty_pulse();
+        app.current_feed = FeedKind::Rising;
+        let stale = app.feed_gen;
+        app.bump_feed_gen();
+        app.msg_tx
+            .send(AppMessage::RisingReranked {
+                gen: stale,
+                stories: vec![fake_arc(5)],
+            })
+            .unwrap();
+        app.process_messages();
+        assert!(app.story_state.stories.is_empty(), "stale gen dropped");
+
+        app.current_feed = FeedKind::Top;
+        let gen = app.feed_gen;
+        app.msg_tx
+            .send(AppMessage::RisingReranked {
+                gen,
+                stories: vec![fake_arc(5)],
+            })
+            .unwrap();
+        app.process_messages();
+        assert!(
+            app.story_state.stories.is_empty(),
+            "a re-rank must never land on a non-Rising feed"
+        );
+    }
+
+    #[test]
+    fn rising_pane_title_only_for_rising_feed() {
+        let mut app = app_with_empty_pulse();
+        assert_eq!(app.rising_pane_title(), None);
+        app.current_feed = FeedKind::Rising;
+        assert_eq!(
+            app.rising_pane_title().as_deref(),
+            Some("Rising · warming up…")
+        );
+        app.msg_tx
+            .send(AppMessage::PulseSweep {
+                samples: vec![],
+                front_page: vec![],
+                at: App::now_secs(),
+            })
+            .unwrap();
+        app.process_messages();
+        // Still warming up (no velocities) — the countdown waits.
+        assert_eq!(
+            app.rising_pane_title().as_deref(),
+            Some("Rising · warming up…")
+        );
+        app.story_state.replace_stories(vec![fake_arc(1)]);
+        let title = app.rising_pane_title().unwrap();
+        assert!(title.starts_with("Rising · next sweep "), "{title}");
+        assert!(title.ends_with('s'), "{title}");
     }
 
     // --- end-to-end state change ---

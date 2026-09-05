@@ -11,6 +11,7 @@ mod clipboard;
 mod command;
 mod event;
 mod keys;
+mod pulse;
 mod sanitize;
 mod state;
 mod tui;
@@ -94,8 +95,10 @@ async fn main() -> Result<()> {
     let size = terminal.size()?;
     let mut app = App::new(size.width, size.height);
 
-    // Kick off initial data load
+    // Kick off initial data load, then the background momentum sweeper
+    // that feeds the Rising feed (one Algolia request per minute).
     app.load_initial_feed();
+    app.start_pulse_sweeper();
 
     // Main loop
     while app.running {

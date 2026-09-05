@@ -329,11 +329,13 @@ fn url_domain(raw: &str) -> Option<String> {
 /// The Hacker News feeds the app can display.
 ///
 /// The first six mirror Firebase endpoints (Top/New/Best/Ask/Show/Jobs) —
-/// see [`FeedKind::endpoint`]. [`FeedKind::Pinned`] is a virtual feed
-/// backed by the local [`crate::state::pin_store::PinStore`] rather than
-/// a remote endpoint, so its [`endpoint`](FeedKind::endpoint) returns
-/// `None` and callers must branch to load IDs from the pin store instead
-/// of issuing a Firebase request.
+/// see [`FeedKind::endpoint`]. [`FeedKind::Pinned`] and
+/// [`FeedKind::Rising`] are virtual feeds backed by local state (the
+/// [`crate::state::pin_store::PinStore`] and
+/// [`crate::state::pulse_store::PulseStore`] respectively) rather than a
+/// remote endpoint, so their [`endpoint`](FeedKind::endpoint) returns
+/// `None` and callers must branch to source IDs locally instead of
+/// issuing a Firebase request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FeedKind {
@@ -352,13 +354,18 @@ pub enum FeedKind {
     /// Locally-curated stories saved by the user (`b` to toggle). Aggregated
     /// by [`crate::state::pin_store::PinStore`], not fetched over HTTP.
     Pinned,
+    /// Stories gaining points fastest right now, ranked by
+    /// [`crate::state::pulse_store::PulseStore`] from the background
+    /// Pulse sweep. Virtual — the ranked IDs are hydrated through the
+    /// regular item fetch.
+    Rising,
 }
 
 impl FeedKind {
-    /// Every [`FeedKind`] in display order — indexed by the 1–7 number keys
+    /// Every [`FeedKind`] in display order — indexed by the 1–8 number keys
     /// and iterated to build the header tab bar. The trailing `Pinned`
-    /// entry is the local virtual feed.
-    pub const ALL: [FeedKind; 7] = [
+    /// and `Rising` entries are the local virtual feeds.
+    pub const ALL: [FeedKind; 8] = [
         FeedKind::Top,
         FeedKind::New,
         FeedKind::Best,
@@ -366,6 +373,7 @@ impl FeedKind {
         FeedKind::Show,
         FeedKind::Jobs,
         FeedKind::Pinned,
+        FeedKind::Rising,
     ];
 
     /// Firebase path segment (e.g. `"topstories"`) for this feed, or
@@ -380,16 +388,16 @@ impl FeedKind {
             FeedKind::Ask => Some("askstories"),
             FeedKind::Show => Some("showstories"),
             FeedKind::Jobs => Some("jobstories"),
-            FeedKind::Pinned => None,
+            FeedKind::Pinned | FeedKind::Rising => None,
         }
     }
 
     /// Resolves a feed name (case-insensitive) to its [`FeedKind`], or
     /// `None` for an unrecognized name. Accepts the short names shown in the
     /// header tab bar and `:feed` completion (`top`, `new`, `best`, `ask`,
-    /// `show`, `jobs`, `pinned`). Backs both the `:feed` command (via
-    /// `feed_index`) and the headless CLI's feed argument, so the accepted
-    /// spellings can't drift between the two entry points.
+    /// `show`, `jobs`, `pinned`, `rising`). Backs both the `:feed` command
+    /// (via `feed_index`) and the headless CLI's feed argument, so the
+    /// accepted spellings can't drift between the two entry points.
     pub fn from_name(name: &str) -> Option<FeedKind> {
         FeedKind::ALL
             .iter()
@@ -408,6 +416,7 @@ impl fmt::Display for FeedKind {
             FeedKind::Show => write!(f, "Show"),
             FeedKind::Jobs => write!(f, "Jobs"),
             FeedKind::Pinned => write!(f, "Pinned"),
+            FeedKind::Rising => write!(f, "Rising"),
         }
     }
 }
@@ -670,16 +679,18 @@ mod tests {
     }
 
     #[test]
-    fn feed_kind_pinned_has_no_endpoint() {
-        // Pinned is a virtual feed backed by local state — callers must
-        // branch on None to source IDs from the pin store.
+    fn feed_kind_virtual_feeds_have_no_endpoint() {
+        // Pinned and Rising are virtual feeds backed by local state —
+        // callers must branch on None to source IDs from the store.
         assert_eq!(FeedKind::Pinned.endpoint(), None);
+        assert_eq!(FeedKind::Rising.endpoint(), None);
     }
 
     #[test]
-    fn feed_kind_all_includes_pinned_last() {
-        assert_eq!(FeedKind::ALL.len(), 7);
+    fn feed_kind_all_ends_with_virtual_feeds() {
+        assert_eq!(FeedKind::ALL.len(), 8);
         assert_eq!(FeedKind::ALL[6], FeedKind::Pinned);
+        assert_eq!(FeedKind::ALL[7], FeedKind::Rising);
     }
 
     #[test]
@@ -691,6 +702,7 @@ mod tests {
         assert_eq!(format!("{}", FeedKind::Show), "Show");
         assert_eq!(format!("{}", FeedKind::Jobs), "Jobs");
         assert_eq!(format!("{}", FeedKind::Pinned), "Pinned");
+        assert_eq!(format!("{}", FeedKind::Rising), "Rising");
     }
 
     #[test]

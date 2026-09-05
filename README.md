@@ -16,7 +16,8 @@ Browse stories, read threaded comments, and open links — all from your termina
 
 - **Dark theme** — Catppuccin Mocha-inspired colors with HN orange accents
 - **Split-pane layout** — Stories on the left, comments on the right
-- **7 feeds** — Top, New, Best, Ask HN, Show HN, Jobs, Pinned (your starred stories with resume position)
+- **8 feeds** — Top, New, Best, Ask HN, Show HN, Jobs, Pinned (your starred stories with resume position), Rising (see below)
+- **Rising feed (Pulse)** — Every HN client shows a static ranked list; `hnt` also shows the *derivative*. A background sweep samples every recent story's score once a minute (one Algolia request), and pressing `8` ranks them by how fast they're climbing right now — each row gets a sparkline of the last 30 minutes, a `+N` points-per-30-minutes figure, and on wide panes an estimate of when it will reach the front page (`FP ~25m`). Fast movers get a `↗` in every other feed too. Samples persist to `pulse.json`, so momentum is there the moment you relaunch
 - **Story type badges** — Visual labels for Ask HN, Show HN, and Jobs posts
 - **Threaded comments** — Depth-colored bars for visual tracking, collapse/expand
 - **Vim-style navigation** — `j`/`k`, `g`/`G`, `Ctrl+d`/`Ctrl+u`
@@ -29,7 +30,7 @@ Browse stories, read threaded comments, and open links — all from your termina
 - **Open in browser** — Press `o` to open the story URL
 - **Progressive loading** — Root comments appear instantly, children load in the background
 - **Lazy pagination** — Stories load automatically as you scroll
-- **Scriptable** — a headless CLI mode (`hnt top --json`, `hnt thread <id>`, `hnt article <id>`) pipes Hacker News into `jq`, `fzf`, `cron`, or a pager. No arguments still launches the TUI — see [Scripting](#scripting-headless-mode)
+- **Scriptable** — a headless CLI mode (`hnt top --json`, `hnt rising --digest`, `hnt thread <id>`, `hnt article <id>`) pipes Hacker News into `jq`, `fzf`, `cron`, or a pager. No arguments still launches the TUI — see [Scripting](#scripting-headless-mode)
 
 ## Installation
 
@@ -116,7 +117,7 @@ cargo build --release
 | `h` | Show prior HN submissions of this URL |
 | `/` | Search stories |
 | `Tab` | Switch pane focus |
-| `1`-`7` | Switch feed (Top/New/Best/Ask/Show/Jobs/Pinned) |
+| `1`-`8` | Switch feed (Top/New/Best/Ask/Show/Jobs/Pinned/Rising) |
 | `r` | Refresh |
 | `n` | Cycle "What's New" filter (comments pane) |
 | `g` / `G` | Jump to top / bottom |
@@ -136,6 +137,7 @@ arguments, `hnt` still launches the full-screen reader.
 | Command | Description |
 |---|---|
 | `hnt <feed>` · `hnt feed <name>` | List a feed: `top` `new` `best` `ask` `show` `jobs` `pinned` |
+| `hnt rising` | Stories gaining points fastest right now, with sparkline, `+N/30m` velocity and front-page ETA. Each run takes one fresh sample and merges it with `pulse.json`, so two runs ≥ 2 minutes apart (or a running TUI) are enough for momentum |
 | `hnt thread <id>` | Print a story's comment thread (alias: `comments`) |
 | `hnt open <id>` | Print a single item (alias: `item`) |
 | `hnt search <query…>` | Algolia full-text search |
@@ -160,6 +162,9 @@ hnt top --digest | mail -s "HN today" you@example.com
 # Pick a story with fzf, then open its comments
 id=$(hnt top --limit 30 --json | jq -r '.[] | "\(.id)\t\(.title)"' | fzf | cut -f1)
 [ -n "$id" ] && hnt thread "$id" | less
+
+# What's climbing right now — one line, tmux-status-bar sized
+hnt rising --limit 1 --json | jq -r '.[0] | "\(.momentum.sparkline) +\(.momentum.velocity_30m) \(.title)"'
 ```
 
 Text output is plain (no ANSI) and HN-supplied strings are stripped of
@@ -169,12 +174,14 @@ success, `1` item not found, `2` usage error. See the
 
 ## Configuration & state
 
-`hnt` is configuration-free — there's no config file. It persists two pieces of state across runs:
+`hnt` is configuration-free — there's no config file. It persists four pieces of state across runs:
 
 | What | File |
 |---|---|
 | Visited stories + comment counts at last visit (drives the dim styling and `+N` "what's new" badges) | `read.json` |
 | Pinned stories + per-story resume position | `pinned.json` |
+| Pulse momentum samples — up to 32 `(time, points, comments)` readings per recent story, pruned after 6 h (backs the `Rising` feed and `hnt rising`) | `pulse.json` |
+| `:`-command history (last 100 lines) | `commands.json` |
 
 The directory is platform-dependent (XDG on Linux, Application Support on macOS, AppData on Windows):
 
@@ -184,7 +191,7 @@ The directory is platform-dependent (XDG on Linux, Application Support on macOS,
 | macOS | `~/Library/Application Support/hnt/` |
 | Windows | `%APPDATA%\hnt\` |
 
-Both files are written atomically (tmp + rename) with mode `0600` on Unix; the parent directory is created on first write with mode `0700`. Deleting either file resets the corresponding state — no other side effects.
+All files are written atomically (tmp + rename) with mode `0600` on Unix; the parent directory is created on first write with mode `0700`. Deleting any of them resets the corresponding state — no other side effects.
 
 ## Changelog
 

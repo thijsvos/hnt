@@ -212,8 +212,9 @@ pub fn map_key(
         KeyCode::Tab | KeyCode::BackTab | KeyCode::Left | KeyCode::Right => {
             Some(Action::SwitchPane)
         }
-        // 1–7: Top, New, Best, Ask, Show, Jobs, Pinned (matches FeedKind::ALL order).
-        KeyCode::Char(c @ '1'..='7') => Some(Action::SwitchFeed(c as usize - '1' as usize)),
+        // 1–8: Top, New, Best, Ask, Show, Jobs, Pinned, Rising (matches
+        // FeedKind::ALL order).
+        KeyCode::Char(c @ '1'..='8') => Some(Action::SwitchFeed(c as usize - '1' as usize)),
         KeyCode::Char('r') => Some(Action::Refresh),
         KeyCode::Char('n') => Some(Action::CycleCommentFilter),
         KeyCode::Char('b') => Some(Action::TogglePin),
@@ -403,9 +404,11 @@ mod tests {
             ('5', 4),
             ('6', 5),
             ('7', 6), // Pinned virtual feed
+            ('8', 7), // Rising virtual feed
         ] {
             assert_eq!(n(c), Some(Action::SwitchFeed(idx)));
         }
+        assert_eq!(n('9'), None);
     }
 
     #[test]

@@ -16,6 +16,7 @@ API key — output is local-only.
 | Command | Aliases | Description |
 |---|---|---|
 | `hnt <feed>` / `hnt feed <name>` | — | List a feed (`top` `new` `best` `ask` `show` `jobs` `pinned`) |
+| `hnt rising` | `feed rising` | Stories gaining points fastest right now (Pulse momentum) |
 | `hnt thread <id>` | `comments` | Print a story header and its comment tree |
 | `hnt open <id>` | `item` | Print a single item (story or comment) |
 | `hnt search <query…>` | — | Algolia full-text search across all of HN |
@@ -26,6 +27,19 @@ API key — output is local-only.
 `pinned` reads ids from your local pin store (`pinned.json`) — the same pins
 you star with `b` in the TUI — then fetches them, so it works fully offline of
 any feed endpoint.
+
+`rising` takes one fresh momentum sample (a single Algolia `search_by_date`
+request covering every story from the last 12 hours, plus the current front
+page), merges it into `pulse.json` — the same store the TUI's background
+sweep feeds — saves, and ranks by trailing-30-minute velocity. Momentum
+needs two samples at least 110 s apart, so the very first run on a cold
+store prints `No rising stories yet.` with a hint on stderr (exit `0`);
+run it again two minutes later, or after the TUI has been open for a
+while. A cron entry every few minutes keeps the series live:
+
+```cron
+*/5 * * * * hnt rising --limit 5 --digest > ~/.cache/hn-rising.txt 2>/dev/null
+```
 
 ## Options
 
@@ -59,6 +73,20 @@ optional fields are **omitted** rather than emitted as `null`.
 | `domain` | string? | Host of `url`, `www.` stripped |
 | `hn_url` | string | Discussion permalink (always present) |
 | `type` | string? | `story` / `comment` / `job` / `poll` / … |
+
+**Rising** (`hnt rising --json` — an array): every **Story** field above,
+plus a nested `momentum` object:
+
+| Field | Type | Notes |
+|---|---|---|
+| `momentum.velocity_30m` | number | Points gained per 30 minutes at the current pace (one decimal) |
+| `momentum.comment_velocity_30m` | number | Comments gained per 30 minutes at the current pace |
+| `momentum.sparkline` | string | Eight block glyphs (`▁`–`█`) covering the trailing 30 minutes; leading spaces are buckets older than the first observation |
+| `momentum.front_page_rank` | number? | 1-based position on the front page; omitted when not on it |
+| `momentum.eta_minutes` | number? | Projected minutes until the story enters the front page; omitted when already there, when fewer than 20 front-page stories are known, or when it won't make it within 3 h |
+
+The list is sorted by `velocity_30m + 0.5 × comment_velocity_30m`,
+descending; stories that are flat or falling are excluded.
 
 **Thread** (`hnt thread <id> --json`): `{ "story": <Story>, "comments": [<Comment>] }`,
 where each **Comment** is `{ id, depth, by?, time?, text }` in pre-order
@@ -108,4 +136,10 @@ id=$(hnt top --limit 30 --json | jq -r '.[] | "\(.id)\t\(.title)"' | fzf | cut -
 
 # Who's hiring this month, as JSON
 hnt jobs --limit 100 --json > jobs.json
+
+# The single fastest-climbing story, tmux-status-bar sized
+hnt rising --limit 1 --json | jq -r '.[0] | "\(.momentum.sparkline) +\(.momentum.velocity_30m) \(.title)"'
+
+# Stories projected to hit the front page within the hour
+hnt rising --json | jq -r '.[] | select(.momentum.eta_minutes != null and .momentum.eta_minutes <= 60) | "\(.momentum.eta_minutes)m\t\(.title)"'
 ```

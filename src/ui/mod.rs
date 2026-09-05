@@ -56,6 +56,8 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     );
 
     // Story list
+    let rising = app.current_feed == crate::api::types::FeedKind::Rising;
+    let rising_title = app.rising_pane_title();
     frame.render_widget(
         story_list::StoryList {
             stories: &app.story_state.stories,
@@ -66,6 +68,10 @@ pub fn render(app: &mut App, frame: &mut Frame) {
             search_query: if search_active { search_query } else { None },
             read_store: &app.read_store,
             pin_store: &app.pin_store,
+            pulse_store: &app.pulse_store,
+            rising: rising && !search_active,
+            pane_title: rising_title.as_deref(),
+            now_secs,
         },
         layout.stories,
     );
@@ -214,9 +220,9 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
             Span::styled("Switch pane focus", theme::base_style()),
         ]),
         Line::from(vec![
-            Span::styled("  1-7          ", theme::accent_style()),
+            Span::styled("  1-8          ", theme::accent_style()),
             Span::styled(
-                "Switch feed (Top/New/Best/Ask/Show/Jobs/Pinned)",
+                "Switch feed (Top/New/Best/Ask/Show/Jobs/Pinned/Rising)",
                 theme::base_style(),
             ),
         ]),
