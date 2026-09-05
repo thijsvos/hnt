@@ -38,14 +38,16 @@ pub fn copy(text: &str) -> io::Result<()> {
 /// `((bytes.len() + 2) / 3) * 4`.
 fn base64_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    let mut chunks = bytes.chunks_exact(3);
-    for chunk in &mut chunks {
+    // `as_chunks` (Rust 1.88) yields fixed-size `[u8; 3]` chunks plus the
+    // sub-3-byte remainder in one call — clippy 1.98 flags the older
+    // `chunks_exact(3)` + `remainder()` pair (`chunks_exact_to_as_chunks`).
+    let (chunks, rem) = bytes.as_chunks::<3>();
+    for chunk in chunks {
         out.push(BASE64[(chunk[0] >> 2) as usize] as char);
         out.push(BASE64[(((chunk[0] & 0b11) << 4) | (chunk[1] >> 4)) as usize] as char);
         out.push(BASE64[(((chunk[1] & 0b1111) << 2) | (chunk[2] >> 6)) as usize] as char);
         out.push(BASE64[(chunk[2] & 0b111111) as usize] as char);
     }
-    let rem = chunks.remainder();
     match rem.len() {
         0 => {}
         1 => {
@@ -60,7 +62,7 @@ fn base64_encode(bytes: &[u8]) -> String {
             out.push(BASE64[((rem[1] & 0b1111) << 2) as usize] as char);
             out.push('=');
         }
-        _ => unreachable!("chunks_exact(3) remainder is 0..=2"),
+        _ => unreachable!("as_chunks::<3> remainder is 0..=2"),
     }
     out
 }
